@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE window>
+<!-- PaperPilot 工作台：独立桌面窗口（0.9.0）
+     windowtype 供 Services.wm 枚举 → 单实例控制；
+     persist 记住位置/大小/最大化状态 -->
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml"
+        title="PaperPilot 工作台"
+        windowtype="paperpilot:workbench"
+        width="880" height="660"
+        persist="screenX screenY width height sizemode">
+  <script src="chrome://paperpilot/content/workbench.js"/>
+  <vbox flex="1" style="padding:10px;gap:8px;">
+
+    <!-- 条目栏：当前上下文 + 跟随开关 + 手动选择 -->
+    <hbox id="pp-wb-itembar" style="align-items:center;gap:8px;">
+      <html:span id="pp-wb-item-icon" style="font-size:18px;">📄</html:span>
+      <vbox flex="1" style="min-width:0;">
+        <html:div id="pp-wb-item-title" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">（未选择条目）</html:div>
+        <html:div id="pp-wb-item-meta" style="color:#666;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></html:div>
+      </vbox>
+      <html:input type="checkbox" id="pp-wb-follow" checked="true"/>
+      <html:label for="pp-wb-follow" style="font-size:12px;">跟随主窗口选中</html:label>
+      <html:button id="pp-wb-pick" style="padding:3px 10px;">选择条目…</html:button>
+    </hbox>
+
+    <!-- 快捷动作 -->
+    <hbox id="pp-wb-actions" style="gap:6px;">
+      <html:button class="pp-wb-act" data-act="summary" style="padding:3px 12px;">总结</html:button>
+      <html:button class="pp-wb-act" data-act="translate" style="padding:3px 12px;">翻译标题与摘要</html:button>
+      <html:button class="pp-wb-act" data-act="interpret" style="padding:3px 12px;">深度解读</html:button>
+    </hbox>
+
+    <!-- 对话区 -->
+    <vbox id="pp-wb-msgs" flex="1"
+          style="overflow-y:auto;border:1px solid #bbb;border-radius:6px;padding:10px;background:#fafafa;"/>
+
+    <!-- 输入区 -->
+    <hbox style="gap:6px;align-items:flex-end;">
+      <html:textarea id="pp-wb-input" rows="3"
+        style="flex:1;font-size:13px;resize:none;"
+        placeholder="针对上文条目提问（无条目时为普通对话），Ctrl+Enter 发送…"/>
+      <html:button id="pp-wb-send" style="padding:6px 16px;font-weight:600;">发送</html:button>
+    </hbox>
+
+    <!-- 底栏 -->
+    <hbox style="gap:8px;align-items:center;">
+      <html:button id="pp-wb-save" style="padding:3px 10px;">存为笔记</html:button>
+      <html:button id="pp-wb-clear" style="padding:3px 10px;">清空对话</html:button>
+      <html:span id="pp-wb-status" style="color:#888;font-size:12px;flex:1;"></html:span>
+    </hbox>
+  </vbox>
+</window>

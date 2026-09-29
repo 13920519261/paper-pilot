@@ -1,0 +1,4 @@
+# 临时与产物
+*.xpi
+Thumbs.db
+.DS_Store
