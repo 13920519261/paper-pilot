@@ -12,3 +12,11 @@ paperpilot-chat-section-sidenav = AI 问答
 paperpilot-note-section-header = PaperPilot
     .label = PaperPilot
     .tooltiptext = PaperPilot
+
+paperpilot-glance-section-header = PDF 速览
+    .label = PDF 速览
+    .tooltiptext = PDF 速览
+
+paperpilot-glance-section-sidenav = 速览
+    .label = 速览
+    .tooltiptext = 不打开 PDF 速览摘要与全文开篇

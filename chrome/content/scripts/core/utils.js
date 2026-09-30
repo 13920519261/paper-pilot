@@ -45,6 +45,22 @@ var I18n = (() => {
     matrixBusy: zh ? "正在逐篇抽取维度…" : "Extracting dimensions…",
     popupTranslate: zh ? "翻译" : "Translate",
     popupExplain: zh ? "解读" : "Explain",
+    popupAsk: zh ? "追问…" : "Ask…",
+    popupAskPlaceholder: zh ? "就这段文字继续提问…" : "Ask about this excerpt…",
+    popupSend: zh ? "发送" : "Send",
+    popupCopy: zh ? "复制" : "Copy",
+    popupCopied: zh ? "✓ 已复制" : "✓ Copied",
+    popupRetry: zh ? "重试" : "Retry",
+    popupWriteBack: zh ? "写入批注" : "Add to annotation",
+    popupWriteBackDone: zh ? "✓ 已写入批注" : "✓ Added to annotation",
+    popupWriteBackFail: zh ? "写入批注失败：" : "Failed to add to annotation: ",
+    popupContinuePane: zh ? "在侧栏继续" : "Continue in sidebar",
+    popupPaneUnavailable: zh
+      ? "请先在右侧栏打开「AI 问答」面板"
+      : "Open the AI Chat section in the sidebar first",
+    popupDailyNotice: zh
+      ? "提示：今日 AI 请求已达 500 次，请注意额度"
+      : "Note: 500 AI requests today — watch your quota",
     promptRun: zh ? "执行" : "Run",
     tagApplyDone: zh ? "已写入标签" : "Tags applied",
     chatPlaceholder: zh ? "针对这篇文献提问…" : "Ask about this paper…",
@@ -81,6 +97,25 @@ var I18n = (() => {
     menuProfilesEmpty: zh ? "（暂无快照，在设置中保存）" : "(No profiles — save in Settings)",
     profileSwitched: zh ? "已切换 AI 配置" : "AI profile switched",
     errPrefix: zh ? "出错：" : "Error: ",
+    // ---- 0.11.0 新增 ----
+    menuHub: zh ? "PaperPilot 功能中心" : "PaperPilot Feature Hub",
+    menuBilingual: zh ? "全文对照翻译（AI 双语笔记）" : "Bilingual Full-text Translation (note)",
+    noteBilingualTitle: zh ? "全文对照翻译" : "Bilingual Translation",
+    menuCnMeta: zh ? "中文文件名识别元数据（知网/万方）" : "Parse Chinese Filename Metadata",
+    menuReadingState: zh ? "阅读状态" : "Reading State",
+    menuStateUnread: zh ? "标记为「未读」" : "Mark as Unread",
+    menuStateReading: zh ? "标记为「在读」" : "Mark as Reading",
+    menuStateDone: zh ? "标记为「已读」" : "Mark as Done",
+    menuNoteTemplate: zh ? "按模板新建笔记…" : "New Note from Template…",
+    menuAttachRename: zh ? "附件按规则重命名" : "Rename Attachments by Pattern",
+    menuMindmap: zh ? "AI 思维导图（大纲笔记）" : "AI Mind Map (outline note)",
+    noteMindmapTitle: zh ? "思维导图" : "Mind Map",
+    menuReview: zh ? "AI 文献综述（多篇，带引用）" : "AI Literature Review (multi)",
+    noteReviewTitle: zh ? "AI 文献综述" : "AI Literature Review",
+    menuMetaLint: zh ? "元数据规范清洗（DOI/日期/标题/URL）" : "Metadata Lint",
+    menuOaFetch: zh ? "开放获取补全文（Unpaywall）" : "Find OA Full Text (Unpaywall)",
+    menuAnki: zh ? "AI 制卡导出 Anki…" : "AI Cards to Anki…",
+    menuLibGraph: zh ? "PaperPilot 文献统计图谱（HTML 报告）" : "PaperPilot Library Report (HTML)",
   };
   return {
     t(key) { return table[key] || key; },
@@ -102,7 +137,9 @@ var MdLite = {
       .replace(/`([^`\n]+)`/g, "<code>$1</code>");
   },
 
-  toNoteHtml(title, md) {
+  /** Markdown 子集 → 富文本 HTML 正文（0.10.0 抽出：侧栏气泡渲染与笔记共用，
+   *  语义标签不加硬编码颜色，深浅主题都安全） */
+  toHtml(md) {
     const lines = String(md || "").split(/\r?\n/);
     let html = "";
     let inList = false;
@@ -157,7 +194,11 @@ var MdLite = {
     }
     flushTable();
     flushPara(); closeList();
-    return "<h2>" + this.escape(title) + "</h2>" + html;
+    return html;
+  },
+
+  toNoteHtml(title, md) {
+    return "<h2>" + this.escape(title) + "</h2>" + this.toHtml(md);
   },
 };
 

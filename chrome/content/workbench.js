@@ -1,45 +1,175 @@
-/* PaperPilot 工作台逻辑（独立窗口，0.9.0）
- * 与主应用的数据同步方式：
- *  - 窗口内所有 Zotero 操作都经 window.opener.Zotero 走主应用同一个
- *    XPCOM 实例（同一进程、同一数据库连接）——条目数据每次操作现读，
- *    天然同步；saveTx 写入由 Notifier 驱动主窗口 UI 自动刷新。
- *  - “跟随主窗口选中”= 1.5s 轮询主窗口选中条目（轻量，仅取 id 对比）。
- * 生命周期：
- *  - 单实例：openWorkbench() 里按 windowtype 枚举，已有则 focus；
- *  - 主窗口关闭 → 本窗口自动关闭（opener unload 监听 + 轮询兜底）；
- *  - 位置/大小由窗口 persist 属性记忆。
+/* PaperPilot 工作台 2.0（0.13.0 重写）
+ * 新增：三模式（本文/深度研读/全库）、流式输出+停止、消息操作（复制/重答/存笔记）、
+ *       多会话管理（pref 持久化）、Prompt 技能库、AI 配置快照切换、导出 .md、双主题。
+ * 数据通道不变：Zotero/Services 经 window.arguments 传入；AI 走 PP.aiClient/PP.aiChat。
  */
-/* global window, document */
+/* global window, document, setInterval, clearInterval, setTimeout, Components */
 
 (function () {
   const XHTML = "http://www.w3.org/1999/xhtml";
+  const SESSIONS_PREF = "extensions.zotero.paperpilot.workbenchSessions";
+  const THEME_PREF = "extensions.zotero.paperpilot.wbTheme";
+  const SESSION_CAP = 20;
+  const TRANSCRIPT_CAP = 60;
+
+  /* ================= 可测试的纯逻辑（挂 window.PPWorkbench） ================= */
+
+  const Sessions = {
+    load(getPref) {
+      try {
+        const raw = getPref(SESSIONS_PREF);
+        const data = JSON.parse(raw || "{}");
+        if (!data || !Array.isArray(data.list)) return { active: null, list: [] };
+        return { active: data.active || null, list: data.list.slice(0, SESSION_CAP) };
+      } catch (e) {
+        return { active: null, list: [] };
+      }
+    },
+    save(setPref, store) {
+      try {
+        setPref(SESSIONS_PREF, JSON.stringify({
+          active: store.active, list: store.list.slice(0, SESSION_CAP),
+        }));
+      } catch (e) { /* 超限时静默 */ }
+    },
+    newId() {
+      return "s" + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+    },
+    upsert(store, session) {
+      const i = store.list.findIndex((s) => s.id === session.id);
+      session.transcript = (session.transcript || []).slice(-TRANSCRIPT_CAP);
+      if (i >= 0) store.list[i] = session;
+      else store.list.unshift(session);
+      store.list = store.list.slice(0, SESSION_CAP);
+      store.active = session.id;
+      return store;
+    },
+    remove(store, id) {
+      store.list = store.list.filter((s) => s.id !== id);
+      if (store.active === id) store.active = store.list[0] ? store.list[0].id : null;
+      return store;
+    },
+    find(store, id) {
+      return store.list.find((s) => s.id === id) || null;
+    },
+  };
+
+  /** 模式 → system prompt 增补 */
+  function modeSystemSuffix(mode, zh) {
+    if (mode === "deep") {
+      return zh
+        ? "\n\n当前为深度研读模式：请基于论文全文做深入分析，回答要引用原文具体细节（数据、公式、论证），不确定处明确指出。"
+        : "\n\nDeep-reading mode: answer with specific details from the full text.";
+    }
+    if (mode === "free") {
+      return zh
+        ? "\n\n当前为全库对话模式：用户未指定具体文献，请作为通用学术研究助手回答。"
+        : "\n\nFree chat mode: no specific paper in context.";
+    }
+    return "";
+  }
+
+  /** Markdown → HTML（沿用 0.9.1 渲染器风格，表格/标题/列表/引用/分隔线） */
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function mdInline(s) {
+    return esc(s)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "<a href='$2'>$1</a>");
+  }
+  function mdToHtml(md) {
+    const lines = String(md || "").split(/\r?\n/);
+    let html = "";
+    let inUl = false, inOl = false, para = [], table = [];
+    const closeLists = () => {
+      if (inUl) { html += "</ul>"; inUl = false; }
+      if (inOl) { html += "</ol>"; inOl = false; }
+    };
+    const flushPara = () => {
+      if (para.length) { html += "<p>" + para.join("<br/>") + "</p>"; para = []; }
+    };
+    const flushTable = () => {
+      if (!table.length) return;
+      const rows = table.filter((l) => !/^\s*\|[\s:|-]+\|\s*$/.test(l));
+      if (rows.length) {
+        html += "<table>";
+        rows.forEach((l, idx) => {
+          const cells = l.trim().replace(/^\||\|$/g, "").split("|");
+          const tag = idx === 0 ? "th" : "td";
+          html += "<tr>" + cells.map((c) => `<${tag}>${mdInline(c.trim())}</${tag}>`).join("") + "</tr>";
+        });
+        html += "</table>";
+      }
+      table = [];
+    };
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, "");
+      if (/^\s*\|.+\|\s*$/.test(line)) { flushPara(); closeLists(); table.push(line); continue; }
+      flushTable();
+      const h = line.match(/^\s*#{1,4}\s+(.+)$/);
+      const ul = line.match(/^\s*[-*•]\s+(.+)$/);
+      const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (h) {
+        flushPara(); closeLists();
+        html += `<p><strong>${mdInline(h[1])}</strong></p>`;
+      } else if (ul) {
+        flushPara();
+        if (inOl) { html += "</ol>"; inOl = false; }
+        if (!inUl) { html += "<ul>"; inUl = true; }
+        html += "<li>" + mdInline(ul[1]) + "</li>";
+      } else if (ol) {
+        flushPara();
+        if (inUl) { html += "</ul>"; inUl = false; }
+        if (!inOl) { html += "<ol>"; inOl = true; }
+        html += "<li>" + mdInline(ol[1]) + "</li>";
+      } else if (!line.trim()) {
+        flushPara(); closeLists();
+      } else if (/^\s*>/.test(line)) {
+        flushPara(); closeLists();
+        html += "<blockquote>" + mdInline(line.replace(/^\s*>\s?/, "")) + "</blockquote>";
+      } else if (/^\s*---+\s*$/.test(line)) {
+        flushPara(); closeLists();
+        html += "<hr/>";
+      } else if (/^\s*```/.test(line)) {
+        flushPara(); closeLists();
+      } else {
+        closeLists();
+        para.push(mdInline(line));
+      }
+    }
+    flushTable();
+    flushPara(); closeLists();
+    return html;
+  }
+
+  if (typeof window !== "undefined") {
+    window.PPWorkbench = { Sessions, modeSystemSuffix, mdToHtml, SESSION_CAP, TRANSCRIPT_CAP };
+  }
+
+  /* ================= 窗口装配 ================= */
 
   function boot() {
     let Services, opener, Zotero, PP, zh;
     try {
-      // ⚠️ 窗口作用域里 ChromeUtils.importESModule("…/Services.sys.mjs") 会失败，
-      // window.Services 也未必有——Services/Zotero 都经 window.arguments 传入
-      // （openWorkbench 传的 {Zotero, Services}）
       const args = window.arguments && window.arguments[0];
       Services = (args && args.Services) || window.Services;
       Zotero = (args && args.Zotero) || (window.opener && window.opener.Zotero);
       opener = window.opener;
-      if (!Services || !Zotero || !Zotero.PaperPilot) {
-        showError("无法获取依赖（Services=" + typeof Services + ", Zotero=" + typeof Zotero + "）");
-        return;
-      }
+      if (!Services || !Zotero || !Zotero.PaperPilot) { showError("无法获取依赖"); return; }
       PP = Zotero.PaperPilot;
       zh = (Zotero.locale || "").toLowerCase().startsWith("zh");
     } catch (e) {
       showError("初始化异常：" + (e && (e.message || e)));
       return;
     }
-
     try {
       _run(Services, opener, Zotero, PP, zh);
     } catch (e) {
-      // 初始化失败：错误写进对话区 + Zotero 日志，不再无声死掉
-      try { Zotero.logError(new Error("PaperPilot workbench init FAILED: " + (e && (e.stack || e.message) || e))); } catch (_) {}
+      try { Zotero.logError(e); } catch (_) { /* ignore */ }
       showError("工作台初始化失败：" + (e && (e.message || e) || e));
     }
   }
@@ -51,139 +181,202 @@
       d.textContent = text;
       const box = document.getElementById("pp-wb-msgs");
       if (box) box.appendChild(d);
-    } catch (_) {}
+    } catch (_) { /* ignore */ }
   }
 
   function _run(Services, opener, Zotero, PP, zh) {
     /* ---------- 状态 ---------- */
     let currentItem = null;
-    let history = [];       // {role, content}，最多 12 条滚动窗口
-    let transcript = [];    // 完整对话记录（存笔记用）
+    let history = [];
+    let transcript = [];
     let busy = false;
     let followTimer = null;
-    let contextItem = null; // 已注入对话上下文的条目（切条目后重注）
+    let contextItem = null;
+    let mode = "paper"; // paper | deep | free
+    let currentHandle = null; // 流式句柄（停止用）
+    let session = null;       // 当前会话 {id,itemID,title,ts,transcript,history}
+    let sessionStore = null;
 
     const $ = (id) => document.getElementById(id);
     const msgs = $("pp-wb-msgs");
     const status = $("pp-wb-status");
+    const setStatus = (t, color) => { status.textContent = t || ""; status.style.color = color || ""; };
+    const getPref = (k, fb) => {
+      try {
+        const v = Zotero.Prefs.get(k, true);
+        return v === undefined || v === null ? fb : v;
+      } catch (e) { return fb; }
+    };
+    const setPref = (k, v) => { try { Zotero.Prefs.set(k, v, true); } catch (e) { /* ignore */ } };
 
-    function setStatus(t) { status.textContent = t || ""; }
-
-    /* ---------- 轻量 Markdown → HTML（AI 气泡渲染用，0.9.1） ---------- */
-
-    function esc(s) {
-      return String(s == null ? "" : s)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    function h(tag, cls, text) {
+      const el = document.createElementNS(XHTML, tag);
+      if (cls) el.className = cls;
+      if (text != null) el.textContent = text;
+      return el;
     }
 
-    function mdInline(s) {
-      return esc(s)
-        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-        .replace(/`([^`\n]+)`/g, "<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:12px;'>$1</code>")
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-          "<a href='$2' style='color:#2563eb;'>$1</a>");
-    }
-
-    /** md 块级渲染：标题/列表/表格/引用/分隔线/段落（AI 回复够用） */
-    function mdToHtml(md) {
-      const lines = String(md || "").split(/\r?\n/);
-      let html = "";
-      let inUl = false, inOl = false, para = [], table = [];
-      const closeLists = () => {
-        if (inUl) { html += "</ul>"; inUl = false; }
-        if (inOl) { html += "</ol>"; inOl = false; }
-      };
-      const flushPara = () => {
-        if (para.length) { html += "<p style='margin:4px 0;'>" + para.join("<br/>") + "</p>"; para = []; }
-      };
-      const flushTable = () => {
-        if (!table.length) return;
-        const rows = table.filter((l) => !/^\s*\|[\s:|-]+\|\s*$/.test(l));
-        if (rows.length) {
-          html += "<div style='overflow-x:auto;margin:6px 0;'>";
-          html += "<table style='border-collapse:collapse;font-size:12px;'>";
-          rows.forEach((l, idx) => {
-            const cells = l.trim().replace(/^\||\|$/g, "").split("|");
-            const tag = idx === 0 ? "th" : "td";
-            html += "<tr>" + cells.map((c) =>
-              `<${tag} style='border:1px solid #ddd;padding:4px 8px;text-align:left;${idx === 0 ? "background:#f5f5f5;" : ""}'>${mdInline(c.trim())}</${tag}>`).join("") + "</tr>";
-          });
-          html += "</table></div>";
-        }
-        table = [];
-      };
-      for (const raw of lines) {
-        const line = raw.replace(/\s+$/, "");
-        if (/^\s*\|.+\|\s*$/.test(line)) { flushPara(); closeLists(); table.push(line); continue; }
-        flushTable();
-        const h = line.match(/^\s*#{1,4}\s+(.+)$/);
-        const ul = line.match(/^\s*[-*•]\s+(.+)$/);
-        const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
-        if (h) {
-          flushPara(); closeLists();
-          const sizes = ["15px", "14px", "13.5px", "13px"];
-          const lv = Math.min(h[0].trim().split(/\s+/)[0].length, 4);
-          html += `<div style='font-weight:700;font-size:${sizes[lv - 1]};margin:8px 0 4px;'>${mdInline(h[1])}</div>`;
-        } else if (ul) {
-          flushPara();
-          if (inOl) { html += "</ol>"; inOl = false; }
-          if (!inUl) { html += "<ul style='margin:4px 0;padding-left:20px;'>"; inUl = true; }
-          html += "<li style='margin:2px 0;'>" + mdInline(ul[1]) + "</li>";
-        } else if (ol) {
-          flushPara();
-          if (inUl) { html += "</ul>"; inUl = false; }
-          if (!inOl) { html += "<ol style='margin:4px 0;padding-left:22px;'>"; inOl = true; }
-          html += "<li style='margin:2px 0;'>" + mdInline(ol[1]) + "</li>";
-        } else if (!line.trim()) {
-          flushPara(); closeLists();
-        } else if (/^\s*>/.test(line)) {
-          flushPara(); closeLists();
-          html += "<blockquote style='border-left:3px solid #bbb;margin:4px 0;padding:2px 10px;color:#555;'>" + mdInline(line.replace(/^\s*>\s?/, "")) + "</blockquote>";
-        } else if (/^\s*---+\s*$/.test(line)) {
-          flushPara(); closeLists();
-          html += "<hr style='border:none;border-top:1px solid #ddd;margin:8px 0;'/>";
-        } else {
-          closeLists();
-          para.push(mdInline(line));
-        }
+    /* ---------- 主题 ---------- */
+    function applyTheme() {
+      let t = getPref(THEME_PREF, "auto");
+      if (t === "auto") {
+        try {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) { t = "light"; }
       }
-      flushTable();
-      flushPara(); closeLists();
-      return html;
+      document.documentElement.setAttribute("data-theme", t);
+      $("pp-wb-theme").textContent = t === "dark" ? "☀" : "🌙";
+      return t;
+    }
+    $("pp-wb-theme").addEventListener("click", () => {
+      const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      setPref(THEME_PREF, cur);
+      applyTheme();
+    });
+    applyTheme();
+
+    /* ---------- 模型与配置快照 ---------- */
+    function refreshModel() {
+      $("pp-wb-model").textContent = getPref("extensions.zotero.paperpilot.aiModel", "") || "";
+    }
+    function fillProfiles() {
+      const sel = $("pp-wb-profile");
+      sel.textContent = "";
+      const opt0 = h("option", "", zh ? "当前配置" : "Current");
+      opt0.value = "";
+      sel.appendChild(opt0);
+      let profiles = [];
+      try { profiles = PP.providers.getProfiles(); } catch (e) { /* ignore */ }
+      for (const p of profiles) {
+        const o = h("option", "", p.name);
+        o.value = p.name;
+        sel.appendChild(o);
+      }
+    }
+    $("pp-wb-profile").addEventListener("change", (ev) => {
+      const name = ev.target.value;
+      if (!name) return;
+      try {
+        if (PP.providers.applyProfile(name)) {
+          setStatus((zh ? "✓ 已切换配置：" : "✓ Profile: ") + name);
+          refreshModel();
+        }
+      } catch (e) { setStatus((zh ? "切换失败：" : "Failed: ") + (e.message || e), "var(--pp-danger)"); }
+      ev.target.value = "";
+    });
+    fillProfiles();
+    refreshModel();
+
+    /* ---------- 会话管理 ---------- */
+    sessionStore = Sessions.load(getPref);
+
+    function currentSessionSnapshot() {
+      return {
+        id: session ? session.id : Sessions.newId(),
+        itemID: currentItem ? currentItem.id : null,
+        title: sessionTitle(),
+        ts: Date.now(),
+        transcript: transcript.slice(),
+        history: history.slice(),
+      };
+    }
+    function sessionTitle() {
+      if (session && session.title && transcript.length) return session.title;
+      const firstUser = transcript.find((t) => t.role === "user");
+      if (firstUser) return firstUser.text.replace(/\s+/g, " ").slice(0, 24);
+      if (currentItem) {
+        try { return (currentItem.getDisplayTitle() || "").slice(0, 24); } catch (e) { /* ignore */ }
+      }
+      return zh ? "新会话" : "New session";
+    }
+    function persistSession() {
+      if (!transcript.length) return;
+      session = currentSessionSnapshot();
+      Sessions.upsert(sessionStore, session);
+      Sessions.save(setPref, sessionStore);
+    }
+    function loadSession(s) {
+      session = s;
+      transcript = (s.transcript || []).slice();
+      history = (s.history || []).slice();
+      contextItem = currentItem; // 上下文已在历史里，不重复注入
+      msgs.textContent = "";
+      for (const t of transcript) {
+        if (t.role === "user") addBubble("user", t.text, true);
+        else if (t.role === "ai") addAiBubble(t.text, true);
+        else addNotice(t.text);
+      }
+    }
+    function newSession() {
+      persistSession();
+      session = null;
+      history = [];
+      transcript = [];
+      contextItem = null;
+      msgs.textContent = "";
+      addNotice(zh ? "—— 新会话 ——" : "—— new session ——");
     }
 
-    /** 气泡：AI 消息（isMd）渲染 Markdown；用户消息纯文本。
-     *  noRecord=true 用于“思考中”占位——不进 transcript。 */
-    function addBubble(role, text, isMd, noRecord) {
-      const wrap = document.createElementNS(XHTML, "div");
-      wrap.style.cssText = role === "user"
-        ? "display:flex;justify-content:flex-end;margin:6px 0;"
-        : "display:flex;justify-content:flex-start;margin:6px 0;";
-      const b = document.createElementNS(XHTML, "div");
-      b.style.cssText = role === "user"
-        ? "max-width:78%;background:#2563eb;color:#fff;padding:8px 12px;border-radius:10px 10px 2px 10px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;"
-        : "max-width:88%;background:#fff;border:1px solid #ddd;padding:8px 12px;border-radius:10px 10px 10px 2px;font-size:13px;line-height:1.6;word-break:break-word;";
-      if (isMd) b.innerHTML = mdToHtml(text);
-      else b.textContent = text;
+    /* ---------- 气泡 ---------- */
+    function addBubble(role, text, noRecord) {
+      const wrap = h("div", "pp-wb-msg-row " + (role === "user" ? "user" : "ai"));
+      const b = h("div", "pp-wb-bubble");
+      b.textContent = text;
       wrap.appendChild(b);
       msgs.appendChild(wrap);
       msgs.scrollTop = msgs.scrollHeight;
-      // transcript 存 md 原文（存笔记走 MdLite 渲染）；占位不记录
       if (!noRecord) transcript.push({ role, text });
       return b;
     }
-
-    function addNotice(text) {
-      const d = document.createElementNS(XHTML, "div");
-      d.style.cssText = "text-align:center;color:#999;font-size:12px;margin:4px 0;";
-      d.textContent = text;
-      msgs.appendChild(d);
+    /** AI 气泡：富文本 + hover 操作（复制/重答/存笔记） */
+    function addAiBubble(md, noRecord, opts = {}) {
+      const wrap = h("div", "pp-wb-msg-row ai");
+      const b = h("div", "pp-wb-bubble");
+      b.innerHTML = mdToHtml(md);
+      if (!opts.noActions) {
+        const acts = h("div", "pp-wb-msg-actions");
+        const mk = (label, fn) => {
+          const btn = h("button", "pp-wb-act-btn", label);
+          btn.addEventListener("click", fn);
+          acts.appendChild(btn);
+          return btn;
+        };
+        const copyBtn = mk(zh ? "复制" : "Copy", () => {
+          try {
+            Zotero.Utilities.Internal.copyText(md);
+            copyBtn.textContent = zh ? "✓ 已复制" : "✓";
+            setTimeout(() => { copyBtn.textContent = zh ? "复制" : "Copy"; }, 1200);
+          } catch (e) { /* ignore */ }
+        });
+        mk(zh ? "重答" : "Retry", () => regenerate());
+        mk(zh ? "存笔记" : "Save", async () => {
+          try {
+            if (currentItem) {
+              await PP.notes.createFromMarkdown(currentItem,
+                (zh ? "工作台摘录｜" : "Excerpt | ") + new Date().toISOString().slice(0, 10), md);
+              setStatus(zh ? "✓ 已存为笔记" : "✓ Saved");
+            } else {
+              setStatus(zh ? "无当前条目，请用底部「存为笔记」存全量" : "No item selected", "var(--pp-danger)");
+            }
+          } catch (e) { setStatus((zh ? "保存失败：" : "Failed: ") + (e.message || e), "var(--pp-danger)"); }
+        });
+        b.appendChild(acts);
+      }
+      wrap.appendChild(b);
+      msgs.appendChild(wrap);
+      msgs.scrollTop = msgs.scrollHeight;
+      if (!noRecord) transcript.push({ role: "ai", text: md });
+      return b;
+    }
+    function addNotice(text, isErr) {
+      const wrap = h("div", "pp-wb-msg-row sys");
+      const b = h("div", "pp-wb-bubble" + (isErr ? " err" : ""), text);
+      wrap.appendChild(b);
+      msgs.appendChild(wrap);
       msgs.scrollTop = msgs.scrollHeight;
     }
 
     /* ---------- 条目上下文 ---------- */
-
     function itemMetaLine(item) {
       try {
         const get = (f) => { try { return item.getField(f) || ""; } catch (e) { return ""; } };
@@ -196,7 +389,6 @@
         return bits.join(" · ");
       } catch (e) { return ""; }
     }
-
     function setItem(item) {
       const changed = !item || !currentItem || item.id !== currentItem.id;
       currentItem = item;
@@ -213,8 +405,6 @@
         addNotice(zh ? "—— 条目已切换，后续提问针对新条目 ——" : "—— item switched ——");
       }
     }
-
-    /** 主窗口选中 → 常规条目（附件上溯父条目） */
     function followSelection() {
       if (busy || !$("pp-wb-follow").checked) return;
       try {
@@ -236,10 +426,8 @@
           || (it && currentItem && it.id !== currentItem.id)) {
           setItem(it);
         }
-      } catch (e) { /* 主窗口切换瞬间可能拿不到 pane，忽略 */ }
+      } catch (e) { /* ignore */ }
     }
-
-    /** 手动选条目：关键词 → 标题检索 → 单选/列表选 */
     async function pickItem() {
       const input = { value: "" };
       if (!Services.prompt.prompt(window, "PaperPilot",
@@ -256,10 +444,7 @@
           Services.prompt.alert(window, "PaperPilot", zh ? "没有匹配的条目" : "No matching items");
           return;
         }
-        if (ids.length === 1) {
-          setItem(await Zotero.Items.getAsync(ids[0]));
-          return;
-        }
+        if (ids.length === 1) { setItem(await Zotero.Items.getAsync(ids[0])); return; }
         const items = [];
         for (const id of ids.slice(0, 10)) items.push(await Zotero.Items.getAsync(id));
         const titles = items.map((i) => {
@@ -278,7 +463,26 @@
       }
     }
 
-    /* ---------- AI 对话 ---------- */
+    /* ---------- 模式 ---------- */
+    function setMode(m) {
+      if (m === mode) return;
+      mode = m;
+      // 切换模式后上下文失效：下次提问按新模式重新注入（深度=全文，本文=摘要优先）
+      contextItem = null;
+      history = [];
+      if (transcript.length) {
+        addNotice(zh ? "—— 模式已切换，对话上下文将重建 ——" : "—— mode switched ——");
+      }
+      document.querySelectorAll(".pp-wb-mode").forEach((b) => {
+        b.className = "pp-wb-mode" + (b.getAttribute("data-mode") === m ? " active" : "");
+      });
+      setStatus(m === "deep" ? (zh ? "深度研读：基于全文深度分析" : "Deep reading")
+        : m === "free" ? (zh ? "全库对话：不绑定具体文献" : "Free chat")
+        : "");
+    }
+    document.querySelectorAll(".pp-wb-mode").forEach((b) => {
+      b.addEventListener("click", () => setMode(b.getAttribute("data-mode")));
+    });
 
     async function buildContext(item) {
       const get = (f) => { try { return item.getField(f) || ""; } catch (e) { return ""; } };
@@ -287,65 +491,129 @@
         `期刊：${get("publicationTitle")}  年份：${String(get("date")).slice(0, 4)}`;
       let body = "";
       try {
-        body = get("abstractNote") || (await PP.aiChat.getFullText(item)) || "";
+        if (mode === "deep") {
+          body = (await PP.aiChat.getFullText(item)) || get("abstractNote") || "";
+        } else {
+          body = get("abstractNote") || (await PP.aiChat.getFullText(item)) || "";
+        }
       } catch (e) { /* ignore */ }
       if (body) ctx += `\n【正文材料】\n${body.slice(0, 16000)}`;
       return ctx;
+    }
+
+    async function buildMessages(question) {
+      const messages = [];
+      let sys = getPref("extensions.zotero.paperpilot.aiSystemPrompt", "") || "";
+      sys += modeSystemSuffix(mode, zh);
+      if (sys.trim()) messages.push({ role: "system", content: sys });
+      if (mode !== "free" && currentItem && contextItem !== currentItem) {
+        contextItem = currentItem;
+        history = [];
+        const ctx = await buildContext(currentItem);
+        messages.push({ role: "user", content: zh
+          ? "以下是背景材料，之后的提问都围绕它：\n\n" + ctx
+          : "Background material for the following questions:\n\n" + ctx });
+        messages.push({ role: "assistant", content: zh ? "好的，已了解该文献。" : "Got it." });
+      }
+      for (const m of history) messages.push({ role: m.role, content: m.content });
+      messages.push({ role: "user", content: question });
+      return messages;
+    }
+
+    /* ---------- 发送（流式 + 停止） ---------- */
+    function setBusy(b) {
+      busy = b;
+      $("pp-wb-send").hidden = b;
+      $("pp-wb-stop").hidden = !b;
+      document.querySelectorAll(".pp-wb-chip").forEach((c) => { c.disabled = b; });
+    }
+
+    async function runChat(question) {
+      setBusy(true);
+      const bubbleWrap = h("div", "pp-wb-msg-row ai");
+      const bubble = h("div", "pp-wb-bubble");
+      bubble.textContent = zh ? "思考中…" : "Thinking…";
+      bubbleWrap.appendChild(bubble);
+      msgs.appendChild(bubbleWrap);
+      setStatus(zh ? "AI 生成中…（Esc 停止）" : "Generating…");
+      let acc = "";
+      try {
+        const messages = await buildMessages(question);
+        const onDelta = (chunk) => {
+          if (!acc) bubble.textContent = "";
+          acc += chunk;
+          bubble.textContent = acc + "▌";
+          msgs.scrollTop = msgs.scrollHeight;
+        };
+        let reply;
+        if (PP.aiClient.chatStream) {
+          currentHandle = PP.aiClient.chatStream(messages, onDelta);
+          reply = await currentHandle.promise;
+        } else {
+          reply = await PP.aiClient.chat(messages);
+        }
+        bubbleWrap.remove();
+        addAiBubble(reply);
+        history.push({ role: "user", content: question }, { role: "assistant", content: reply });
+        if (history.length > 12) history = history.slice(-12);
+        persistSession();
+        setStatus("");
+      } catch (e) {
+        bubbleWrap.remove();
+        if (e && e.message === "ABORTED" && acc) {
+          addNotice(zh ? "—— 已停止，保留已生成内容 ——" : "—— stopped ——");
+          addAiBubble(acc + (zh ? "\n\n（已中断）" : "\n\n(interrupted)"));
+          history.push({ role: "user", content: question }, { role: "assistant", content: acc });
+          persistSession();
+        } else if (e && e.message === "ABORTED") {
+          addNotice(zh ? "—— 已停止 ——" : "—— stopped ——");
+        } else {
+          addNotice((zh ? "出错：" : "Error: ") + (e && e.message || e), true);
+        }
+        setStatus(zh ? "已停止" : "Stopped");
+      } finally {
+        currentHandle = null;
+        setBusy(false);
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+    }
+
+    async function regenerate() {
+      if (busy) return;
+      const lastAiIdx = transcript.map((t) => t.role).lastIndexOf("ai");
+      if (lastAiIdx < 1) return;
+      const lastUser = transcript[lastAiIdx - 1];
+      if (!lastUser || lastUser.role !== "user") return;
+      transcript.splice(lastAiIdx - 1, 2);
+      history.splice(-2, 2);
+      msgs.textContent = "";
+      for (const t of transcript) {
+        if (t.role === "user") addBubble("user", t.text, true);
+        else if (t.role === "ai") addAiBubble(t.text, true);
+      }
+      addBubble("user", lastUser.text);
+      await runChat(lastUser.text);
     }
 
     async function send() {
       if (busy) return;
       const text = $("pp-wb-input").value.trim();
       if (!text) return;
+      if (!PP.aiClient.hasKey()) {
+        addNotice(zh ? "请先在设置中填写 API Key" : "Set API key first", true);
+        return;
+      }
       $("pp-wb-input").value = "";
       addBubble("user", text);
       await runChat(text);
     }
 
-    async function runChat(question) {
-      busy = true;
-      $("pp-wb-send").disabled = true;
-      document.querySelectorAll(".pp-wb-act").forEach((b) => { b.disabled = true; });
-      const bubble = addBubble("ai", zh ? "AI 思考中…" : "AI is thinking…", false, true);
-      setStatus(zh ? "AI 思考中…" : "Thinking…");
-      try {
-        const messages = [];
-        const sys = Zotero.Prefs.get("extensions.zotero.paperpilot.aiSystemPrompt", true) || "";
-        if (sys) messages.push({ role: "system", content: sys });
-        // 条目上下文：切换条目或首轮注入
-        if (currentItem && contextItem !== currentItem) {
-          contextItem = currentItem;
-          history = []; // 换条目，旧对话不再延续
-          const ctx = await buildContext(currentItem);
-          messages.push({ role: "user", content: zh
-            ? "以下是背景材料，之后的提问都围绕它：\n\n" + ctx
-            : "Background material for the following questions:\n\n" + ctx });
-          messages.push({ role: "assistant", content: zh ? "好的，已了解该文献。" : "Got it." });
-        }
-        for (const m of history) messages.push({ role: m.role, content: m.content });
-        messages.push({ role: "user", content: question });
-        const reply = await PP.aiClient.chat(messages);
-        bubble.innerHTML = mdToHtml(reply);
-        transcript.push({ role: "ai", text: reply });
-        history.push({ role: "user", content: question }, { role: "assistant", content: reply });
-        if (history.length > 12) history = history.slice(-12);
-        setStatus("");
-      } catch (e) {
-        bubble.textContent = (zh ? "出错：" : "Error: ") + (e && e.message || e);
-        setStatus(zh ? "请求失败" : "Failed");
-      } finally {
-        busy = false;
-        $("pp-wb-send").disabled = false;
-        document.querySelectorAll(".pp-wb-act").forEach((b) => { b.disabled = false; });
-        msgs.scrollTop = msgs.scrollHeight;
-      }
-    }
-
+    /* ---------- 快捷动作 ---------- */
     async function quickAction(act) {
       if (busy) return;
       if (!currentItem) {
         Services.prompt.alert(window, "PaperPilot",
-          zh ? "请先选择条目（跟随主窗口选中，或点「选择条目…」）" : "Select an item first");
+          zh ? "请先选择条目" : "Select an item first");
         return;
       }
       const labels = {
@@ -354,11 +622,11 @@
         interpret: zh ? "【快捷】深度解读" : "[Quick] Interpret",
       };
       addBubble("user", labels[act] || act);
-      busy = true;
-      $("pp-wb-send").disabled = true;
-      document.querySelectorAll(".pp-wb-act").forEach((b) => { b.disabled = true; });
-      const bubble = addBubble("ai", zh ? "AI 思考中…" : "AI is thinking…", false, true);
-      setStatus(zh ? "AI 思考中…" : "Thinking…");
+      setBusy(true);
+      const wrap = h("div", "pp-wb-msg-row ai");
+      const bubble = h("div", "pp-wb-bubble", zh ? "AI 生成中…" : "Generating…");
+      wrap.appendChild(bubble);
+      msgs.appendChild(wrap);
       try {
         const fns = {
           summary: () => PP.aiChat.summarize(currentItem),
@@ -366,22 +634,91 @@
           interpret: () => PP.aiChat.interpret(currentItem),
         };
         const reply = await (fns[act] || fns.summary)();
-        bubble.innerHTML = mdToHtml(reply);
-        transcript.push({ role: "ai", text: reply });
-        setStatus("");
+        wrap.remove();
+        addAiBubble(reply);
+        persistSession();
       } catch (e) {
-        bubble.textContent = (zh ? "出错：" : "Error: ") + (e && e.message || e);
-        setStatus(zh ? "请求失败" : "Failed");
+        wrap.remove();
+        addNotice((zh ? "出错：" : "Error: ") + (e && e.message || e), true);
       } finally {
-        busy = false;
-        $("pp-wb-send").disabled = false;
-        document.querySelectorAll(".pp-wb-act").forEach((b) => { b.disabled = false; });
-        msgs.scrollTop = msgs.scrollHeight;
+        setBusy(false);
       }
     }
+    document.querySelectorAll(".pp-wb-act").forEach((b) =>
+      b.addEventListener("click", () => quickAction(b.getAttribute("data-act"))));
+    $("pp-wb-chip-bilingual").addEventListener("click", () => {
+      try { PP.bilingual.runForSelected(); } catch (e) { /* ignore */ }
+    });
+    $("pp-wb-chip-mindmap").addEventListener("click", () => {
+      try { PP.mindmap.runForSelected(); } catch (e) { /* ignore */ }
+    });
 
-    /* ---------- 存为笔记 / 清空 ---------- */
+    /* ---------- 弹出列表（通用） ---------- */
+    let openPop = null;
+    function closePop() { if (openPop) { openPop.remove(); openPop = null; } }
+    function showPop(anchor, entries) {
+      closePop();
+      const pop = h("div", "pp-wb-pop");
+      for (const e of entries) {
+        if (e.sep) { pop.appendChild(h("div", "pp-wb-pop-sep")); continue; }
+        const item = h("div", "pp-wb-pop-item" + (e.active ? " active" : ""), e.label);
+        item.addEventListener("click", () => { closePop(); e.run(); });
+        if (e.trash) {
+          const tr = h("span", "pp-wb-trash", "🗑");
+          tr.addEventListener("click", (ev2) => { ev2.stopPropagation(); e.trash(); closePop(); });
+          item.appendChild(tr);
+        }
+        pop.appendChild(item);
+      }
+      anchor.parentNode.appendChild(pop);
+      openPop = pop;
+    }
+    document.addEventListener("click", (ev) => {
+      if (openPop && !openPop.contains(ev.target)) closePop();
+    });
 
+    /* ---------- Prompt 技能库 ---------- */
+    $("pp-wb-chip-prompts").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      let prompts = [];
+      try { prompts = PP.prompts.all(); } catch (e) { /* ignore */ }
+      showPop(ev.target, prompts.map((p) => ({
+        label: p.name,
+        run: () => {
+          if (!currentItem && mode !== "free") {
+            setStatus(zh ? "Prompt 需要当前条目（或切到全库对话）" : "Select an item first", "var(--pp-danger)");
+            return;
+          }
+          $("pp-wb-input").value = p.text;
+          send();
+        },
+      })));
+    });
+
+    /* ---------- 会话弹窗 ---------- */
+    $("pp-wb-sessions").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      persistSession();
+      const entries = [{
+        label: zh ? "＋ 新建会话" : "+ New session",
+        run: () => newSession(),
+      }, { sep: true }];
+      for (const s of sessionStore.list) {
+        entries.push({
+          label: (s.title || (zh ? "会话" : "Session")) + " · " + new Date(s.ts).toLocaleDateString(),
+          active: s.id === (session && session.id),
+          run: () => loadSession(Sessions.find(sessionStore, s.id) || s),
+          trash: () => {
+            Sessions.remove(sessionStore, s.id);
+            Sessions.save(setPref, sessionStore);
+            if (session && session.id === s.id) newSession();
+          },
+        });
+      }
+      showPop(ev.target, entries);
+    });
+
+    /* ---------- 存笔记 / 导出 / 清空 ---------- */
     async function saveNote() {
       if (!transcript.some((t) => t.role === "ai")) {
         Services.prompt.alert(window, "PaperPilot", zh ? "还没有可保存的对话" : "Nothing to save yet");
@@ -389,7 +726,7 @@
       }
       try {
         const md = transcript.map((t) =>
-          (t.role === "user" ? "**🧑 问：**\n" : "**🤖 答：**\n") + t.text).join("\n\n---\n\n");
+          (t.role === "user" ? "**问：**\n" : t.role === "ai" ? "**答：**\n" : "") + (t.text || "")).join("\n\n---\n\n");
         const date = new Date().toISOString().slice(0, 10);
         if (currentItem) {
           await PP.notes.createFromMarkdown(currentItem,
@@ -405,40 +742,77 @@
         Services.prompt.alert(window, "PaperPilot", String(e && e.message || e));
       }
     }
-
+    function exportMd() {
+      if (!transcript.length) {
+        setStatus(zh ? "没有可导出的对话" : "Nothing to export", "var(--pp-danger)");
+        return;
+      }
+      try {
+        const md = transcript.map((t) =>
+          (t.role === "user" ? "## 问\n\n" : t.role === "ai" ? "## 答\n\n" : "") + (t.text || "")).join("\n\n");
+        const nsIFilePicker = Components.interfaces.nsIFilePicker;
+        const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+        fp.init(window, zh ? "导出对话" : "Export chat", nsIFilePicker.modeSave);
+        fp.defaultString = "paperpilot-chat-" + new Date().toISOString().slice(0, 10) + ".md";
+        fp.appendFilter("Markdown", "*.md");
+        fp.open((rv) => {
+          if (rv !== nsIFilePicker.returnOK && rv !== nsIFilePicker.returnReplace) return;
+          Zotero.File.putContentsAsync(fp.file.path, md)
+            .then(() => setStatus(zh ? "✓ 已导出" : "✓ Exported"))
+            .catch((e) => setStatus((zh ? "导出失败：" : "Failed: ") + (e.message || e), "var(--pp-danger)"));
+        });
+      } catch (e) { /* ignore */ }
+    }
     function clearChat() {
       history = [];
       transcript = [];
       contextItem = null;
-      msgs.innerHTML = "";
+      session = null;
+      msgs.textContent = "";
       setStatus("");
     }
+    $("pp-wb-save").addEventListener("click", saveNote);
+    $("pp-wb-export").addEventListener("click", exportMd);
+    $("pp-wb-clear").addEventListener("click", clearChat);
+    $("pp-wb-pick").addEventListener("click", () => pickItem());
 
-    /* ---------- 装配 ---------- */
-
+    /* ---------- 输入与快捷键 ---------- */
     $("pp-wb-send").addEventListener("click", send);
+    $("pp-wb-stop").addEventListener("click", () => {
+      if (currentHandle) { try { currentHandle.abort(); } catch (e) { /* ignore */ } }
+    });
     $("pp-wb-input").addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey) && !ev.isComposing) {
         ev.preventDefault();
         send();
       }
     });
-    $("pp-wb-pick").addEventListener("click", () => pickItem());
-    $("pp-wb-save").addEventListener("click", () => saveNote());
-    $("pp-wb-clear").addEventListener("click", clearChat);
-    document.querySelectorAll(".pp-wb-act").forEach((b) =>
-      b.addEventListener("click", () => quickAction(b.dataset.act)));
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && busy && currentHandle) {
+        try { currentHandle.abort(); } catch (e) { /* ignore */ }
+      }
+      if (ev.key === "n" && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        newSession();
+      }
+    });
 
-    // 跟随轮询 + 生命周期清理
+    /* ---------- 启动 ---------- */
     followTimer = setInterval(followSelection, 1500);
     followSelection();
-    addNotice(zh ? "PaperPilot 工作台 · 独立窗口，跟随主窗口选中条目" : "PaperPilot Workbench");
+    if (sessionStore.active) {
+      const s = Sessions.find(sessionStore, sessionStore.active);
+      if (s && (s.transcript || []).length) {
+        loadSession(s);
+      }
+    }
+    if (!transcript.length) {
+      addNotice(zh ? "PaperPilot 工作台 · 流式对话 / 多会话 / Prompt 技能库" : "PaperPilot Workbench");
+    }
 
-    // 主窗口关闭 → 本窗口关闭（unload 在窗口销毁与应用退出时都会触发）
-    try {
-      opener.addEventListener("unload", () => window.close(), { once: true });
-    } catch (e) { /* ignore */ }
+    try { opener.addEventListener("unload", () => window.close(), { once: true }); } catch (e) { /* ignore */ }
     window.addEventListener("unload", () => {
+      persistSession();
       if (followTimer) { clearInterval(followTimer); followTimer = null; }
     });
   }

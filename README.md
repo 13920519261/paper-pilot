@@ -1,0 +1,81 @@
+# PaperPilot 文献副驾
+
+国产大模型驱动的 Zotero 7-10 插件：划词翻译 / 精读问答（流式）、工作台 2.0、功能中心、全文对照翻译、AI 综述 / 思维导图 / Anki 制卡、中文元数据、阅读状态、期刊分区与被引量列、库健康维护……一个插件覆盖文献工作流。
+
+> 当前版本：**0.13.0** ｜ 兼容 Zotero 7 / 8 / 9 / 10
+
+## 功能总览（34 项，分 6 类）
+
+| 类别 | 功能 |
+|---|---|
+| 📖 阅读助手 | 工作台 2.0（流式/多会话/三模式）、AI 问答侧栏、划词浮窗（翻译/解读/追问）、PDF 速览、AI 总结、翻译标题摘要、深度解读、全文对照翻译、AI 思维导图 |
+| 🗒 笔记与卡片 | 收集批注为笔记、AI 解读批注、按模板新建笔记（可自定义）、AI 制卡导出 Anki |
+| 📊 批量分析 | AI 文献矩阵、AI 文献综述（带引用编号）、引文追溯、参考文献一键入库、分类统计、文献统计图谱（HTML 报告） |
+| 🩺 库健康 | 中文文件名识别元数据（知网/万方）、元数据补全（S2）、元数据规范清洗、智能清理、真假文献识别（AI 幻觉检测）、粘贴文献核验、Unpaywall 补全文、附件重命名 |
+| 🏷 标签与状态 | AI 自动打标签、规则打标、阅读状态（未读/在读/已读，自动流转） |
+| ⚙ 数据列与配置 | 期刊分区列（easyScholar+离线兜底）、被引量列（Semantic Scholar）、AI 配置快照、功能中心统一入口 |
+
+## 安装
+
+1. 到 [Releases](../../releases) 下载最新 `paper-pilot-x.y.z.xpi`
+2. Zotero → 工具 → 插件 → 右上角齿轮 → **Install Plugin From File**，选择 xpi
+3. 重启 Zotero，打开 **编辑 → 设置 → PaperPilot** 填写 API Key
+
+## AI 配置
+
+支持一切 OpenAI 兼容接口（`/v1/chat/completions`）：
+
+- **国产大模型**：DeepSeek、通义、Kimi、智谱、SiliconFlow……设置里粘贴 Key 后点「自动探测服务商」即可识别并拉取模型列表
+- **本地网关 / 自建**：Base URL 指向本地服务即可（如 `http://127.0.0.1:18790/v1`）
+- 多套配置可存为**快照**一键切换；流式输出（SSE）自动探测，网关不透传时自动降级
+
+设置中不预置任何密钥——请填自己的 Key。
+
+## 更新通道
+
+插件内置 `update_url`，新版发布后 Zotero 会自动提示更新（无需手动重装）。
+更新清单：`paperpilot-update.json`（指向发布域名上的 xpi）。
+
+## 目录结构
+
+```
+paper-pilot/                 插件源码
+├── manifest.json            版本号在这里迭代
+├── bootstrap.js             插件引导
+├── prefs.js                 默认配置（无密钥）
+├── chrome/content/
+│   ├── workbench.xhtml/js   工作台 2.0（独立窗口）
+│   ├── hub.xhtml/js         功能中心（统一导航）
+│   ├── prefs.xhtml/js       设置面板
+│   └── scripts/
+│       ├── ai/              LLM 客户端（SSE 流式）/ 全文问答 / Prompt 库 / S2
+│       ├── features/        34 项功能模块
+│       ├── panels/          侧栏 section（AI 问答 / PDF 速览）
+│       └── columns/         期刊分区列 / 被引量列
+└── locale/                  中英文案
+paperpilot-update.json       Zotero 更新清单
+docs/                        设计文档（功能分类、实现方案）
+```
+
+## 版本迭代流程
+
+1. 改代码 → `manifest.json` 版本号 +1
+2. 打包：`python` 把 `paper-pilot/` 打成 `paper-pilot-<版本>.xpi`（zip，源码目录内容置于根）
+3. `paperpilot-update.json` 追加新版本条目
+4. 提交并打 tag：`git tag v<版本> && git push origin master --tags`
+5. GitHub/Gitee Releases 上传 xpi 附件
+
+## 开发与测试
+
+- 无构建依赖：纯 bootstrap 插件，改完重打包即装
+- 仓库不含测试脚本（本地 `.workbuddy/` 下有完整的 node vm 模拟测试套件与 RDP 实机验证脚本，未入库）
+- 真机调试：`zotero.exe --start-debugger-server 6000` 后经 Firefox RDP 协议注入探针
+
+## 隐私
+
+- 所有 AI 请求只发往你自己配置的服务商/本地网关，插件无任何遥测与回传
+- 「真假文献识别」「被引量」等只访问 Semantic Scholar / easyScholar / Unpaywall 公开 API
+
+## License
+
+MIT

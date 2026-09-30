@@ -1,0 +1,78 @@
+{
+  "addons": {
+    "paperpilot@dev.local": {
+      "updates": [
+        {
+          "version": "0.9.0",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.9.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.9.1",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.9.1.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.9.2",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.9.2.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.10.0",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.10.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.11.0",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.11.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.12.0",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.12.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        },
+        {
+          "version": "0.13.0",
+          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.13.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "99.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

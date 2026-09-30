@@ -11,3 +11,11 @@ paperpilot-chat-section-sidenav = AI Chat
 paperpilot-note-section-header = PaperPilot
     .label = PaperPilot
     .tooltiptext = PaperPilot
+
+paperpilot-glance-section-header = PDF Glance
+    .label = PDF Glance
+    .tooltiptext = PDF Glance
+
+paperpilot-glance-section-sidenav = Glance
+    .label = Glance
+    .tooltiptext = Glance at the abstract and opening text without opening the PDF

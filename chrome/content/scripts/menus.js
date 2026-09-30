@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, AIProviders, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel */
+/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, AIProviders, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -32,6 +32,8 @@ var Menus = {
     // ---- 工具菜单 ----
     const toolsPopup = doc.getElementById("menu_ToolsPopup");
     if (toolsPopup) {
+      const t0 = this._menuItem(doc, toolsPopup, "paperpilot-menu-hub", "menuHub",
+        () => Zotero.PaperPilot.openHub());
       const t1 = this._menuItem(doc, toolsPopup, "paperpilot-menu-conn-test", "menuConnTest",
         () => this.testConnection());
       // AI 配置快照快速切换（popupshowing 时动态填充）
@@ -46,7 +48,7 @@ var Menus = {
         () => this.openSettings());
       const t3 = this._menuItem(doc, toolsPopup, "paperpilot-menu-workbench", "menuWorkbench",
         () => Zotero.PaperPilot.openWorkbench());
-      this._track(t1); this._track(pmenu); this._track(t2); this._track(t3);
+      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3);
     }
 
     // ---- 条目右键：PaperPilot 子菜单 ----
@@ -64,6 +66,9 @@ var Menus = {
       itemMenu.appendChild(menu);
       this._track(menu);
 
+      this._menuItem(doc, popup, "paperpilot-itemmenu-hub", "menuHub",
+        () => Zotero.PaperPilot.openHub());
+      popup.appendChild(this._xul(doc, "menuseparator"));
       this._menuItem(doc, popup, "paperpilot-itemmenu-ai-summary", "menuAiSummary",
         () => this.aiTaskForSelected((it) => AIChat.summarize(it), "noteSummaryTitle"));
       this._menuItem(doc, popup, "paperpilot-itemmenu-ai-translate", "menuAiTranslate",
@@ -98,14 +103,45 @@ var Menus = {
         () => FakeCheck.openPasteDialog());
       this._menuItem(doc, popup, "paperpilot-itemmenu-smart-cleanup", "menuSmartCleanup",
         () => SmartCleanup.run());
+      // ---- 0.11.0 新增 ----
+      popup.appendChild(this._xul(doc, "menuseparator"));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-bilingual", "menuBilingual",
+        () => BilingualTranslate.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-review", "menuReview",
+        () => ReviewGen.forSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-mindmap", "menuMindmap",
+        () => MindMap.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-note-template", "menuNoteTemplate",
+        () => NoteTemplates.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-anki", "menuAnki",
+        () => AnkiExport.runForSelected());
+      popup.appendChild(this._xul(doc, "menuseparator"));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-cn-meta", "menuCnMeta",
+        () => CNMeta.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-meta-lint", "menuMetaLint",
+        () => MetaLint.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-oa-fetch", "menuOaFetch",
+        () => OAFetch.runForSelected());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-attach-rename", "menuAttachRename",
+        () => AttachManager.runForSelected());
+      popup.appendChild(this._xul(doc, "menuseparator"));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-state-unread", "menuStateUnread",
+        () => ReadingState.markForSelected("未读"));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-state-reading", "menuStateReading",
+        () => ReadingState.markForSelected("在读"));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-state-done", "menuStateDone",
+        () => ReadingState.markForSelected("已读"));
     }
 
-    // ---- 分类右键：条目统计 ----
+    // ---- 分类右键：条目统计 + 统计图谱 ----
     const collMenu = doc.getElementById("zotero-collectionmenu");
     if (collMenu) {
       const mi = this._menuItem(doc, collMenu, "paperpilot-collmenu-stats", "menuCollStat",
         () => CollectionStats.showForSelectedCollection());
+      const mi2 = this._menuItem(doc, collMenu, "paperpilot-collmenu-libgraph", "menuLibGraph",
+        () => LibGraph.run());
       this._track(mi);
+      this._track(mi2);
     }
   },
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "PaperPilot 文献副驾",
-  "version": "0.9.2",
-  "description": "国产大模型 + 独立工作台窗口 + easyScholar 期刊等级 + Semantic Scholar 被引量/引文追溯 + 真假文献识别 + 智能清理 · Zotero 7-10 插件",
+  "version": "0.13.0",
+  "description": "国产大模型 + 工作台 2.0（流式/多会话/三模式）+ 功能中心 + 划词翻译/精读问答 + 全文对照翻译 + AI 综述/思维导图/Anki 制卡 + 中文元数据 + 阅读状态 + 期刊分区/被引量 · Zotero 7-10 插件",
   "author": "you",
   "icons": {
     "48": "chrome/content/icons/icon.png",

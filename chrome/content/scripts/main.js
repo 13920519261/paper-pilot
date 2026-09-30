@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, Menus, ReaderPopup, AIProviders, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -39,9 +39,21 @@ Zotero.PaperPilot = {
       "features/fake-check.js",
       "features/smart-cleanup.js",
       "features/meta-enrich.js",
+      "features/bilingual-translate.js",
+      "features/cn-meta.js",
+      "features/reading-state.js",
+      "features/note-templates.js",
+      "features/attach-manager.js",
+      "features/mindmap.js",
+      "features/review-gen.js",
+      "features/meta-lint.js",
+      "features/oa-fetch.js",
+      "features/anki-export.js",
+      "features/lib-graph.js",
       "columns/rank-column.js",
       "columns/citation-column.js",
       "panels/ai-chat-pane.js",
+      "panels/glance-pane.js",
       "menus.js",
     ];
     for (const f of files) {
@@ -71,6 +83,25 @@ Zotero.PaperPilot = {
     this.aiClient = AIClient;
     this.notes = Notes;
     this.mdLite = MdLite;
+    // 0.12.0 功能中心需要：全部功能模块引用（hub 窗口脚本同样只能经这里访问）
+    this.menus = Menus;
+    this.autoTag = AutoTag;
+    this.matrix = Matrix;
+    this.annotations = Annotations;
+    this.collectionStats = CollectionStats;
+    this.bilingual = BilingualTranslate;
+    this.cnMeta = CNMeta;
+    this.readingState = ReadingState;
+    this.noteTemplates = NoteTemplates;
+    this.attachManager = AttachManager;
+    this.mindmap = MindMap;
+    this.reviewGen = ReviewGen;
+    this.metaLint = MetaLint;
+    this.oaFetch = OAFetch;
+    this.ankiExport = AnkiExport;
+    this.libGraph = LibGraph;
+    // 0.13.0 工作台 2.0 需要：Prompt 技能库
+    this.prompts = Prompts;
 
     // 一次性迁移：aiTemperature 旧版本默认是浮点 0.3，被 Mozilla int pref 截断成 0；
     // 0.4.0 起改存字符串。若用户 pref 仍是 int 类型则清掉，让新的字符串默认值生效
@@ -135,6 +166,22 @@ Zotero.PaperPilot = {
       await this._diag("chat pane registered");
     } catch (e) {
       await this._diag("chat pane FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // PDF 速览侧栏（0.11.0）
+    try {
+      GlancePane.register(id);
+      await this._diag("glance pane registered");
+    } catch (e) {
+      await this._diag("glance pane FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 阅读状态自动化（0.11.0）：新条目打「未读」+ 打开 PDF「未读→在读」
+    try {
+      ReadingState.register();
+      await this._diag("reading state notifier registered");
+    } catch (e) {
+      await this._diag("reading state FAILED: " + (e && (e.stack || e.message) || e));
     }
 
     // 菜单
@@ -202,6 +249,31 @@ Zotero.PaperPilot = {
     }
   },
 
+  /** 功能中心独立窗口（0.12.0）：单实例，传参通道与 openWorkbench 相同 */
+  openHub() {
+    try {
+      const wm = Services.wm;
+      const en = wm.getEnumerator("paperpilot:hub");
+      if (en.hasMoreElements()) {
+        const win = en.getNext();
+        try { win.focus(); } catch (e) { /* ignore */ }
+        return win;
+      }
+      const win = Zotero.getMainWindow();
+      if (!win) return null;
+      return win.openDialog(
+        "chrome://paperpilot/content/hub.xhtml",
+        "paperpilot-hub",
+        "chrome,extracz,resizable,dialog=no,centerscreen",
+        { Zotero, Services }
+      );
+    } catch (e) {
+      Zotero.logError(new Error("PaperPilot: 打开功能中心失败"));
+      Zotero.logError(e);
+      return null;
+    }
+  },
+
   _watchPrefs() {
     // 沙箱作用域里的普通对象挂不上 nsIPrefBranch 弱引用 observer
     // （FF140 实证：addObserver(..., weak=true) 直接抛错拖死 startup）。
@@ -250,8 +322,10 @@ Zotero.PaperPilot = {
     }
     try { Menus.destroy(); } catch (e) { Zotero.logError(e); }
     try { RuleTag.unregister(); } catch (e) { Zotero.logError(e); }
+    try { ReadingState.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReaderPopup.unregister(); } catch (e) { Zotero.logError(e); }
     try { AIChatPane.unregister(); } catch (e) { Zotero.logError(e); }
+    try { GlancePane.unregister(); } catch (e) { Zotero.logError(e); }
     try { RankColumn.unregister(); } catch (e) { Zotero.logError(e); }
     try { CitationColumn.unregister(); } catch (e) { Zotero.logError(e); }
     // unregister 接收的是 register 返回的 paneID（不是 pluginID；Z10 关机时也会自动注销）

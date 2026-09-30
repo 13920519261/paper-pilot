@@ -91,7 +91,7 @@ var AIChat = {
     return raw;
   },
 
-  _paperMeta(item) {
+  paperMeta(item) {
     const get = (f) => {
       try { return item.getField(f) || ""; } catch (e) { return ""; }
     };
@@ -118,7 +118,7 @@ var AIChat = {
     const fullText = await this.getFullText(item);
     if (!fullText) throw new Error("NO_PDF");
 
-    const meta = this._paperMeta(item);
+    const meta = this.paperMeta(item);
     const system = this._systemWith(meta, `【论文全文】\n${fullText}`);
 
     const messages = [{ role: "system", content: system }];
@@ -142,7 +142,7 @@ var AIChat = {
    */
   async askTask(item, question) {
     const fullText = await this.getFullText(item);
-    const meta = this._paperMeta(item);
+    const meta = this.paperMeta(item);
     let context;
     if (fullText) {
       context = `【论文全文】\n${fullText}`;
@@ -167,7 +167,7 @@ var AIChat = {
 
   /** AI 翻译标题与摘要：优先摘要字段；无摘要时回退翻译 PDF 开篇 3000 字 */
   async translateTitleAbstract(item) {
-    const meta = this._paperMeta(item);
+    const meta = this.paperMeta(item);
     let abstract = "";
     try { abstract = item.getField("abstractNote") || ""; } catch (e) { /* ignore */ }
 

@@ -130,12 +130,38 @@
   </groupbox>
 
   <groupbox>
-    <caption label="AI 功能"/>
+    <caption label="阅读器划词浮窗（翻译 / 解读 / 追问）"/>
     <vbox style="padding:6px;">
       <hbox>
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupEnabled" id="pp-popup-enabled"/>
-        <label value="PDF 阅读器划词浮窗（翻译 / 解读）" control="pp-popup-enabled"/>
+        <label value="启用 PDF 阅读器划词浮窗" control="pp-popup-enabled"/>
       </hbox>
+      <hbox>
+        <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupAutoTranslate" id="pp-popup-auto"/>
+        <label value="划词即自动翻译（无需点击，带限流与去重）" control="pp-popup-auto"/>
+      </hbox>
+      <hbox>
+        <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupStream" id="pp-popup-stream"/>
+        <label value="流式输出（逐字显示；网关不支持时自动降级）" control="pp-popup-stream"/>
+      </hbox>
+      <hbox>
+        <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupWriteBack" id="pp-popup-writeback"/>
+        <label value="允许把译文/解读写入高亮批注（在批注上划词时显示按钮）" control="pp-popup-writeback"/>
+      </hbox>
+      <hbox style="align-items:center;gap:8px;">
+        <label value="翻译目标语言"/>
+        <html:select preference="extensions.zotero.paperpilot.readerPopupTargetLang" id="pp-popup-lang">
+          <html:option value="中文">中文</html:option>
+          <html:option value="English">English</html:option>
+          <html:option value="日本語">日本語</html:option>
+        </html:select>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <caption label="AI 功能"/>
+    <vbox style="padding:6px;">
       <label value="自定义 Prompt（每行一条，格式：名称=提示词）"/>
       <html:textarea preference="extensions.zotero.paperpilot.customPrompts" rows="3" style="width:100%;"
                      placeholder="周报生成=请把这篇论文的要点整理成周报条目"/>
@@ -149,6 +175,34 @@
           <html:input type="number" preference="extensions.zotero.paperpilot.autoTagMax" style="width:120px;"/>
         </vbox>
       </hbox>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <caption label="增强功能（阅读状态 / 附件命名 / 全文翻译 / 制卡）"/>
+    <vbox style="padding:6px;">
+      <hbox>
+        <html:input type="checkbox" preference="extensions.zotero.paperpilot.readingStateAutoUnread" id="pp-rs-auto"/>
+        <label value="新条目入库自动标记「未读」（打开 PDF 自动转为「在读」）" control="pp-rs-auto"/>
+      </hbox>
+      <label value="附件命名模板（变量：{author} {year} {title}）"/>
+      <html:input type="text" preference="extensions.zotero.paperpilot.attachNamePattern" style="width:100%;"/>
+      <hbox style="gap:16px;align-items:flex-end;margin-top:4px;">
+        <vbox>
+          <label value="全文对照翻译分段字符数"/>
+          <html:input type="number" preference="extensions.zotero.paperpilot.bilingualChunkChars" style="width:140px;"/>
+        </vbox>
+        <vbox>
+          <label value="Anki 制卡张数"/>
+          <html:input type="number" preference="extensions.zotero.paperpilot.ankiCardCount" style="width:140px;"/>
+        </vbox>
+      </hbox>
+      <label value="Unpaywall 邮箱（开放获取补全文用，可留空）"/>
+      <html:input type="text" preference="extensions.zotero.paperpilot.unpaywallEmail" style="width:100%;"
+                  placeholder="you@example.com"/>
+      <label value="自定义笔记模板（每行一条：名称=模板正文，换行用 \n；占位符 {{title}} {{creators}} {{year}} {{pub}} {{abstract}} {{annotations}} {{aiSummary}}）"/>
+      <html:textarea preference="extensions.zotero.paperpilot.noteTemplatesCustom" rows="3" style="width:100%;"
+                     placeholder="周报卡=## {{title}}\n本周进展：\n{{aiSummary}}"/>
     </vbox>
   </groupbox>
 </vbox>

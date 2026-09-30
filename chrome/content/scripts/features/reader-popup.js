@@ -1,11 +1,28 @@
-/* PaperPilot 阅读器划词浮窗：划词弹窗中注入「翻译 / 解读」
+/* PaperPilot 阅读器划词浮窗 2.0（0.10.0 重构）
  * 官方 API：Zotero.Reader.registerEventListener("renderTextSelectionPopup", handler, pluginID)
+ *
+ * 能力：翻译 / 解读 / 追问（浮窗内多轮）；流式渲染（readerPopupStream 开关，
+ * 网关不透传 SSE 时 AIClient 自动降级）；结果复制 / 重试 / 写入高亮批注；
+ * 划词即自动翻译（readerPopupAutoTranslate，带去重+限流+长度护栏）；
+ * 会话级结果缓存（重复划词零请求）；每日请求计数（readerPopupDailyCount）。
  */
-/* global Zotero, Prefs, AIClient, I18n */
+/* global Zotero, Prefs, AIClient, AIChat, AIChatPane, I18n */
 
 var ReaderPopup = {
   _handler: null,
   _pluginID: null,
+
+  // 会话级结果缓存：mode|lang|text -> result（FIFO，仅缓存翻译/解读）
+  _resultCache: new Map(),
+  _CACHE_LIMIT: 100,
+  // 进行中的流式请求句柄（unregister 时统一 abort）
+  _active: new Set(),
+  // 浮窗内追问历史：readerItemID -> [{role, content}]（最近 12 条）
+  _chats: new Map(),
+  _CHAT_LIMIT: 30,
+  // 自动翻译去重/限流
+  _lastAutoKey: "",
+  _lastAutoTime: 0,
 
   register(pluginID) {
     if (this._handler) return;
@@ -21,11 +38,79 @@ var ReaderPopup = {
   },
 
   unregister() {
+    for (const h of this._active) {
+      try { h.abort(); } catch (e) { /* ignore */ }
+    }
+    this._active.clear();
     if (!this._handler) return;
     try {
       Zotero.Reader.unregisterEventListener("renderTextSelectionPopup", this._handler);
     } catch (e) { /* ignore */ }
     this._handler = null;
+  },
+
+  /* ---------- 每日请求计数（pref: YYYY-MM-DD:n） ---------- */
+  _bumpDaily() {
+    try {
+      const d = new Date();
+      const today = d.getFullYear() + "-" +
+        String(d.getMonth() + 1).padStart(2, "0") + "-" +
+        String(d.getDate()).padStart(2, "0");
+      const raw = Prefs.get("readerPopupDailyCount", "") || "";
+      const parts = String(raw).split(":");
+      const count = parts[0] === today ? (parseInt(parts[1], 10) || 0) + 1 : 1;
+      Prefs.set("readerPopupDailyCount", today + ":" + count);
+      return count;
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  _cacheGet(key) {
+    return this._resultCache.has(key) ? this._resultCache.get(key) : undefined;
+  },
+
+  _cacheSet(key, value) {
+    if (this._resultCache.size >= this._CACHE_LIMIT) {
+      this._resultCache.delete(this._resultCache.keys().next().value);
+    }
+    this._resultCache.set(key, value);
+  },
+
+  /** 当前 reader 打开的文献（常规条目优先，用于 paperMeta / 侧栏联动） */
+  _currentItem(event) {
+    try {
+      const reader = event && event.reader;
+      const id = reader && reader.itemID;
+      if (!id) return null;
+      const att = Zotero.Items.get(id);
+      if (!att) return null;
+      if (att.isRegularItem && att.isRegularItem()) return att;
+      if (att.parentItemID) {
+        const p = Zotero.Items.get(att.parentItemID);
+        if (p) return p;
+      }
+      return att;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /** 翻译/解读 prompt 构造（浮窗是纯文本渲染，必须显式禁止 Markdown，
+   *  否则会受 aiSystemPrompt 里「使用 Markdown 格式输出」影响带出 **、# 等标记） */
+  _buildPrompt(mode, text) {
+    const lang = Prefs.get("readerPopupTargetLang", "中文") || "中文";
+    if (mode === "translate") {
+      return (I18n.isZh
+        ? `请将以下内容翻译成${lang}，忠实原文，专业术语保留英文并用括号标注，只输出译文：\n\n`
+        : `Translate the following into ${lang}, keep English terms in parentheses, output translation only:\n\n`) + text +
+        (I18n.isZh
+          ? "\n\n要求：纯文本输出，禁止使用任何 Markdown 标记（如 **、#、- 列表、表格），直接给译文正文。"
+          : "\n\nPlain text only — no Markdown formatting (no **, #, bullets or tables).");
+    }
+    return (I18n.isZh
+      ? "请用中文简要解读以下摘自论文的内容（含义、在论文语境中的作用），100-200 字，纯文本分段输出，禁止使用任何 Markdown 标记：\n\n"
+      : "Briefly explain the following excerpt from a paper in Chinese (100-200 chars), plain text only, no Markdown:\n\n") + text;
   },
 
   _onPopup(event) {
@@ -35,69 +120,281 @@ var ReaderPopup = {
       const text =
         (params && params.annotation && params.annotation.text) ||
         (params && params.text) || "";
-      if (!text || text.trim().length < 2) return;
+      const cleanText = text.trim();
+      if (!cleanText || cleanText.length < 2) return;
       if (!AIClient.hasKey()) return;
 
+      const item = this._currentItem(event);
+      const annotation = (params && params.annotation && params.annotation.id)
+        ? params.annotation : null;
       const NS = "http://www.w3.org/1999/xhtml";
-      const box = doc.createElementNS(NS, "div");
-      box.style.cssText =
-        "max-width:380px;padding:2px 4px;display:flex;flex-direction:column;gap:4px;" +
-        "font-size:12px;line-height:1.5;text-align:left;";
+      const mk = (tag, css, label) => {
+        const el = doc.createElementNS(NS, tag);
+        if (css) el.style.cssText = css;
+        if (label != null) el.textContent = label;
+        return el;
+      };
 
-      const row = doc.createElementNS(NS, "div");
-      row.style.cssText = "display:flex;gap:6px;align-items:center;";
+      const box = mk("div",
+        "max-width:420px;padding:2px 4px;display:flex;flex-direction:column;gap:4px;" +
+        "font-size:12px;line-height:1.5;text-align:left;");
+
+      // 按钮行：翻译 / 解读 / 追问 + 选区预览
+      const row = mk("div", "display:flex;gap:6px;align-items:center;");
       const mkBtn = (label) => {
-        const b = doc.createElementNS(NS, "button");
-        b.textContent = label;
-        b.style.cssText = "padding:1px 10px;font-size:12px;cursor:pointer;";
+        const b = mk("button", "padding:1px 10px;font-size:12px;cursor:pointer;", label);
         return b;
       };
       const trBtn = mkBtn(I18n.t("popupTranslate"));
       const aiBtn = mkBtn(I18n.t("popupExplain"));
-      const src = doc.createElementNS(NS, "span");
-      src.style.cssText = "color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-      src.textContent = text.trim().slice(0, 40) + (text.trim().length > 40 ? "…" : "");
+      const askBtn = mkBtn(I18n.t("popupAsk"));
+      const src = mk("span",
+        "color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
+        cleanText.slice(0, 40) + (cleanText.length > 40 ? "…" : ""));
       row.appendChild(trBtn);
       row.appendChild(aiBtn);
+      row.appendChild(askBtn);
       row.appendChild(src);
 
-      const result = doc.createElementNS(NS, "div");
-      result.style.cssText =
-        "display:none;white-space:pre-wrap;word-break:break-word;max-height:220px;" +
-        "overflow-y:auto;border-top:1px solid #8884;padding-top:4px;";
+      // 追问输入行（默认隐藏）
+      const askRow = mk("div", "display:none;gap:6px;align-items:flex-end;");
+      const askInput = mk("textarea",
+        "flex:1;resize:vertical;padding:3px 4px;font-size:12px;", null);
+      askInput.setAttribute("rows", "2");
+      askInput.setAttribute("placeholder", I18n.t("popupAskPlaceholder"));
+      const askSend = mkBtn(I18n.t("popupSend"));
+      askRow.appendChild(askInput);
+      askRow.appendChild(askSend);
+
+      // 结果区 + 操作行
+      const result = mk("div",
+        "display:none;white-space:pre-wrap;word-break:break-word;max-height:260px;" +
+        "overflow-y:auto;border-top:1px solid #8884;padding-top:4px;");
+      const actions = mk("div", "display:none;gap:6px;align-items:center;");
+      const copyBtn = mkBtn(I18n.t("popupCopy"));
+      const retryBtn = mkBtn(I18n.t("popupRetry"));
+      const wbBtn = mkBtn(I18n.t("popupWriteBack"));
+      const paneBtn = mkBtn(I18n.t("popupContinuePane"));
+      const status = mk("span", "color:#888;font-size:11px;flex:1;");
+      actions.appendChild(copyBtn);
+      actions.appendChild(retryBtn);
+      if (annotation && Prefs.get("readerPopupWriteBack", true)) {
+        actions.appendChild(wbBtn);
+      }
+      if (item) actions.appendChild(paneBtn);
+      actions.appendChild(status);
 
       box.appendChild(row);
+      box.appendChild(askRow);
       box.appendChild(result);
+      box.appendChild(actions);
 
-      const run = async (mode) => {
+      /* ----- 运行状态 ----- */
+      let lastRun = null; // {kind:"translate"|"explain"|"ask", question?}
+      let lastAnswer = "";
+      let currentHandle = null;
+      let busy = false;
+
+      const setBusy = (b) => {
+        busy = b;
+        for (const btn of [trBtn, aiBtn, askBtn, askSend, retryBtn]) btn.disabled = b;
+      };
+
+      const showError = (e) => {
+        if (!result.isConnected) return;
+        if (e && e.message === "ABORTED") { result.style.display = "none"; return; }
         result.style.display = "block";
+        result.textContent = I18n.t("errPrefix") + ((e && e.message) || e);
+      };
+
+      /** 统一执行：流式优先，结果就绪后显示操作行；返回最终答案（失败为 null） */
+      const execute = async (messages, cacheKey) => {
+        if (currentHandle) { try { currentHandle.abort(); } catch (e) { /* ignore */ } }
+        setBusy(true);
+        result.style.display = "block";
+        actions.style.display = "none";
+        status.textContent = "";
+
+        // 缓存命中：零请求直接渲染
+        if (cacheKey) {
+          const hit = this._cacheGet(cacheKey);
+          if (hit !== undefined) {
+            lastAnswer = hit;
+            result.textContent = hit;
+            actions.style.display = "flex";
+            status.textContent = "⚡cache";
+            setBusy(false);
+            return hit;
+          }
+        }
+
         result.textContent = I18n.t("chatThinking");
-        trBtn.disabled = true;
-        aiBtn.disabled = true;
+        const count = this._bumpDaily();
+        if (count === 500) status.textContent = I18n.t("popupDailyNotice");
+
+        let acc = "";
+        const onDelta = (chunk) => {
+          if (!result.isConnected) return;
+          if (!acc) result.textContent = "";
+          acc += chunk;
+          result.textContent = acc;
+          result.scrollTop = result.scrollHeight;
+        };
+
         try {
-          const q = mode === "translate"
-            ? (I18n.isZh
-                ? "请将以下内容翻译成中文，忠实原文，专业术语保留英文并用括号标注，只输出译文：\n\n"
-                : "Translate the following into Chinese, keep English terms in parentheses, output translation only:\n\n")
-            : (I18n.isZh
-                ? "请用中文简要解读以下摘自论文的内容（含义、在论文语境中的作用），100-200 字：\n\n"
-                : "Briefly explain the following excerpt from a paper in Chinese (100-200 chars):\n\n");
-          const answer = await AIClient.chat([
-            { role: "system", content: Prefs.get("aiSystemPrompt", "") || "" },
-            { role: "user", content: q + text },
-          ]);
-          result.textContent = answer;
+          let answer;
+          if (Prefs.get("readerPopupStream", true) && AIClient.chatStream) {
+            currentHandle = AIClient.chatStream(messages, onDelta);
+            this._active.add(currentHandle);
+            answer = await currentHandle.promise;
+          } else {
+            answer = await AIClient.chat(messages);
+            if (!result.isConnected) return null;
+            result.textContent = answer;
+          }
+          lastAnswer = answer;
+          if (cacheKey && answer) this._cacheSet(cacheKey, answer);
+          if (result.isConnected) {
+            actions.style.display = "flex";
+            if (count !== 500) status.textContent = "";
+          }
+          return answer;
         } catch (e) {
-          result.textContent = I18n.t("errPrefix") + (e.message || e);
+          showError(e);
+          return null;
         } finally {
-          trBtn.disabled = false;
-          aiBtn.disabled = false;
+          if (currentHandle) this._active.delete(currentHandle);
+          currentHandle = null;
+          setBusy(false);
         }
       };
-      trBtn.addEventListener("click", () => run("translate"));
-      aiBtn.addEventListener("click", () => run("explain"));
+
+      const runTask = (mode) => {
+        lastRun = { kind: mode };
+        const lang = Prefs.get("readerPopupTargetLang", "中文") || "中文";
+        const cacheKey = mode + "|" + lang + "|" + cleanText;
+        execute([
+          { role: "system", content: Prefs.get("aiSystemPrompt", "") || "" },
+          { role: "user", content: this._buildPrompt(mode, cleanText) },
+        ], cacheKey);
+      };
+
+      const runAsk = async (question) => {
+        lastRun = { kind: "ask", question };
+        // 浮窗内多轮：历史按 reader 条目隔离
+        const key = item ? String(item.id) : "_";
+        if (!this._chats.has(key)) this._chats.set(key, []);
+        if (this._chats.size > this._CHAT_LIMIT) {
+          this._chats.delete(this._chats.keys().next().value);
+        }
+        const history = this._chats.get(key);
+
+        let system = Prefs.get("aiSystemPrompt", "") || "";
+        if (item) {
+          try {
+            const meta = AIChat.paperMeta(item);
+            system += `\n\n当前用户正在阅读以下论文：\n标题：${meta.title}\n作者：${meta.creators}\n发表：${meta.pub} ${meta.year}`;
+          } catch (e) { /* ignore */ }
+        }
+        const userMsg = `【原文摘录】\n${cleanText}\n\n【问题】\n${question}` +
+          (I18n.isZh
+            ? "\n\n要求：纯文本回答，禁止使用任何 Markdown 标记（如 **、#、- 列表、表格）。"
+            : "\n\nAnswer in plain text — no Markdown formatting.");
+        const messages = [{ role: "system", content: system }];
+        messages.push(...history.slice(-12));
+        messages.push({ role: "user", content: userMsg });
+
+        const answer = await execute(messages, null);
+        if (answer) {
+          history.push({ role: "user", content: userMsg });
+          history.push({ role: "assistant", content: answer });
+          this._chats.set(key, history.slice(-12));
+        }
+      };
+
+      /* ----- 事件绑定 ----- */
+      trBtn.addEventListener("click", () => { if (!busy) runTask("translate"); });
+      aiBtn.addEventListener("click", () => { if (!busy) runTask("explain"); });
+      askBtn.addEventListener("click", () => {
+        askRow.style.display = askRow.style.display === "none" ? "flex" : "none";
+        if (askRow.style.display === "flex") askInput.focus();
+      });
+      const doAsk = () => {
+        const q = askInput.value.trim();
+        if (!q || busy) return;
+        askInput.value = "";
+        runAsk(q);
+      };
+      askSend.addEventListener("click", doAsk);
+      askInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+          ev.preventDefault();
+          doAsk();
+        }
+      });
+
+      copyBtn.addEventListener("click", () => {
+        if (!lastAnswer) return;
+        try {
+          Zotero.Utilities.Internal.copyText(lastAnswer);
+          copyBtn.textContent = I18n.t("popupCopied");
+          setTimeout(() => { copyBtn.textContent = I18n.t("popupCopy"); }, 1500);
+        } catch (e) { /* ignore */ }
+      });
+
+      retryBtn.addEventListener("click", () => {
+        if (busy || !lastRun) return;
+        if (lastRun.kind === "ask") runAsk(lastRun.question);
+        else runTask(lastRun.kind);
+      });
+
+      // M3：写入高亮批注 comment（仅在高亮批注上划词时出现该按钮）
+      wbBtn.addEventListener("click", async () => {
+        if (!lastAnswer || !annotation) return;
+        wbBtn.disabled = true;
+        try {
+          const reader = event && event.reader;
+          const att = reader && reader.itemID ? Zotero.Items.get(reader.itemID) : null;
+          const libraryID = att ? att.libraryID : (item ? item.libraryID : null);
+          const anno = libraryID
+            ? Zotero.Items.getByLibraryAndKey(libraryID, annotation.id) : null;
+          if (!anno) throw new Error("annotation not found");
+          const prev = anno.annotationComment || "";
+          anno.annotationComment = prev ? prev + "\n\n" + lastAnswer : lastAnswer;
+          await anno.saveTx();
+          status.textContent = I18n.t("popupWriteBackDone");
+        } catch (e) {
+          status.textContent = I18n.t("popupWriteBackFail") + ((e && e.message) || e);
+        } finally {
+          wbBtn.disabled = false;
+        }
+      });
+
+      // M2b：送入侧栏继续（pane 未渲染则提示先打开）
+      paneBtn.addEventListener("click", () => {
+        try {
+          const ok = AIChatPane.injectQuote(item, cleanText);
+          status.textContent = ok ? "" : I18n.t("popupPaneUnavailable");
+        } catch (e) {
+          status.textContent = I18n.t("popupPaneUnavailable");
+        }
+      });
 
       append(box);
+
+      // 划词即自动翻译：去重 + 800ms 限流 + 长度护栏
+      try {
+        if (Prefs.get("readerPopupAutoTranslate", false) &&
+            cleanText.length >= 2 && cleanText.length <= 2000) {
+          const now = Date.now();
+          const autoKey = "translate|" + cleanText;
+          if (autoKey !== this._lastAutoKey && now - this._lastAutoTime >= 800) {
+            this._lastAutoKey = autoKey;
+            this._lastAutoTime = now;
+            runTask("translate");
+          }
+        }
+      } catch (e) { /* 自动模式失败不影响手动按钮 */ }
     } catch (e) {
       Zotero.logError(e);
     }
