@@ -52,3 +52,8 @@ pref("extensions.zotero.paperpilot.ankiCardCount", 10);
 // 0.13.0 新增：工作台 2.0（主题 auto/light/dark；会话持久化 JSON）
 pref("extensions.zotero.paperpilot.wbTheme", "auto");
 pref("extensions.zotero.paperpilot.workbenchSessions", "");
+// 0.14.5 新增：中文转换器/抓取（茉莉花同等能力）
+pref("extensions.zotero.paperpilot.cnTranslatorsAuto", true);
+pref("extensions.zotero.paperpilot.cnTranslatorUpdateTime", "0");
+pref("extensions.zotero.paperpilot.cnFetchUseCNKI", true);
+pref("extensions.zotero.paperpilot.cnDownloadDir", "");

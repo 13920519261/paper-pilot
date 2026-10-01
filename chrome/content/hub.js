@@ -57,6 +57,9 @@
         desc: zh ? "元数据与附件的检查、修复与补全" : "Metadata & attachment maintenance",
         features: [
           { t: zh ? "中文文件名识别元数据" : "CN filename metadata", d: zh ? "解析知网/万方文件名回填标题作者期刊" : "Parse CNKI-style filenames", run: () => PP.cnMeta.runForSelected() },
+          { t: zh ? "抓取中文元数据" : "Fetch CN metadata", d: zh ? "网络搜索（公益学术平台/知网）回填完整题录，保留原附件" : "Search & fill full metadata, keep attachments", run: () => PP.cnFetch.runForSelected() },
+          { t: zh ? "更新中文转换器" : "Update CN translators", d: zh ? "拉取最新知网/万方转换器，修复中文抓取与 PDF 下载" : "Fix CNKI scraping & PDF download", run: () => PP.cnTranslators.update(true) },
+          { t: zh ? "下载文件夹查找附件" : "Match attachments", d: zh ? "把下载目录里已下载的 PDF/CAJ 按标题匹配到条目" : "Match downloaded PDFs to items", run: () => PP.cnFetch.matchAttachmentsFromDownloads() },
           { t: zh ? "元数据补全" : "Enrich metadata", d: zh ? "S2 查询回写空缺字段（不覆盖已有值）" : "Fill missing fields via S2", run: () => PP.metaEnrich.runForSelected() },
           { t: zh ? "元数据规范清洗" : "Metadata lint", d: zh ? "DOI/日期/标题/URL 格式规范化" : "Normalize DOI/date/title/URL", run: () => PP.metaLint.runForSelected() },
           { t: zh ? "智能清理" : "Smart cleanup", d: zh ? "扫描重复/无附件/缺元数据条目" : "Scan duplicates & gaps", run: () => PP.smartCleanup.run() },

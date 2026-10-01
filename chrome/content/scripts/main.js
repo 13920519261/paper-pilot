@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -43,6 +43,8 @@ Zotero.PaperPilot = {
       "features/meta-enrich.js",
       "features/bilingual-translate.js",
       "features/cn-meta.js",
+      "features/cn-translators.js",
+      "features/cn-fetch.js",
       "features/reading-state.js",
       "features/note-templates.js",
       "features/attach-manager.js",
@@ -96,6 +98,8 @@ Zotero.PaperPilot = {
     this.collectionStats = CollectionStats;
     this.bilingual = BilingualTranslate;
     this.cnMeta = CNMeta;
+    this.cnTranslators = CNTranslators;
+    this.cnFetch = CNFetch;
     this.readingState = ReadingState;
     this.noteTemplates = NoteTemplates;
     this.attachManager = AttachManager;
@@ -237,6 +241,13 @@ Zotero.PaperPilot = {
       await this._diag("pref watchers registered");
     } catch (e) {
       await this._diag("pref watchers FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 中文转换器自动更新（0.14.5）：静默、12h 间隔，修复知网抓取/PDF 下载最常见根因
+    try {
+      CNTranslators.scheduleAuto();
+    } catch (e) {
+      await this._diag("cn translators auto-update schedule FAILED: " + (e && (e.stack || e.message) || e));
     }
 
     this._initialized = true;
