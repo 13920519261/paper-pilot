@@ -26,6 +26,32 @@
     catch (e) { return new Date(ms).toLocaleString(); }
   };
 
+  /* ---------- 敏感信息掩码（0.14.7）：接口地址默认掩码，复选框切换明文 ---------- */
+
+  const PREF_PREFIX = "extensions.zotero.paperpilot.";
+
+  function showFullUrl() {
+    try { return !!Zotero.Prefs.get(PREF_PREFIX + "uiShowFullUrl", true); } catch (e) { return false; }
+  }
+
+  /** URL 掩码：保留协议与路径，主机名中间打码。本机地址（127.0.0.1/localhost）不打码。 */
+  function maskUrl(u) {
+    const s = String(u || "");
+    if (!s) return "—";
+    if (/^(https?:\/\/)?(127\.0\.0\.1|localhost|\[::1\])/.test(s)) return s;
+    const m = s.match(/^(https?:\/\/)?([^/:]+)(:\d+)?(\/.*)?$/);
+    if (!m) return s.length <= 10 ? "***" : s.slice(0, 6) + "***" + s.slice(-4);
+    const scheme = m[1] || "", host = m[2], port = m[3] || "", path = m[4] || "";
+    const masked = host.length <= 8 ? host.slice(0, 2) + "***"
+      : host.slice(0, 6) + "***" + host.slice(-4);
+    return scheme + masked + port + path;
+  }
+
+  /** 按当前开关返回展示用地址 */
+  function displayUrl(u) {
+    return showFullUrl() ? (u || "—") : maskUrl(u);
+  }
+
   /* ==================== 账号区块 ==================== */
 
   function renderAccount() {
@@ -49,7 +75,7 @@
       bits.push("今日官方模型用量：" + u.dailyUsed + (typeof u.dailyLimit === "number" ? "/" + u.dailyLimit : ""));
     }
     if (A.expiresAt()) bits.push("会话有效期至 " + fmtDate(A.expiresAt()));
-    bits.push("服务器 " + A.serverUrl().replace(/^https?:\/\//, ""));
+    bits.push("服务器 " + displayUrl(A.serverUrl()).replace(/^https?:\/\//, ""));
     $("pp-account-meta").textContent = bits.join(" ｜ ");
     fillOfficialModelSelect();
   }
@@ -211,7 +237,7 @@
       }, "未登录"));
     }
     left.appendChild(head);
-    const sub = [c.baseUrl || "—", c.model];
+    const sub = [displayUrl(c.baseUrl), c.model];
     if (c.models && c.models.length) sub.push(c.models.length + " 模型");
     if (c.provider && c.provider !== "official") {
       const p = channels().providerOf(c.provider);
@@ -222,6 +248,24 @@
       style: "font-size:11.5px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
     }, sub.join(" · ")));
     row.appendChild(left);
+
+    /* 当前调用模型下拉（0.14.7）：改动立即生效，无需进编辑表单 */
+    const modelBox = el("div", { style: "flex:none;max-width:170px;" });
+    const modelSel = el("select", {
+      style: "width:100%;font-size:12px;padding:2px 4px;",
+      title: "该通道当前调用的模型（选择后立即生效）",
+    });
+    const opts = Array.isArray(c.models) && c.models.length ? c.models.slice() : [];
+    if (c.model && !opts.includes(c.model)) opts.unshift(c.model);
+    if (!opts.length) opts.push("auto");
+    for (const m of opts) modelSel.appendChild(el("option", { value: m }, m));
+    modelSel.value = c.model || opts[0];
+    modelSel.addEventListener("change", () => onModelPick(c, modelSel.value, modelSel));
+    modelBox.appendChild(modelSel);
+    modelBox.appendChild(el("div", {
+      style: "font-size:10.5px;color:#999;text-align:center;margin-top:1px;",
+    }, "当前模型"));
+    row.appendChild(modelBox);
 
     const acts = el("div", { style: "display:flex;gap:6px;flex:none;" });
     const mkBtn = (label, title) => el("button", {
@@ -256,6 +300,39 @@
       return;
     }
     renderAll();
+  }
+
+  /** 通道行内模型下拉：选用该通道当前调用模型（部分更新，其余字段原样保留） */
+  function onModelPick(c, model, sel) {
+    const result = $("pp-ch-test-result");
+    try {
+      const r = channels().upsert({ id: c.id, model: model });
+      if (!r || !r.ok) {
+        result.textContent = "✗ 模型切换失败：" + ((r && r.error) || "未知错误");
+        result.style.color = "#c0392b";
+        sel.value = c.model; // 回退显示
+        return;
+      }
+      result.textContent = "";
+      result.appendChild(el("span", { style: "color:#1e7d32;" },
+        "✓ 「" + c.name + "」当前调用模型已切换为 " + model + "（立即生效）"));
+      renderChannels(); // 状态卡/行内显示同步
+    } catch (e) {
+      result.textContent = "✗ 模型切换异常：" + (e && e.message || e);
+      result.style.color = "#c0392b";
+      sel.value = c.model;
+    }
+  }
+
+  /** 「显示完整接口地址」开关：读初始态、变更写 pref 并重绘 */
+  function initShowUrlToggle() {
+    const box = $("pp-ch-show-url");
+    if (!box) return;
+    box.checked = showFullUrl();
+    box.addEventListener("change", () => {
+      try { Zotero.Prefs.set(PREF_PREFIX + "uiShowFullUrl", !!box.checked, true); } catch (e) { /* ignore */ }
+      renderAll(); // 账号卡片的服务器地址也随开关联动
+    });
   }
 
   async function onTest(id, btn) {
@@ -573,6 +650,7 @@
     bind("pp-mf-detect", "click", onDetect);
     bind("pp-mf-save", "click", onSave);
     bind("pp-mf-cancel", "click", () => { $("pp-ch-form").style.display = "none"; });
+    initShowUrlToggle();
 
     renderAll();
 

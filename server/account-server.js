@@ -81,6 +81,7 @@ const DEFAULT_DAILY_LIMIT = 100;
 const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
 const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
 const MAIL_MAX = 3;                      // 验证/重置邮件请求限速（每 IP 每分钟）
+const GATEWAY_MAX = 20;                  // 网关全局限速（每 IP 每分钟，防高频薅上游 Key）
 const VERIFY_TTL_MS = 24 * 3600e3;       // 邮箱验证链接有效期
 const RESET_TTL_MS = 30 * 60e3;          // 密码重置链接有效期
 const GATEWAY_TIMEOUT_MS = 120e3;        // 网关转发上限（流式应答可能较长）
@@ -93,7 +94,16 @@ const channelsStore = new JsonStore(path.join(DATA_DIR, 'channels.json'), { chan
 
 /* ---------------- 工具 ---------------- */
 
-function log(...a) { console.log('[' + new Date().toISOString() + ']', ...a); }
+// 日志：始终写 server-console.log（任何启动方式都有排障日志，不依赖 stdout 重定向）；
+// 前台交互（TTY）时额外打印到控制台
+const LOG_FILE = path.join(DATA_DIR, 'server-console.log');
+function log(...a) {
+  const line = '[' + new Date().toISOString() + '] ' + a.join(' ');
+  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch (e) { /* ignore */ }
+  if (process.stdout.isTTY) {
+    try { console.log(line); } catch (e) { /* stdout 不可用时静默 */ }
+  }
+}
 
 function uid(prefix) { return prefix + '-' + crypto.randomBytes(6).toString('hex'); }
 
@@ -535,6 +545,12 @@ function gatewayChat(req, res, user) {
     let body = {};
     try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; }
     catch (e) { return json(res, 400, { ok: false, error: '请求体不是合法 JSON' }); }
+
+    // 全局限速：每 IP 每分钟 GATEWAY_MAX 次（正常科研对话远低于此；防高频脚本薅上游 Key）
+    if (rateThrottled('gw:' + clientIp(req), GATEWAY_MAX, LOGIN_WINDOW_MS)) {
+      return json(res, 429, { ok: false,
+        error: '请求过于频繁（每 IP 每分钟 ' + GATEWAY_MAX + ' 次），请稍后再试' });
+    }
 
     const c = activeChannel();
     if (!c) {

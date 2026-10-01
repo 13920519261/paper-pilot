@@ -127,6 +127,8 @@ function Start-Server {
   if ((Get-ServerProcess).Count -gt 0) { return 'starting' }
   try {
     if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Force | Out-Null }
+    # 清除手动停机标记：用户点了启动 = 明确要服务运行（PaperPilotGuard 守护据此恢复守护）
+    Remove-Item (Join-Path $DataDir 'stopped-account.flag') -Force -ErrorAction SilentlyContinue
     if ((Test-Path $ServerLog) -and (Get-Item $ServerLog).Length -gt 20MB) {
       $rotName = 'server-console-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log'
       Move-Item $ServerLog (Join-Path $DataDir $rotName) -Force -ErrorAction SilentlyContinue
@@ -149,6 +151,10 @@ function Stop-Server {
     if ($p.ProcessId -ne $portPid) {
       try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed++ } catch {}
     }
+  }
+  # 手动停机标记：PaperPilotGuard 守护看到此标记不会复活服务（下次 Start-Server 自动清除）
+  if ($killed -gt 0) {
+    try { Set-Content (Join-Path $DataDir 'stopped-account.flag') 'stopped by launcher' -Encoding ASCII } catch {}
   }
   return $killed
 }

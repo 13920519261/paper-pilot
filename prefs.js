@@ -57,3 +57,5 @@ pref("extensions.zotero.paperpilot.cnTranslatorsAuto", true);
 pref("extensions.zotero.paperpilot.cnTranslatorUpdateTime", "0");
 pref("extensions.zotero.paperpilot.cnFetchUseCNKI", true);
 pref("extensions.zotero.paperpilot.cnDownloadDir", "");
+// 0.14.7 新增：设置界面敏感信息默认掩码（接口地址明文开关）
+pref("extensions.zotero.paperpilot.uiShowFullUrl", false);

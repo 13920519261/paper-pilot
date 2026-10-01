@@ -79,6 +79,20 @@
     });
   }
 
+  /* ---------- 敏感信息掩码：👁 切换明文/隐藏 ---------- */
+
+  function bindEye(inputId, btnId) {
+    const input = $(inputId), btn = $(btnId);
+    if (!input || !btn) return;
+    btn.addEventListener("click", () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.style.opacity = show ? "1" : "0.55";
+      btn.title = show ? (zh ? "点击隐藏" : "Click to hide") : (zh ? "点击显示" : "Click to show");
+    });
+    btn.style.opacity = "0.55";
+  }
+
   /* ---------- 初始化（DOM 就绪探测） ---------- */
 
   function init() {
@@ -101,6 +115,10 @@
     bind("pp-es-clear", "click", onEsClear);
     bind("pp-s2-clear", "click", onS2Clear);
     bind("pp-rank-browse", "click", browseRankData);
+    // 敏感字段掩码切换（账号服务器 / easyScholar Key / S2 Key）
+    bindEye("pp-account-server", "pp-account-server-eye");
+    bindEye("pp-es-key", "pp-es-key-eye");
+    bindEye("pp-s2-key", "pp-s2-key-eye");
   }
 
   init();
