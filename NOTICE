@@ -1,0 +1,14 @@
+PaperPilot 文献副驾
+Copyright 2026 Cassiuschen
+
+This product includes software developed by Cassiuschen
+(https://gitee.com/cassiuschen9261/paper-pilot).
+
+"PaperPilot" and "文献副驾" are product names of the copyright holder.
+This NOTICE does not grant any trademark rights.
+
+数据源说明 / Data sources:
+- Semantic Scholar API (https://www.semanticscholar.org/product/api) — 公开学术数据接口
+- easyScholar (https://www.easyscholar.cn) — 期刊等级数据查询
+- Unpaywall (https://unpaywall.org) — 开放获取文献定位
+以上服务均为独立第三方，本项目仅按其公开 API 调用，不包含其数据副本。
