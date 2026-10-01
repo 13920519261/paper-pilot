@@ -4,6 +4,9 @@ Thumbs.db
 .DS_Store
 .workbuddy/
 
+# 账号后台运行时数据（用户/令牌/通道密钥/日志，绝不入库）
+server/data/
+
 # 发行版安装包（Gitee raw 可直链下载；其余构建产物仍不入库）
 !dist/
 !dist/*.xpi

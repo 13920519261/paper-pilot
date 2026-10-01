@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PaperPilot 后台管理</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --line: #e3e6ea; --text: #1f2329;
+    --muted: #6b7280; --brand: #2563eb; --brand-weak: #dbeafe;
+    --ok: #059669; --bad: #dc2626; --warn: #b45309;
+    --radius: 10px; --mono: Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+  header { background: #0d1526; color: #fff; padding: 14px 24px; display: flex;
+    align-items: center; gap: 14px; }
+  header .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--brand);
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: #94a3b8; font-size: 12px; }
+  main { max-width: 1060px; margin: 20px auto; padding: 0 16px 60px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; }
+  .tabs button { border: 0; background: transparent; padding: 8px 22px; border-radius: 7px;
+    font-size: 14px; cursor: pointer; color: var(--muted); }
+  .tabs button.on { background: var(--brand); color: #fff; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .statusline { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+  .statusline .item { display: flex; gap: 6px; align-items: baseline; }
+  .statusline .k { color: var(--muted); font-size: 12px; }
+  .statusline .v { font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  .dot.on { background: var(--ok); } .dot.off { background: #cbd5e1; } .dot.warn { background: var(--warn); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 500;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  tr.active-row td { background: #f0f7ff; }
+  .name-cell { font-weight: 600; }
+  .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .btn { border: 1px solid var(--line); background: #fff; border-radius: 7px; padding: 5px 12px;
+    font-size: 13px; cursor: pointer; color: var(--text); }
+  .btn:hover { border-color: var(--brand); color: var(--brand); }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .btn.sm { padding: 3px 9px; font-size: 12px; }
+  .btn[disabled] { opacity: .45; cursor: not-allowed; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap; }
+  form.inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  input, select, textarea { border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+    font-size: 13px; font-family: inherit; background: #fff; color: var(--text); }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-weak); border-color: var(--brand); }
+  .msg { margin: 10px 0 0; font-size: 13px; min-height: 20px; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--bad); }
+  .mask { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); display: none;
+    align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; }
+  .mask.show { display: flex; }
+  .modal { background: #fff; border-radius: 12px; width: 560px; max-width: 100%;
+    max-height: 86vh; overflow: auto; padding: 20px 22px; }
+  .modal h3 { margin: 0 0 14px; font-size: 15px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid2 .wide { grid-column: 1 / -1; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px;
+    cursor: pointer; background: #fff; }
+  .chip.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: 12px;
+    background: var(--brand-weak); color: var(--brand); }
+  .badge.gray { background: #eef0f3; color: var(--muted); }
+  .badge.green { background: #d1fae5; color: var(--ok); }
+  .empty { text-align: center; color: var(--muted); padding: 26px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">P</div>
+  <div>
+    <h1>PaperPilot 后台管理</h1>
+    <div class="sub">账号后台 · 模型通道（官方网关上游）· 仅本机访问</div>
+  </div>
+</header>
+<main>
+  <div class="tabs">
+    <button id="tab-channels" class="on" onclick="switchTab('channels')">模型通道</button>
+    <button id="tab-users" onclick="switchTab('users')">账号管理</button>
+  </div>
+
+  <!-- ============ 模型通道 ============ -->
+  <section id="pane-channels">
+    <div class="card">
+      <h2>网关状态</h2>
+      <div class="statusline">
+        <div class="item"><span class="k">活动通道</span><span class="v" id="ch-active">—</span></div>
+        <div class="item"><span class="k">默认模型</span><span class="v" id="ch-model">—</span></div>
+        <div class="item"><span class="k">通道总数</span><span class="v" id="ch-total">0</span></div>
+        <div class="item"><span class="k">注册用户</span><span class="v" id="ch-users">0</span></div>
+      </div>
+      <p class="hint" style="margin:10px 0 0">
+        官方网关把登录用户的请求转发到「活动通道」上游；<code>auto</code> 模型自动映射为通道默认模型。
+        插件端默认地址 <code>http://127.0.0.1:8000</code>，无需任何改动。
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">通道列表</h2>
+        <button class="btn primary" onclick="openChannelForm(null)">＋ 新增通道</button>
+      </div>
+      <table id="ch-table">
+        <thead><tr>
+          <th style="width:34px"></th><th>名称</th><th>厂商</th><th>接口地址</th>
+          <th>模型</th><th>密钥</th><th style="width:230px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="ch-empty" style="display:none">
+        暂无通道——登录用户调用官方模型会收到 503，请先新增一条
+      </div>
+      <div class="msg" id="ch-msg"></div>
+    </div>
+  </section>
+
+  <!-- ============ 账号管理 ============ -->
+  <section id="pane-users" style="display:none">
+    <div class="card">
+      <h2>注册新账号</h2>
+      <form class="inline" id="user-form" onsubmit="return createUser(event)">
+        <div class="field"><label>邮箱 *</label><input id="u-email" type="email" required style="width:220px"></div>
+        <div class="field"><label>密码 *（≥8 位）</label><input id="u-password" type="password" required minlength="8" style="width:160px"></div>
+        <div class="field"><label>昵称</label><input id="u-nickname" style="width:120px"></div>
+        <div class="field"><label>套餐</label>
+          <select id="u-plan"><option>Free</option><option>Pro</option><option>Team</option></select></div>
+        <div class="field"><label>套餐有效期（可空）</label><input id="u-expires" type="date"></div>
+        <button class="btn primary" type="submit">注册</button>
+      </form>
+      <div class="msg" id="u-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">用户列表</h2>
+        <button class="btn" onclick="loadUsers()">刷新</button></div>
+      <table id="user-table">
+        <thead><tr>
+          <th>邮箱</th><th>昵称</th><th>套餐</th><th>今日用量</th>
+          <th>套餐有效期</th><th>最近登录</th><th style="width:250px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="user-empty" style="display:none">暂无用户</div>
+    </div>
+  </section>
+</main>
+
+<!-- 通道 新增/编辑 弹窗 -->
+<div class="mask" id="ch-mask">
+  <div class="modal">
+    <h3 id="ch-form-title">新增通道</h3>
+    <div class="grid2">
+      <div class="field wide"><label>厂商预设</label><select id="f-provider" onchange="applyPreset()"></select></div>
+      <div class="field"><label>通道 ID（小写字母/数字/连字符）</label><input id="f-id" placeholder="deepseek-main"></div>
+      <div class="field"><label>名称</label><input id="f-name" placeholder="DeepSeek 日常"></div>
+      <div class="field wide"><label>Base URL *（OpenAI 兼容 /v1）</label>
+        <input id="f-baseurl" placeholder="https://api.deepseek.com/v1" style="width:100%"></div>
+      <div class="field"><label>API Key（编辑时留空 = 保持原密钥）</label>
+        <input id="f-apikey" type="password" placeholder="sk-..." autocomplete="new-password"></div>
+      <div class="field"><label>默认模型（调用方传 auto 时使用）</label><input id="f-model" placeholder="deepseek-chat"></div>
+      <div class="field wide"><label>模型列表（可选，供 /v1/models 展示）</label>
+        <input id="f-models" placeholder="逗号分隔，或点「拉取上游模型」自动填充" style="width:100%"></div>
+      <div class="field wide"><label>extraBody（JSON，并入调用方请求体，可选）</label>
+        <textarea id="f-extrabody" rows="2" style="width:100%" placeholder='{"reasoning_effort":"low"}'></textarea></div>
+      <div class="field"><label>探活超时 ms</label><input id="f-timeout" type="number" value="12000" min="2000" step="1000"></div>
+    </div>
+    <div class="actions" style="justify-content:space-between">
+      <div style="display:flex;gap:8px">
+        <button class="btn" type="button" onclick="detectKey()">🔍 检测（填了 Key）</button>
+        <button class="btn" type="button" onclick="pullModels()">📡 拉取上游模型</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn" type="button" onclick="closeMask('ch-mask')">取消</button>
+        <button class="btn primary" type="button" onclick="saveChannel()">保存</button>
+      </div>
+    </div>
+    <div class="msg" id="f-msg"></div>
+  </div>
+</div>
+
+<!-- 用户编辑弹窗 -->
+<div class="mask" id="user-mask">
+  <div class="modal" style="width:420px">
+    <h3>编辑用户 <span id="eu-email" class="mono"></span></h3>
+    <div class="field" style="margin-bottom:12px"><label>昵称</label><input id="eu-nickname"></div>
+    <div class="field" style="margin-bottom:12px"><label>套餐</label>
+      <select id="eu-plan"><option>Free</option><option>Pro</option><option>Team</option></select></div>
+    <div class="field" style="margin-bottom:12px"><label>套餐有效期（清空 = 永久）</label>
+      <input id="eu-expires" type="date"></div>
+    <div class="actions">
+      <button class="btn" type="button" onclick="closeMask('user-mask')">取消</button>
+      <button class="btn primary" type="button" onclick="saveUser()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+var providers = [], editingChannel = null, editingUser = null;
+
+function $(id) { return document.getElementById(id); }
+function msg(id, text, ok) {
+  var el = $(id); el.textContent = text || ''; el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+function closeMask(id) { $(id).classList.remove('show'); }
+function api(method, path, body) {
+  var opt = { method: method, headers: {} };
+  if (body !== undefined) {
+    opt.headers['Content-Type'] = 'application/json';
+    opt.body = JSON.stringify(body);
+  }
+  return fetch(path, opt).then(function (r) {
+    return r.json().catch(function () { return { ok: false, error: 'HTTP ' + r.status }; })
+      .then(function (j) { j._status = r.status; return j; });
+  });
+}
+
+function switchTab(t) {
+  $('tab-channels').classList.toggle('on', t === 'channels');
+  $('tab-users').classList.toggle('on', t === 'users');
+  $('pane-channels').style.display = t === 'channels' ? '' : 'none';
+  $('pane-users').style.display = t === 'users' ? '' : 'none';
+  if (location.hash !== '#' + t) location.hash = t;
+  if (t === 'users') loadUsers();
+}
+window.addEventListener('hashchange', function () {
+  var h = location.hash.replace('#', '');
+  if (h === 'users' || h === 'channels') switchTab(h);
+});
+
+/* ---------------- 通道 ---------------- */
+function loadChannels() {
+  return api('GET', '/api/admin/channels').then(function (r) {
+    if (!r.ok) { msg('ch-msg', r.error || '加载失败'); return; }
+    var tb = $('ch-table').querySelector('tbody');
+    tb.textContent = '';
+    $('ch-empty').style.display = r.channels.length ? 'none' : '';
+    var active = r.channels.length ? (r.active && r.channels.some(function (c) { return c.id === r.active; })
+      ? r.channels.filter(function (c) { return c.id === r.active; })[0] : null) : null;
+    $('ch-active').innerHTML = active
+      ? '<span class="dot on"></span>' + esc(active.name)
+      : '<span class="dot warn"></span>未设置（官方调用将返回 503）';
+    $('ch-model').textContent = active ? (active.model || 'auto') : '—';
+    $('ch-total').textContent = r.channels.length;
+    r.channels.forEach(function (c) {
+      var tr = document.createElement('tr');
+      if (c.id === r.active) tr.className = 'active-row';
+      var isActive = c.id === r.active;
+      tr.innerHTML =
+        '<td>' + (isActive ? '<span class="dot on"></span>' : '<span class="dot off"></span>') + '</td>' +
+        '<td class="name-cell">' + esc(c.name) + '</td>' +
+        '<td>' + (providerName(c.provider)) + '</td>' +
+        '<td class="mono">' + esc(shorten(c.baseUrl, 38)) + '</td>' +
+        '<td class="mono">' + esc(c.model) + '</td>' +
+        '<td class="mono">' + esc(c.apiKeyMasked || '—') + '</td>';
+      var td = document.createElement('td');
+      td.style.whiteSpace = 'nowrap';
+      td.innerHTML =
+        '<button class="btn sm" ' + (isActive ? 'disabled' : '') + ' onclick="setActive(\'' + c.id + '\')">设为活动</button> ' +
+        '<button class="btn sm" onclick="testCh(\'' + c.id + '\')">实测</button> ' +
+        '<button class="btn sm" onclick="openChannelForm(\'' + c.id + '\')">编辑</button> ' +
+        '<button class="btn sm danger" onclick="delChannel(\'' + c.id + '\')">删除</button>';
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+    api('GET', '/api/health').then(function (h) { if (h.ok) $('ch-users').textContent = h.users; });
+  });
+}
+function providerName(pid) {
+  var p = providers.filter(function (x) { return x.id === pid; })[0];
+  return p ? esc(p.name) : '<span class="badge gray">自定义</span>';
+}
+function setActive(id) {
+  api('PUT', '/api/admin/channels/active', { id: id }).then(function (r) {
+    msg('ch-msg', r.ok ? '已切换活动通道' : (r.error || '失败'), r.ok);
+    loadChannels();
+  });
+}
+function testCh(id) {
+  msg('ch-msg', '正在实测调用…');
+  api('POST', '/api/admin/channels/' + id + '/test', {}).then(function (r) {
+    msg('ch-msg', r.ok ? '✓ 通道正常（' + r.model + '，' + r.latencyMs + 'ms）：' + r.reply : '✗ ' + (r.error || '失败'), r.ok);
+  });
+}
+function delChannel(id) {
+  if (!confirm('确定删除该通道？删除后不可恢复。')) return;
+  api('DELETE', '/api/admin/channels/' + id).then(function (r) {
+    msg('ch-msg', r.ok ? '已删除' : (r.error || '失败'), r.ok);
+    loadChannels();
+  });
+}
+
+function openChannelForm(id) {
+  editingChannel = null;
+  $('ch-form-title').textContent = '新增通道';
+  ['f-id', 'f-name', 'f-baseurl', 'f-apikey', 'f-model', 'f-models', 'f-extrabody'].forEach(function (f) { $(f).value = ''; });
+  $('f-timeout').value = 12000;
+  $('f-provider').value = 'custom';
+  if (id) {
+    api('GET', '/api/admin/channels').then(function (r) {
+      if (!r.ok) return;
+      var c = r.channels.filter(function (x) { return x.id === id; })[0];
+      if (!c) return;
+      editingChannel = c;
+      $('ch-form-title').textContent = '编辑通道：' + c.name;
+      $('f-id').value = c.id; $('f-id').disabled = true;
+      $('f-name').value = c.name;
+      $('f-provider').value = c.provider || 'custom';
+      $('f-baseurl').value = c.baseUrl;
+      $('f-model').value = c.model;
+      $('f-models').value = (c.models || []).join(', ');
+      $('f-extrabody').value = Object.keys(c.extraBody || {}).length ? JSON.stringify(c.extraBody) : '';
+      $('f-timeout').value = c.timeoutMs || 12000;
+      $('f-msg').textContent = '提示：API Key 留空则保持原密钥不变';
+      $('f-msg').className = 'msg';
+    });
+  } else {
+    $('f-msg').textContent = '';
+    $('f-id').disabled = false;
+  }
+  $('ch-mask').classList.add('show');
+}
+function applyPreset() {
+  var p = providers.filter(function (x) { return x.id === $('f-provider').value; })[0];
+  if (!p) return;
+  if (!$('f-baseurl').value || confirm('用预设覆盖当前 Base URL / 模型列表？')) {
+    $('f-baseurl').value = p.baseUrl || '';
+    if (p.models && p.models.length && !$('f-models').value) $('f-models').value = p.models.join(', ');
+    if (!$('f-name').value) $('f-name').value = p.name;
+    if (!$('f-model').value && p.models && p.models.length) $('f-model').value = p.models[0];
+    if (p.extraBody && !$('f-extrabody').value) $('f-extrabody').value = JSON.stringify(p.extraBody);
+    if (!$('f-id').value && p.id !== 'custom') $('f-id').value = p.id + '-main';
+  }
+}
+function detectKey() {
+  var key = $('f-apikey').value.trim();
+  if (!key) return msg('f-msg', '请先填写 API Key', false);
+  msg('f-msg', '正在按密钥格式探测厂商…');
+  api('POST', '/api/admin/channels/detect', { apiKey: key, baseUrl: $('f-baseurl').value.trim() })
+    .then(function (r) {
+      if (r.ok) {
+        $('f-provider').value = r.provider;
+        if (r.provider !== 'custom') $('f-id').value = r.provider + '-main';
+        $('f-baseurl').value = r.baseUrl;
+        $('f-models').value = r.models.join(', ');
+        if (!$('f-model').value && r.models.length) $('f-model').value = r.models[0];
+        msg('f-msg', '✓ 识别为「' + r.providerName + '」，已拉到 ' + r.models.length + ' 个模型（' + r.latencyMs + 'ms）', true);
+      } else {
+        if (r.provider) { $('f-provider').value = r.provider; }
+        msg('f-msg', '✗ ' + r.error, false);
+      }
+    });
+}
+function pullModels() {
+  var base = $('f-baseurl').value.trim();
+  if (!base) return msg('f-msg', '请先填写 Base URL', false);
+  msg('f-msg', '正在拉取上游模型列表…');
+  var p;
+  if (editingChannel) {
+    // 编辑态：服务端用通道已存密钥直拉
+    p = api('GET', '/api/admin/channels/' + editingChannel.id + '/models');
+  } else {
+    // 新增态：按表单当前 baseUrl+key 直探（key 可空 = 免密接口）
+    p = api('POST', '/api/admin/channels/detect',
+      { apiKey: $('f-apikey').value.trim(), baseUrl: base })
+      .then(function (d) {
+        if (d.ok) return d;
+        throw new Error(d.error || '拉取失败');
+      });
+  }
+  p.then(function (r) {
+    $('f-models').value = r.models.join(', ');
+    if (!$('f-model').value && r.models.length) $('f-model').value = r.models[0];
+    msg('f-msg', '✓ 拉到 ' + r.models.length + ' 个模型（' + r.latencyMs + 'ms）', true);
+  }).catch(function (e) { msg('f-msg', '✗ ' + (e.message || e), false); });
+}
+function saveChannel() {
+  var extra = {};
+  var raw = $('f-extrabody').value.trim();
+  if (raw) {
+    try { extra = JSON.parse(raw); }
+    catch (e) { return msg('f-msg', 'extraBody 不是合法 JSON', false); }
+  }
+  var body = {
+    id: $('f-id').value.trim(),
+    name: $('f-name').value.trim(),
+    provider: $('f-provider').value,
+    baseUrl: $('f-baseurl').value.trim(),
+    apiKey: $('f-apikey').value,   // 编辑留空 = 服务端保持原值
+    model: $('f-model').value.trim() || 'auto',
+    models: $('f-models').value.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean),
+    extraBody: extra,
+    timeoutMs: Number($('f-timeout').value) || 12000,
+  };
+  var p = editingChannel
+    ? api('PUT', '/api/admin/channels/' + editingChannel.id, body)
+    : api('POST', '/api/admin/channels', body);
+  p.then(function (r) {
+    if (r.ok) { closeMask('ch-mask'); msg('ch-msg', '✓ 已保存通道：' + body.name, true); loadChannels(); }
+    else msg('f-msg', r.error || '保存失败', false);
+  });
+}
+
+/* ---------------- 用户 ---------------- */
+function createUser(ev) {
+  ev.preventDefault();
+  var body = {
+    email: $('u-email').value.trim(),
+    password: $('u-password').value,
+    nickname: $('u-nickname').value.trim(),
+    plan: $('u-plan').value,
+    expiresAt: $('u-expires').value || null,
+  };
+  api('POST', '/api/admin/users', body).then(function (r) {
+    if (r.ok) {
+      msg('u-msg', '✓ 已注册 ' + body.email + '，可在 Zotero 插件设置中登录', true);
+      $('u-email').value = ''; $('u-password').value = ''; $('u-nickname').value = ''; $('u-expires').value = '';
+      loadUsers();
+    } else msg('u-msg', r.error || '注册失败', false);
+  });
+  return false;
+}
+function loadUsers() {
+  api('GET', '/api/admin/users').then(function (r) {
+    if (!r.ok) return;
+    var tb = $('user-table').querySelector('tbody');
+    tb.textContent = '';
+    $('user-empty').style.display = r.users.length ? 'none' : '';
+    r.users.forEach(function (u) {
+      var tr = document.createElement('tr');
+      var expBadge = u.expiresAt
+        ? (new Date(u.expiresAt) < new Date() ? '<span class="badge gray">已过期</span>' : '<span class="badge green">' + u.expiresAt.slice(0, 10) + '</span>')
+        : '<span class="badge gray">永久</span>';
+      tr.innerHTML =
+        '<td class="mono">' + esc(u.email) + '</td>' +
+        '<td>' + esc(u.nickname || '—') + '</td>' +
+        '<td><span class="badge">' + esc(u.plan) + '</span></td>' +
+        '<td>' + u.dailyUsed + ' / ' + u.dailyLimit + '</td>' +
+        '<td>' + expBadge + '</td>' +
+        '<td class="mono">' + (u.lastLoginAt ? u.lastLoginAt.replace('T', ' ').slice(0, 16) : '从未') + '</td>';
+      var td = document.createElement('td');
+      td.style.whiteSpace = 'nowrap';
+      td.innerHTML =
+        '<button class="btn sm" onclick="editUser(\'' + u.id + '\')">编辑</button> ' +
+        '<button class="btn sm" onclick="resetPwd(\'' + u.id + '\',\'' + esc(u.email) + '\')">重置密码</button> ' +
+        '<button class="btn sm danger" onclick="delUser(\'' + u.id + '\',\'' + esc(u.email) + '\')">删除</button>';
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+  });
+}
+function editUser(id) {
+  api('GET', '/api/admin/users').then(function (r) {
+    if (!r.ok) return;
+    var u = r.users.filter(function (x) { return x.id === id; })[0];
+    if (!u) return;
+    editingUser = u;
+    $('eu-email').textContent = u.email;
+    $('eu-nickname').value = u.nickname || '';
+    $('eu-plan').value = ['Free', 'Pro', 'Team'].indexOf(u.planRaw) >= 0 ? u.planRaw : 'Free';
+    $('eu-expires').value = u.expiresAt ? u.expiresAt.slice(0, 10) : '';
+    $('user-mask').classList.add('show');
+  });
+}
+function saveUser() {
+  api('PUT', '/api/admin/users/' + editingUser.id, {
+    nickname: $('eu-nickname').value.trim(),
+    plan: $('eu-plan').value,
+    expiresAt: $('eu-expires').value || null,
+  }).then(function (r) {
+    if (r.ok) { closeMask('user-mask'); loadUsers(); }
+    else alert(r.error || '保存失败');
+  });
+}
+function resetPwd(id, email) {
+  var pw = prompt('为 ' + email + ' 设置新密码（≥8 位，将吊销其全部登录会话）：');
+  if (pw === null) return;
+  api('POST', '/api/admin/users/' + id + '/password', { password: pw }).then(function (r) {
+    if (r.ok) alert('✓ 密码已重置');
+    else alert(r.error || '失败');
+  });
+}
+function delUser(id, email) {
+  if (!confirm('确定删除用户 ' + email + '？其全部登录会话将被吊销。')) return;
+  api('DELETE', '/api/admin/users/' + id).then(function () { loadUsers(); loadChannels(); });
+}
+
+/* ---------------- 通用 ---------------- */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function shorten(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+/* 初始化 */
+api('GET', '/api/admin/providers').then(function (r) {
+  if (!r.ok) return;
+  providers = r.providers;
+  var sel = $('f-provider');
+  sel.textContent = '';
+  r.providers.forEach(function (p) {
+    var o = document.createElement('option');
+    o.value = p.id; o.textContent = p.name + (p.baseUrl ? '（' + p.baseUrl + '）' : '');
+    sel.appendChild(o);
+  });
+});
+loadChannels();
+if (location.hash === '#users') switchTab('users');
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+' PaperPilot account backend server - hidden starter (no console window)
+' starts node server\account-server.js with WorkingDirectory=server, logs to data\server-console.log
+' note: cmd /c needs the whole command wrapped in an extra pair of quotes (same form as launcher.ps1 Start-Server)
+' ASCII only. Used by launcher.ps1 auto-start (HKCU Run key) and can be double-clicked directly.
+' v1 (2026-10-02): scan .workbuddy binaries for the newest node version instead of hardcoding
+Dim shell, fso, scriptDir, serverDir, logDir, nodeExe, logFile, cmdLine
+Set fso = CreateObject("Scripting.FileSystemObject")
+scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
+serverDir = fso.GetParentFolderName(scriptDir) & "\server"
+logDir = serverDir & "\data"
+If Not fso.FolderExists(logDir) Then fso.CreateFolder(logDir)
+
+Function FindLatestNode(versionsDir)
+    Dim f, bestPath, bestKey, name, parts, p2, k
+    bestPath = ""
+    bestKey = -1
+    If Not fso.FolderExists(versionsDir) Then
+        FindLatestNode = ""
+        Exit Function
+    End If
+    For Each f In fso.GetFolder(versionsDir).SubFolders
+        If fso.FileExists(f.Path & "\node.exe") Then
+            name = f.Name
+            parts = Split(name, ".")
+            If UBound(parts) >= 2 Then
+                p2 = Split(parts(2), "-")
+                k = Val(parts(0)) * 1000000 + Val(parts(1)) * 1000 + Val(p2(0))
+                If k > bestKey Then
+                    bestKey = k
+                    bestPath = f.Path & "\node.exe"
+                End If
+            End If
+        End If
+    Next
+    FindLatestNode = bestPath
+End Function
+
+nodeExe = FindLatestNode("C:\Users\Administrator\.workbuddy\binaries\node\versions")
+If nodeExe = "" Then nodeExe = "node"
+logFile = logDir & "\server-console.log"
+cmdLine = "cmd /c " & """" & """" & nodeExe & """" & " account-server.js >> " & """" & logFile & """" & " 2>&1" & """"
+Set shell = CreateObject("WScript.Shell")
+shell.CurrentDirectory = serverDir
+shell.Run cmdLine, 0, False
