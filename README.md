@@ -2,7 +2,7 @@
 
 国产大模型驱动的 Zotero 7-10 插件：划词翻译 / 精读问答（流式）、工作台 2.0、功能中心、全文对照翻译、AI 综述 / 思维导图 / Anki 制卡、中文元数据、阅读状态、期刊分区与被引量列、库健康维护……一个插件覆盖文献工作流。
 
-> 当前版本：**0.14.3** ｜ 兼容 Zotero 7 / 8 / 9 / 10
+> 当前版本：**0.14.4** ｜ 兼容 Zotero 7 / 8 / 9 / 10
 
 ## 功能总览（34 项，分 6 类）
 
@@ -55,8 +55,9 @@
 
 ## 更新通道
 
-插件内置 `update_url`，新版发布后 Zotero 会自动提示更新（无需手动重装）。
-更新清单：`paperpilot-update.json`（指向发布域名上的 xpi）。
+插件内置 `update_url`（0.14.4 起 = Gitee raw 直链），新版 push 后 Zotero 自动提示更新（无需手动重装，`git push origin main` 即发版）。
+更新清单：`paperpilot-update.json`（版本条目 + Gitee raw xpi 直链）。
+> 0.14.3 及更早版本的 `update_url` 指向 gujinbencao 服务器——存量用户需将仓库 `paperpilot-update.json` 上传一次到该服务器对应路径，即可收到 0.14.4 并永久切换到 Gitee 链路。
 
 ## 目录结构
 
