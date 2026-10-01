@@ -355,17 +355,32 @@
     const box = $("pp-mf-models");
     box.innerHTML = "";
     if (!mfModels.length) {
-      box.appendChild(el("span", { style: "font-size:11.5px;color:#888;" }, "暂无模型，可拉取上游或手动添加"));
+      box.appendChild(el("span", { style: "font-size:11.5px;color:#888;" },
+        "暂无模型，可拉取上游或手动添加；点击模型名即设为默认模型"));
       return;
     }
+    const cur = ($("pp-mf-model").value || "").trim();
     mfModels.forEach((m, i) => {
+      const selected = m === cur;
       const chip = el("span", {
-        style: "font-size:12px;padding:2px 8px;border:1px solid #bbb;border-radius:6px;background:#f5f5f5;",
+        style: "font-size:12px;padding:2px 8px;border-radius:6px;cursor:pointer;" +
+          "border:1px solid " + (selected ? "#2563eb" : "#bbb") + ";" +
+          "background:" + (selected ? "#e6f0fe" : "#f5f5f5") + ";" +
+          (selected ? "color:#2563eb;font-weight:600;" : ""),
+        title: "点击设为该通道默认模型",
       });
       chip.appendChild(document.createTextNode(m + " "));
-      const x = el("span", { style: "cursor:pointer;color:#c0392b;font-weight:700;", title: "移除" }, "×");
-      x.addEventListener("click", () => { mfModels.splice(i, 1); renderModelChips(); });
+      const x = el("span", { style: "cursor:pointer;color:#c0392b;font-weight:700;", title: "从列表移除" }, "×");
+      x.addEventListener("click", (ev) => {
+        ev.stopPropagation(); // 只移除，不触发「设为默认」
+        mfModels.splice(i, 1);
+        renderModelChips();
+      });
       chip.appendChild(x);
+      chip.addEventListener("click", () => {
+        $("pp-mf-model").value = m;
+        renderModelChips();
+      });
       box.appendChild(chip);
     });
   }

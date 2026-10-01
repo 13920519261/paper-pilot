@@ -286,7 +286,7 @@ function Show-ChannelManager {
 
   $dlg = New-Object System.Windows.Forms.Form
   $dlg.Text = 'AI 模型通道管理（官方网关上游）'
-  $dlg.ClientSize = New-Object System.Drawing.Size(568, 470)
+  $dlg.ClientSize = New-Object System.Drawing.Size(568, 480)
   $dlg.StartPosition = 'CenterParent'
   $dlg.FormBorderStyle = 'FixedSingle'
   $dlg.MaximizeBox = $false
@@ -294,7 +294,7 @@ function Show-ChannelManager {
   $dlg.Icon = $script:appIcon
 
   $hint = New-Object System.Windows.Forms.Label
-  $hint.Text = '通道 = 官方网关的上游：登录用户经 /v1 网关调用「活动通道」；auto 模型自动映射为通道默认模型。'
+  $hint.Text = '通道 = 官方网关的上游：登录用户经 /v1 网关调用「活动通道」；auto 自动映射为「官方默认模型」，可在下方下拉选择或自定义输入。'
   $hint.ForeColor = [System.Drawing.Color]::DimGray
   $hint.SetBounds(12, 10, 544, 34)
   [void]$dlg.Controls.Add($hint)
@@ -312,7 +312,18 @@ function Show-ChannelManager {
   $lblInfo.SetBounds(12, 300, 544, 20)
   [void]$dlg.Controls.Add($lblInfo)
 
+  # 官方默认模型快捷行：活动通道的 model 字段 = 登录用户 auto 映射的模型
+  $lblDef = New-Object System.Windows.Forms.Label
+  $lblDef.Text = '官方默认模型：'
+  $lblDef.SetBounds(12, 331, 94, 18)
+  [void]$dlg.Controls.Add($lblDef)
+  $cmbDefault = New-Object System.Windows.Forms.ComboBox
+  $cmbDefault.DropDownStyle = 'DropDown'
+  $cmbDefault.SetBounds(108, 328, 296, 24)
+  [void]$dlg.Controls.Add($cmbDefault)
+
   $script:cmRows = @()
+  $script:cmActiveId = $null
 
   function New-DlgBtn($parent, [string]$text, [int]$x, [int]$y, [int]$w, $handler) {
     $b = New-Object System.Windows.Forms.Button
@@ -328,6 +339,7 @@ function Show-ChannelManager {
     try {
       $r = Invoke-AdminApi 'GET' '/api/admin/channels'
       $script:cmRows = @($r.channels)
+      $script:cmActiveId = $r.active
       $lb.Items.Clear()
       $i = 0
       foreach ($c in $r.channels) {
@@ -337,13 +349,28 @@ function Show-ChannelManager {
         [void]$lb.Items.Add(('{0} {1,-22} [{2}] {3}  {4}' -f $mark, $c.name, $c.model, $c.apiKeyMasked, $prov))
         $i++
       }
-      if ($r.channels.Count -eq 0) {
-        $lblInfo.Text = '暂无通道——登录用户调用官方模型会收到 503，请先新增一条'
+      $actCh = $null
+      foreach ($c in $r.channels) { if ($c.id -eq $r.active) { $actCh = $c; break } }
+      # 官方默认模型下拉跟随活动通道（可下拉选择，也可自由输入自定义模型名）
+      $cmbDefault.Items.Clear()
+      if ($actCh) {
+        foreach ($m in @($actCh.models)) {
+          if ($m) { [void]$cmbDefault.Items.Add([string]$m) }
+        }
+        if ($actCh.model -and $actCh.model -ne 'auto') {
+          $cmbDefault.Text = [string]$actCh.model
+          if (-not $cmbDefault.Items.Contains([string]$actCh.model)) { [void]$cmbDefault.Items.Add([string]$actCh.model) }
+        } else {
+          $cmbDefault.Text = ''
+        }
+        $lblInfo.Text = '活动通道：' + $actCh.name + '（默认模型 ' + $actCh.model + '）· 共 ' + $r.channels.Count + ' 个'
       } else {
-        $act = ''
-        foreach ($c in $r.channels) { if ($c.id -eq $r.active) { $act = $c.name + '（' + $c.model + '）' } }
-        if ($act) { $lblInfo.Text = '活动通道：' + $act + ' · 共 ' + $r.channels.Count + ' 个' }
-        else { $lblInfo.Text = '⚠ 未设置活动通道（官方调用将返回 503）· 共 ' + $r.channels.Count + ' 个' }
+        $cmbDefault.Text = ''
+        if ($r.channels.Count -eq 0) {
+          $lblInfo.Text = '暂无通道——登录用户调用官方模型会收到 503，请先新增一条'
+        } else {
+          $lblInfo.Text = '⚠ 未设置活动通道（官方调用将返回 503）· 共 ' + $r.channels.Count + ' 个'
+        }
       }
     } catch {
       $lblInfo.Text = '加载失败：' + (Get-HttpErrorDetail $_)
@@ -355,7 +382,31 @@ function Show-ChannelManager {
     return $script:cmRows[$lb.SelectedIndex]
   }
 
-  $btnActivate = New-DlgBtn $dlg '设为活动' 12 330 104 {
+  $btnPullDef = New-DlgBtn $dlg '📡 拉取' 410 326 70 {
+    if (-not $script:cmActiveId) { $lblInfo.Text = '请先在列表中设置活动通道'; return }
+    $lblInfo.Text = '正在拉取活动通道的模型列表…'
+    [System.Windows.Forms.Application]::DoEvents()
+    try {
+      $r = Invoke-AdminApi 'GET' ('/api/admin/channels/' + $script:cmActiveId + '/models')
+      $cmbDefault.Items.Clear()
+      foreach ($m in @($r.models)) { [void]$cmbDefault.Items.Add([string]$m) }
+      $cur = $cmbDefault.Text.Trim()
+      if ($cur -and -not $cmbDefault.Items.Contains($cur)) { [void]$cmbDefault.Items.Add($cur) }
+      $lblInfo.Text = '✓ 拉到 ' + @($r.models).Count + ' 个模型——请下拉选择默认官方模型'
+    } catch { $lblInfo.Text = '✗ 拉取失败：' + (Get-HttpErrorDetail $_) }
+  }
+  $btnSetDef = New-DlgBtn $dlg '设为默认' 484 326 72 {
+    if (-not $script:cmActiveId) { $lblInfo.Text = '请先在列表中设置活动通道'; return }
+    $m = $cmbDefault.Text.Trim()
+    if (-not $m) { $lblInfo.Text = '请下拉选择或输入默认官方模型'; return }
+    try {
+      [void](Invoke-AdminApi 'PUT' ('/api/admin/channels/' + $script:cmActiveId) @{ model = $m })
+      $lblInfo.Text = '✓ 官方默认模型已设为 ' + $m + '（登录用户 auto 即走此模型）'
+      Refresh-CmList
+    } catch { $lblInfo.Text = '✗ 设置失败：' + (Get-HttpErrorDetail $_) }
+  }
+
+  $btnActivate = New-DlgBtn $dlg '设为活动' 12 360 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     try {
@@ -364,7 +415,7 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '切换失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnTest = New-DlgBtn $dlg '实测' 124 330 104 {
+  $btnTest = New-DlgBtn $dlg '实测' 124 360 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $lblInfo.Text = '正在实测「' + $c.name + '」，请稍候…'
@@ -383,13 +434,13 @@ function Show-ChannelManager {
       $lblInfo.Text = '实测请求失败'
     }
   }
-  $btnEdit = New-DlgBtn $dlg '编辑' 236 330 104 {
+  $btnEdit = New-DlgBtn $dlg '编辑' 236 360 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     [void](Show-ChannelForm $c)
     Refresh-CmList
   }
-  $btnDel = New-DlgBtn $dlg '删除' 348 330 104 {
+  $btnDel = New-DlgBtn $dlg '删除' 348 360 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $r = [System.Windows.Forms.MessageBox]::Show('确定删除通道「' + $c.name + '」？删除后不可恢复。', '删除通道', 'YesNo', 'Question')
@@ -400,19 +451,19 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '删除失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnClose = New-DlgBtn $dlg '关闭' 460 330 96 { $dlg.Close() }
+  $btnClose = New-DlgBtn $dlg '关闭' 460 360 96 { $dlg.Close() }
 
-  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 368 180 {
+  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 396 180 {
     [void](Show-ChannelForm $null)
     Refresh-CmList
   }
-  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 368 180 { Open-Url $AdminPage }
-  $btnRefresh = New-DlgBtn $dlg '刷新' 388 368 168 { Refresh-CmList }
+  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 396 180 { Open-Url $AdminPage }
+  $btnRefresh = New-DlgBtn $dlg '刷新' 388 396 168 { Refresh-CmList }
 
   $tip = New-Object System.Windows.Forms.Label
-  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。"
+  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。`n「官方默认模型」= 活动通道的默认模型（登录用户 auto 映射），从拉取列表选择或输入自定义名后点「设为默认」。"
   $tip.ForeColor = [System.Drawing.Color]::DimGray
-  $tip.SetBounds(12, 408, 544, 40)
+  $tip.SetBounds(12, 432, 544, 40)
   [void]$dlg.Controls.Add($tip)
 
   Refresh-CmList
@@ -470,11 +521,27 @@ function Show-ChannelForm($editing) {
 
   [void](New-FLabel $dlg 'API Key（编辑时留空 = 保持原密钥）' 12 168 260)
   $txtKey = New-FInput $dlg 12 188 260 $true
-  [void](New-FLabel $dlg '默认模型（调用方传 auto 时使用）' 292 168 256)
-  $txtModel = New-FInput $dlg 292 188 256 $false
+  [void](New-FLabel $dlg '默认模型（auto 映射；可下拉或自定义）' 292 168 256)
+  $cmbModel = New-Object System.Windows.Forms.ComboBox
+  $cmbModel.DropDownStyle = 'DropDown'
+  $cmbModel.Location = New-Object System.Drawing.Point(292, 188)
+  $cmbModel.Size = New-Object System.Drawing.Size(256, 24)
+  [void]$dlg.Controls.Add($cmbModel)
 
   [void](New-FLabel $dlg '模型列表（逗号分隔，供 /v1/models 展示；可点「📡 拉取」自动填充）' 12 220 536)
   $txtModels = New-FInput $dlg 12 240 536 $false
+  # 模型列表变化 → 同步「默认模型」下拉候选（拉取/检测/预设/手动编辑均触发）
+  function Sync-ModelCombo {
+    $seen = @{}
+    $cmbModel.Items.Clear()
+    foreach ($m in ($txtModels.Text -split '[,，]')) {
+      $t = $m.Trim()
+      if ($t -and -not $seen.ContainsKey($t)) { $seen[$t] = $true; [void]$cmbModel.Items.Add($t) }
+    }
+    $cur = $cmbModel.Text.Trim()
+    if ($cur -and -not $seen.ContainsKey($cur)) { [void]$cmbModel.Items.Add($cur) }
+  }
+  $txtModels.Add_TextChanged({ Sync-ModelCombo })
 
   [void](New-FLabel $dlg 'extraBody（JSON，并入调用方请求体，可空）' 12 272 536)
   $txtExtra = New-FInput $dlg 12 292 536 $false
@@ -501,7 +568,7 @@ function Show-ChannelForm($editing) {
     if (-not $txtName.Text) { $txtName.Text = $p.name }
     if (-not $txtId.Text -and $p.id -ne 'custom') { $txtId.Text = $p.id + '-main' }
     if (-not $txtModels.Text -and $p.models.Count -gt 0) { $txtModels.Text = ($p.models -join ', ') }
-    if (-not $txtModel.Text -and $p.models.Count -gt 0) { $txtModel.Text = $p.models[0] }
+    if (-not $cmbModel.Text -and $p.models.Count -gt 0) { $cmbModel.Text = $p.models[0] }
     if (-not $txtExtra.Text -and $p.extraBody) { $txtExtra.Text = ($p.extraBody | ConvertTo-Json -Compress) }
   })
 
@@ -511,8 +578,8 @@ function Show-ChannelForm($editing) {
     $txtId.Text = $editing.id; $txtId.Enabled = $false
     $txtName.Text = $editing.name
     $txtBase.Text = $editing.baseUrl
-    $txtModel.Text = $editing.model
-    $txtModels.Text = ($editing.models -join ', ')
+    $txtModels.Text = (@($editing.models) -join ', ')
+    $cmbModel.Text = [string]$editing.model
     if ($editing.extraBody) {
       $keys = @($editing.extraBody.PSObject.Properties.Name)
       if ($keys.Count -gt 0) { $txtExtra.Text = ($editing.extraBody | ConvertTo-Json -Compress) }
@@ -540,7 +607,7 @@ function Show-ChannelForm($editing) {
       if ($r.provider -ne 'custom') { $txtId.Text = $r.provider + '-main' }
       $txtBase.Text = $r.baseUrl
       $txtModels.Text = ($r.models -join ', ')
-      if (-not $txtModel.Text -and $r.models.Count -gt 0) { $txtModel.Text = $r.models[0] }
+      if (-not $cmbModel.Text -and $r.models.Count -gt 0) { $cmbModel.Text = $r.models[0] }
       $lblFMsg.Text = '✓ 识别为「' + $r.providerName + '」，拉到 ' + $r.models.Count + ' 个模型（' + $r.latencyMs + 'ms）'
       $lblFMsg.ForeColor = [System.Drawing.Color]::Green
     } catch {
@@ -579,7 +646,7 @@ function Show-ChannelForm($editing) {
         $r = Invoke-AdminApi 'POST' '/api/admin/channels/detect' @{ apiKey = $txtKey.Text.Trim(); baseUrl = $txtBase.Text.Trim() }
       }
       $txtModels.Text = ($r.models -join ', ')
-      if (-not $txtModel.Text -and $r.models.Count -gt 0) { $txtModel.Text = $r.models[0] }
+      if (-not $cmbModel.Text -and $r.models.Count -gt 0) { $cmbModel.Text = $r.models[0] }
       $lblFMsg.Text = '✓ 拉到 ' + $r.models.Count + ' 个模型（' + $r.latencyMs + 'ms）'
       $lblFMsg.ForeColor = [System.Drawing.Color]::Green
     } catch {
@@ -615,7 +682,7 @@ function Show-ChannelForm($editing) {
       provider = $prov
       baseUrl = $txtBase.Text.Trim()
       apiKey = $txtKey.Text
-      model = $txtModel.Text.Trim()
+      model = $cmbModel.Text.Trim()
       models = $models
       extraBody = $extra
       timeoutMs = [int]$numTimeout.Value

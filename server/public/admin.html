@@ -108,6 +108,13 @@
         官方网关把登录用户的请求转发到「活动通道」上游；<code>auto</code> 模型自动映射为通道默认模型。
         插件端默认地址 <code>http://127.0.0.1:8000</code>，无需任何改动。
       </p>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--muted)">官方默认模型（活动通道 auto 映射）</span>
+        <input id="ch-defmodel" list="ch-defmodel-list" style="width:250px" placeholder="下拉选择或输入自定义模型名">
+        <datalist id="ch-defmodel-list"></datalist>
+        <button class="btn" onclick="refreshActiveModels()">📡 拉取模型列表</button>
+        <button class="btn primary" onclick="setDefaultModel()">设为默认</button>
+      </div>
     </div>
 
     <div class="card">
@@ -172,7 +179,9 @@
         <input id="f-baseurl" placeholder="https://api.deepseek.com/v1" style="width:100%"></div>
       <div class="field"><label>API Key（编辑时留空 = 保持原密钥）</label>
         <input id="f-apikey" type="password" placeholder="sk-..." autocomplete="new-password"></div>
-      <div class="field"><label>默认模型（调用方传 auto 时使用）</label><input id="f-model" placeholder="deepseek-chat"></div>
+      <div class="field"><label>默认模型（官方 auto 映射；可下拉选择或自定义）</label>
+        <input id="f-model" list="f-model-list" placeholder="deepseek-chat">
+        <datalist id="f-model-list"></datalist></div>
       <div class="field wide"><label>模型列表（可选，供 /v1/models 展示）</label>
         <input id="f-models" placeholder="逗号分隔，或点「拉取上游模型」自动填充" style="width:100%"></div>
       <div class="field wide"><label>extraBody（JSON，并入调用方请求体，可选）</label>
@@ -244,6 +253,44 @@ window.addEventListener('hashchange', function () {
 });
 
 /* ---------------- 通道 ---------------- */
+var activeChannelId = null;
+/** 表单「模型列表」→「默认模型」下拉候选（datalist）同步 */
+function syncModelList() {
+  var dl = $('f-model-list');
+  dl.textContent = '';
+  $('f-models').value.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean)
+    .forEach(function (m) { var o = document.createElement('option'); o.value = m; dl.appendChild(o); });
+}
+$('f-models').addEventListener('input', syncModelList);
+/** 网关状态卡的「官方默认模型」下拉候选（活动通道模型列表） */
+function syncDefModelList(models, current) {
+  var dl = $('ch-defmodel-list');
+  dl.textContent = '';
+  (models || []).forEach(function (m) { var o = document.createElement('option'); o.value = m; dl.appendChild(o); });
+  if (current && (models || []).indexOf(current) < 0) {
+    var o = document.createElement('option'); o.value = current; dl.appendChild(o);
+  }
+}
+function refreshActiveModels() {
+  if (!activeChannelId) return msg('ch-msg', '请先设置活动通道', false);
+  msg('ch-msg', '正在拉取活动通道的模型列表…');
+  api('GET', '/api/admin/channels/' + activeChannelId + '/models').then(function (r) {
+    if (!r.ok) return msg('ch-msg', '✗ ' + (r.error || '拉取失败'), false);
+    syncDefModelList(r.models, $('ch-defmodel').value.trim());
+    msg('ch-msg', '✓ 拉到 ' + r.models.length + ' 个模型——请在输入框下拉中选择默认官方模型', true);
+  });
+}
+function setDefaultModel() {
+  if (!activeChannelId) return msg('ch-msg', '请先设置活动通道', false);
+  var m = $('ch-defmodel').value.trim();
+  if (!m) return msg('ch-msg', '请下拉选择或输入默认官方模型', false);
+  api('PUT', '/api/admin/channels/' + activeChannelId, { model: m }).then(function (r) {
+    if (r.ok) {
+      msg('ch-msg', '✓ 官方默认模型已设为 ' + m + '（登录用户 auto 即走此模型）', true);
+      loadChannels();
+    } else msg('ch-msg', '✗ ' + (r.error || '失败'), false);
+  });
+}
 function loadChannels() {
   return api('GET', '/api/admin/channels').then(function (r) {
     if (!r.ok) { msg('ch-msg', r.error || '加载失败'); return; }
@@ -252,6 +299,9 @@ function loadChannels() {
     $('ch-empty').style.display = r.channels.length ? 'none' : '';
     var active = r.channels.length ? (r.active && r.channels.some(function (c) { return c.id === r.active; })
       ? r.channels.filter(function (c) { return c.id === r.active; })[0] : null) : null;
+    activeChannelId = active ? active.id : null;
+    syncDefModelList(active ? active.models : [], active && active.model && active.model !== 'auto' ? active.model : '');
+    $('ch-defmodel').value = active && active.model && active.model !== 'auto' ? active.model : '';
     $('ch-active').innerHTML = active
       ? '<span class="dot on"></span>' + esc(active.name)
       : '<span class="dot warn"></span>未设置（官方调用将返回 503）';
@@ -309,6 +359,7 @@ function openChannelForm(id) {
   editingChannel = null;
   $('ch-form-title').textContent = '新增通道';
   ['f-id', 'f-name', 'f-baseurl', 'f-apikey', 'f-model', 'f-models', 'f-extrabody'].forEach(function (f) { $(f).value = ''; });
+  syncModelList();
   $('f-timeout').value = 12000;
   $('f-provider').value = 'custom';
   if (id) {
@@ -324,6 +375,7 @@ function openChannelForm(id) {
       $('f-baseurl').value = c.baseUrl;
       $('f-model').value = c.model;
       $('f-models').value = (c.models || []).join(', ');
+      syncModelList();
       $('f-extrabody').value = Object.keys(c.extraBody || {}).length ? JSON.stringify(c.extraBody) : '';
       $('f-timeout').value = c.timeoutMs || 12000;
       $('f-msg').textContent = '提示：API Key 留空则保持原密钥不变';
@@ -340,7 +392,7 @@ function applyPreset() {
   if (!p) return;
   if (!$('f-baseurl').value || confirm('用预设覆盖当前 Base URL / 模型列表？')) {
     $('f-baseurl').value = p.baseUrl || '';
-    if (p.models && p.models.length && !$('f-models').value) $('f-models').value = p.models.join(', ');
+    if (p.models && p.models.length && !$('f-models').value) { $('f-models').value = p.models.join(', '); syncModelList(); }
     if (!$('f-name').value) $('f-name').value = p.name;
     if (!$('f-model').value && p.models && p.models.length) $('f-model').value = p.models[0];
     if (p.extraBody && !$('f-extrabody').value) $('f-extrabody').value = JSON.stringify(p.extraBody);
@@ -358,6 +410,7 @@ function detectKey() {
         if (r.provider !== 'custom') $('f-id').value = r.provider + '-main';
         $('f-baseurl').value = r.baseUrl;
         $('f-models').value = r.models.join(', ');
+        syncModelList();
         if (!$('f-model').value && r.models.length) $('f-model').value = r.models[0];
         msg('f-msg', '✓ 识别为「' + r.providerName + '」，已拉到 ' + r.models.length + ' 个模型（' + r.latencyMs + 'ms）', true);
       } else {
@@ -385,6 +438,7 @@ function pullModels() {
   }
   p.then(function (r) {
     $('f-models').value = r.models.join(', ');
+    syncModelList();
     if (!$('f-model').value && r.models.length) $('f-model').value = r.models[0];
     msg('f-msg', '✓ 拉到 ' + r.models.length + ' 个模型（' + r.latencyMs + 'ms）', true);
   }).catch(function (e) { msg('f-msg', '✗ ' + (e.message || e), false); });

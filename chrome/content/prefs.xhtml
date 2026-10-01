@@ -82,7 +82,7 @@
                        title="按密钥/接口地址自动识别厂商并拉取模型列表">🔍 检测</html:button>
         </hbox>
         <html:div id="pp-mf-detect-result" style="font-size:12px;min-height:14px;"></html:div>
-        <label value="模型列表（上游拉取或手动添加）"/>
+        <label value="模型列表（上游拉取或手动添加；点击模型名 = 设为默认模型）"/>
         <html:div id="pp-mf-models" style="display:flex;flex-wrap:wrap;gap:4px;"></html:div>
         <hbox style="gap:6px;">
           <html:input type="text" id="pp-mf-model-add" placeholder="添加模型名（如 glm-4.5 / ep-xxx）" style="flex:1;"/>
@@ -90,7 +90,7 @@
           <html:button id="pp-mf-models-fetch" style="padding:4px 10px;white-space:nowrap;"
                        title="用当前接口地址与密钥拉取上游模型">📡 拉取</html:button>
         </hbox>
-        <label value="默认模型 model（列表没有也可填自定义名）"/>
+        <label value="默认模型 model（点击上方模型名即选用；也可填自定义名）"/>
         <html:input type="text" id="pp-mf-model" placeholder="auto / deepseek-chat / glm-4.5 ..." style="width:100%;"/>
         <label value="附加请求参数 extraBody（JSON，如推理档/温度覆盖）"/>
         <html:textarea id="pp-mf-extraBody" rows="2" style="width:100%;" placeholder='{"reasoning_effort":"low"}'/>

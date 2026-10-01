@@ -803,6 +803,13 @@ const server = http.createServer(async (req, res) => {
         if (!c) return json(res, 404, { ok: false, error: '通道不存在' });
         const r = await fetchModelsOf({ baseUrl: c.baseUrl, apiKey: c.apiKey, timeoutMs: c.timeoutMs });
         if (!r.ok) return json(res, 400, { ok: false, error: r.error });
+        // 拉取成功即刷新通道的模型列表缓存（「官方默认模型」下拉与 /v1/models 展示用）
+        const models = sanitizeModels(r.models);
+        if (models && models.length && JSON.stringify(models) !== JSON.stringify(c.models || [])) {
+          c.models = models;
+          channelsStore.save();
+          log('channel models refreshed:', c.id, models.length);
+        }
         return json(res, 200, { ok: true, models: r.models, latencyMs: r.latencyMs });
       }
     }
