@@ -501,7 +501,8 @@ function loadUsers() {
         ? (new Date(u.expiresAt) < new Date() ? '<span class="badge gray">已过期</span>' : '<span class="badge green">' + u.expiresAt.slice(0, 10) + '</span>')
         : '<span class="badge gray">永久</span>';
       tr.innerHTML =
-        '<td class="mono">' + esc(u.email) + '</td>' +
+        '<td class="mono">' + esc(u.email) + (u.status === 'pending'
+          ? ' <span class="badge" style="background:#fdf3d7;color:#b45309">待验证</span>' : '') + '</td>' +
         '<td>' + esc(u.nickname || '—') + '</td>' +
         '<td><span class="badge">' + esc(u.plan) + '</span></td>' +
         '<td>' + u.dailyUsed + ' / ' + u.dailyLimit + '</td>' +

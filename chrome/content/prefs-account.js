@@ -142,6 +142,11 @@
     try { Zotero.launchURL(A.serverUrl() + "/register"); } catch (e) { /* ignore */ }
   }
 
+  function onForgotLink() {
+    const A = account();
+    try { Zotero.launchURL(A.serverUrl() + "/forgot"); } catch (e) { /* ignore */ }
+  }
+
   function onOfficialModelChange() {
     const C = channels();
     const v = $("pp-account-official-model").value;
@@ -555,6 +560,7 @@
     bind("pp-login-btn", "click", onLogin);
     bind("pp-login-password", "keydown", (e) => { if (e.key === "Enter") onLogin(); });
     bind("pp-register-link", "click", onRegisterLink);
+    bind("pp-forgot-link", "click", onForgotLink);
     bind("pp-logout-btn", "click", onLogout);
     bind("pp-account-refresh", "click", onRefreshAccount);
     bind("pp-account-official-model", "change", onOfficialModelChange);

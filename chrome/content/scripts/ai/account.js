@@ -281,7 +281,14 @@ var Account = {
       return err;
     }
     if (status === 401 || status === 403) {
-      const err = new Error(status === 401 ? "邮箱或密码错误" : "无权限（HTTP 403）");
+      // 优先透传服务端文案（邮箱未验证 / 登录已过期等），无 body 再用本地兜底
+      let serverMsg = "";
+      try {
+        const xhr = e.xmlhttp;
+        const rj = xhr && (xhr.response || (xhr.responseText && JSON.parse(xhr.responseText)));
+        if (rj && rj.error) serverMsg = rj.error;
+      } catch (_) { /* ignore */ }
+      const err = new Error(serverMsg || (status === 401 ? "邮箱或密码错误" : "无权限（HTTP 403）"));
       err.auth = true;
       return err;
     }

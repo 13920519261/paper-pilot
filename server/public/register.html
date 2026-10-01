@@ -54,8 +54,9 @@
     <div class="field"><label>昵称（可选）</label>
       <input id="r-nickname" placeholder="怎么称呼你"></div>
     <button id="r-submit" type="button" onclick="submitRegister()">注 册</button>
+    <button id="r-resend" type="button" onclick="resendVerify()" style="display:none;background:#eef2f7;color:#2563eb;">重新发送验证邮件</button>
     <div class="msg" id="r-msg"></div>
-    <div class="foot">已有账号？直接在 Zotero → 设置 → PaperPilot 中登录即可。</div>
+    <div class="foot">已有账号？直接在 Zotero → 设置 → PaperPilot 中登录即可。忘记密码点<a href="/forgot" style="color:#2563eb">这里</a>。</div>
   </div>
 </main>
 <script>
@@ -68,6 +69,7 @@ function msg(text, ok) {
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Enter') submitRegister();
 });
+var lastEmail = '';
 function submitRegister() {
   var email = $('r-email').value.trim();
   var pw = $('r-password').value;
@@ -84,8 +86,11 @@ function submitRegister() {
     body: JSON.stringify({ email: email, password: pw, nickname: nickname }),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (j.ok) {
-      msg('✓ 注册成功！请打开 Zotero → 设置 → PaperPilot，用该邮箱登录。', true);
-      btn.textContent = '✓ 注册成功';
+      lastEmail = email;
+      var pending = j.user && j.user.status === 'pending';
+      msg('✓ ' + (j.notice || '注册成功！请打开 Zotero → 设置 → PaperPilot，用该邮箱登录。'), true);
+      btn.textContent = pending ? '✓ 已发送验证邮件' : '✓ 注册成功';
+      if (pending) $('r-resend').style.display = '';
       ['r-email', 'r-password', 'r-password2', 'r-nickname'].forEach(function (id) { $(id).value = ''; });
     } else {
       msg('✗ ' + (j.error || '注册失败'), false);
@@ -94,6 +99,21 @@ function submitRegister() {
   }).catch(function () {
     msg('✗ 网络异常，请稍后再试', false);
     btn.disabled = false; btn.textContent = '注 册';
+  });
+}
+function resendVerify() {
+  if (!lastEmail) return msg('请先在上方完成注册', false);
+  var btn = $('r-resend');
+  btn.disabled = true; btn.textContent = '发送中…';
+  fetch('/api/auth/resend', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: lastEmail }),
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    msg(j.ok ? ('✓ ' + (j.message || '验证邮件已重新发送')) : ('✗ ' + (j.error || '失败')), Boolean(j.ok));
+    btn.disabled = false; btn.textContent = '重新发送验证邮件';
+  }).catch(function () {
+    msg('✗ 网络异常，请稍后再试', false);
+    btn.disabled = false; btn.textContent = '重新发送验证邮件';
   });
 }
 </script>

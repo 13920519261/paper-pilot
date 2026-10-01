@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>找回密码 · PaperPilot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --text:#1f2329; --muted:#6b7280;
+    --brand:#2563eb; --brand-weak:#dbeafe; --ok:#059669; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.7 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    display:flex; flex-direction:column; align-items:center; min-height:100vh; }
+  header { width:100%; background:#0d1526; color:#fff; padding:18px 24px;
+    display:flex; align-items:center; justify-content:center; gap:14px; }
+  header .logo { width:34px; height:34px; border-radius:9px; background:var(--brand);
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:18px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  main { width:100%; max-width:420px; padding:28px 16px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px 26px; }
+  .card .sub { color:var(--muted); font-size:13px; margin:0 0 18px; }
+  .field { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
+  .field label { font-size:12.5px; color:var(--muted); }
+  input { border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:14px;
+    font-family:inherit; background:#fff; color:var(--text); width:100%; }
+  input:focus { outline:2px solid var(--brand-weak); border-color:var(--brand); }
+  button { width:100%; border:0; background:var(--brand); color:#fff; border-radius:8px;
+    padding:10px; font-size:15px; font-weight:600; cursor:pointer; margin-top:4px; }
+  button:hover { filter:brightness(1.06); }
+  button[disabled] { opacity:.55; cursor:not-allowed; }
+  .msg { margin:12px 0 0; font-size:13px; min-height:22px; }
+  .msg.ok { color:var(--ok); } .msg.err { color:var(--bad); }
+  .foot { color:var(--muted); font-size:12.5px; margin-top:16px; text-align:center; }
+</style>
+</head>
+<body>
+<header><div class="logo">P</div><h1>找回 PaperPilot 密码</h1></header>
+<main>
+  <div class="card">
+    <p class="sub">输入注册邮箱，我们会发送密码重置链接（30 分钟内有效）。</p>
+    <div class="field"><label>注册邮箱</label>
+      <input id="f-email" type="email" placeholder="you@example.com"></div>
+    <button id="f-submit" type="button" onclick="submitForgot()">发送重置邮件</button>
+    <div class="msg" id="f-msg"></div>
+    <div class="foot">重置后原登录会话全部失效；想起新密码前请勿关闭本页。</div>
+  </div>
+</main>
+<script>
+'use strict';
+function $(id) { return document.getElementById(id); }
+function msg(text, ok) {
+  var el = $('f-msg'); el.textContent = text || '';
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitForgot(); });
+function submitForgot() {
+  var email = $('f-email').value.trim();
+  if (!email) return msg('请填写注册邮箱', false);
+  var btn = $('f-submit');
+  btn.disabled = true; btn.textContent = '发送中…';
+  fetch('/api/auth/forgot', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email }),
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    msg(j.ok ? ('✓ ' + (j.message || '如果该邮箱已注册，重置邮件已发送，请查收（含垃圾邮件箱）')) : ('✗ ' + (j.error || '失败')), Boolean(j.ok));
+    if (j.ok) { btn.textContent = '✓ 已发送'; $('f-email').value = ''; }
+    else { btn.disabled = false; btn.textContent = '发送重置邮件'; }
+  }).catch(function () {
+    msg('✗ 网络异常，请稍后再试', false);
+    btn.disabled = false; btn.textContent = '发送重置邮件';
+  });
+}
+</script>
+</body>
+</html>

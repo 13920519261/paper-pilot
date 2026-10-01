@@ -41,6 +41,7 @@ const path = require('path');
 
 const { JsonStore } = require('./lib/store');
 const { PROVIDERS, providerOf, providersForClient } = require('./lib/presets');
+const mail = require('./lib/mail');
 
 /* ---------------- 配置 ---------------- */
 
@@ -52,11 +53,17 @@ const HOST = '127.0.0.1';
 const DATA_DIR = process.env.PP_DATA_DIR || path.join(__dirname, 'data');
 const ADMIN_HTML = path.join(__dirname, 'public', 'admin.html');
 const REGISTER_HTML = path.join(__dirname, 'public', 'register.html');
+const VERIFY_HTML = path.join(__dirname, 'public', 'verify.html');
+const FORGOT_HTML = path.join(__dirname, 'public', 'forgot.html');
+const RESET_HTML = path.join(__dirname, 'public', 'reset.html');
 
 const TOKEN_TTL_MS = 7 * 86400e3;       // 令牌 7 天，/me 滑动续期
 const DEFAULT_DAILY_LIMIT = 100;
 const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
 const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
+const MAIL_MAX = 3;                      // 验证/重置邮件请求限速（每 IP 每分钟）
+const VERIFY_TTL_MS = 24 * 3600e3;       // 邮箱验证链接有效期
+const RESET_TTL_MS = 30 * 60e3;          // 密码重置链接有效期
 const GATEWAY_TIMEOUT_MS = 120e3;        // 网关转发上限（流式应答可能较长）
 
 /* ---------------- 存储 ---------------- */
@@ -209,6 +216,7 @@ function userForClient(user) {
     plan: planEffective(user),
     dailyUsed: dailyUsedOf(user),
     dailyLimit: dailyLimitOf(user),
+    status: user.status === 'pending' ? 'pending' : 'active',
   };
   if (user.expiresAt) out.expiresAt = user.expiresAt; // 套餐有效期（可缺省）
   return out;
@@ -244,6 +252,22 @@ function issueToken(userId) {
   usersStore.data.tokens = usersStore.data.tokens || {};
   usersStore.data.tokens[tokenKey(token)] = { userId, expiresAt: Date.now() + TOKEN_TTL_MS };
   return token;
+}
+
+/** 一次性令牌（邮箱验证 / 密码重置）：仅存 SHA-256 散列 + 有效期 */
+function oneTimeToken() { return crypto.randomBytes(24).toString('hex'); }
+
+function findUserByOneTimeToken(field, token) {
+  const hash = tokenKey(String(token || ''));
+  const now = Date.now();
+  for (const u of usersStore.data.users) {
+    const rec = u[field];
+    if (rec && rec.hash === hash) {
+      if (rec.expiresAt < now) return { user: u, expired: true };
+      return { user: u, expired: false };
+    }
+  }
+  return null;
 }
 
 function userByToken(req) {
@@ -558,6 +582,7 @@ function userAdminOut(u) {
     id: u.id, email: u.email, nickname: u.nickname || '', plan: planEffective(u),
     planRaw: u.plan || 'Free', expiresAt: u.expiresAt || null,
     dailyLimit: dailyLimitOf(u), dailyUsed: dailyUsedOf(u),
+    status: u.status === 'pending' ? 'pending' : 'active',
     createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null,
   };
 }
@@ -628,11 +653,21 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
+    // 邮箱验证 / 忘记密码 / 重置密码（公开页面，token 走 query）
+    if (method === 'GET' && (url === '/verify' || url === '/forgot' || url === '/reset')) {
+      const file = { '/verify': VERIFY_HTML, '/forgot': FORGOT_HTML, '/reset': RESET_HTML }[url];
+      let html;
+      try { html = fs.readFileSync(file); }
+      catch (e) { return json(res, 500, { ok: false, error: '页面文件缺失' }); }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
+    }
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.1.0',
+        ok: true, service: 'paperpilot-account-server', version: '1.2.0',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
+        mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
         channels: channelsStore.data.channels.length,
         active: channelsStore.data.active || null,
@@ -650,11 +685,110 @@ const server = http.createServer(async (req, res) => {
       // 公开自助注册：固定 Free 套餐（升级/有效期管理走本机管理页或启动管理器）
       const r = await adminCreateUser(Object.assign({}, input, { plan: 'Free' }));
       if (r.error) return json(res, 400, { ok: false, error: r.error });
-      log('user self-registered:', r.user.email, 'ip', ip);
-      return json(res, 200, {
-        ok: true,
-        user: { email: r.user.email, name: r.user.nickname, plan: r.user.plan },
-      });
+      const user = findUserByEmail(r.user.email);
+      const base = { email: user.email, name: user.nickname, plan: user.plan };
+      if (mail.configured()) {
+        // 邮箱验证注册：pending → 验证邮件（24h）；发信失败自动降级为直接激活
+        user.status = 'pending';
+        const token = oneTimeToken();
+        user.verify = { hash: tokenKey(token), expiresAt: Date.now() + VERIFY_TTL_MS };
+        const verifyUrl = mail.publicBaseUrl(req) + '/verify?token=' + token;
+        const m = await mail.sendVerifyMail(user.email, verifyUrl);
+        if (!m.ok) {
+          user.status = 'active'; user.verify = null;
+          usersStore.save();
+          log('verify mail failed, activated directly:', user.email, '|', m.error);
+          return json(res, 200, { ok: true, user: Object.assign(base, { status: 'active' }),
+            notice: '验证邮件暂不可用（' + m.error + '），账号已直接激活' });
+        }
+        usersStore.save();
+        log('user self-registered (pending verify):', user.email, 'ip', ip);
+        return json(res, 200, { ok: true, user: Object.assign(base, { status: 'pending' }),
+          notice: '验证邮件已发送到 ' + user.email + '，请在 24 小时内点击邮件中的链接完成激活' });
+      }
+      log('user self-registered:', user.email, 'ip', ip);
+      return json(res, 200, { ok: true, user: Object.assign(base, { status: 'active' }) });
+    }
+
+    if (method === 'POST' && url === '/api/auth/resend') {
+      const ip = clientIp(req);
+      if (rateThrottled('mailresend:' + ip, MAIL_MAX, LOGIN_WINDOW_MS)) {
+        return json(res, 429, { ok: false, error: '请求过于频繁，请稍后再试' });
+      }
+      let input;
+      try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+      const user = findUserByEmail(input.email || '');
+      if (user && user.status === 'pending') {
+        const token = oneTimeToken();
+        user.verify = { hash: tokenKey(token), expiresAt: Date.now() + VERIFY_TTL_MS };
+        const m = await mail.sendVerifyMail(user.email,
+          mail.publicBaseUrl(req) + '/verify?token=' + token);
+        usersStore.save();
+        if (m.ok) log('verify mail resent:', user.email);
+      }
+      // 恒定成功文案：不暴露邮箱是否存在/是否待验证
+      return json(res, 200, { ok: true, message: '如果该邮箱待验证，验证邮件已重新发送，请查收（含垃圾邮件箱）' });
+    }
+
+    if (method === 'POST' && url === '/api/auth/verify') {
+      let input;
+      try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+      const hit = findUserByOneTimeToken('verify', input.token);
+      if (!hit) return json(res, 400, { ok: false, error: '验证链接无效' });
+      if (hit.expired) {
+        hit.user.verify = null; usersStore.save();
+        return json(res, 400, { ok: false, error: '验证链接已过期——请回到注册页重新发送验证邮件' });
+      }
+      hit.user.status = 'active';
+      hit.user.verify = null;
+      usersStore.save();
+      log('email verified:', hit.user.email);
+      return json(res, 200, { ok: true, message: '邮箱验证成功，现在可以在 Zotero 中登录了' });
+    }
+
+    if (method === 'POST' && url === '/api/auth/forgot') {
+      const ip = clientIp(req);
+      if (rateThrottled('mailforgot:' + ip, MAIL_MAX, LOGIN_WINDOW_MS)) {
+        return json(res, 429, { ok: false, error: '请求过于频繁，请稍后再试' });
+      }
+      let input;
+      try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+      const user = findUserByEmail(input.email || '');
+      if (user && user.status !== 'pending' && mail.configured()) {
+        const token = oneTimeToken();
+        user.reset = { hash: tokenKey(token), expiresAt: Date.now() + RESET_TTL_MS };
+        const m = await mail.sendResetMail(user.email,
+          mail.publicBaseUrl(req) + '/reset?token=' + token);
+        usersStore.save();
+        if (m.ok) log('reset mail sent:', user.email);
+      }
+      // 恒定成功文案：不暴露邮箱是否已注册
+      return json(res, 200, { ok: true, message: '如果该邮箱已注册，重置邮件已发送，请在 30 分钟内完成重置' });
+    }
+
+    if (method === 'POST' && url === '/api/auth/reset') {
+      let input;
+      try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+      if (String(input.password || '').length < 8) {
+        return json(res, 400, { ok: false, error: '密码至少 8 位' });
+      }
+      const hit = findUserByOneTimeToken('reset', input.token);
+      if (!hit) return json(res, 400, { ok: false, error: '重置链接无效' });
+      if (hit.expired) {
+        hit.user.reset = null; usersStore.save();
+        return json(res, 400, { ok: false, error: '重置链接已过期——请重新申请忘记密码' });
+      }
+      const user = hit.user;
+      user.salt = crypto.randomBytes(16).toString('hex');
+      user.hash = hashPassword(input.password, user.salt);
+      user.reset = null;
+      // 重置密码 = 吊销该用户全部既有令牌
+      for (const [tok, rec] of Object.entries(usersStore.data.tokens || {})) {
+        if (rec && rec.userId === user.id) delete usersStore.data.tokens[tok];
+      }
+      usersStore.save();
+      log('password self-reset:', user.email);
+      return json(res, 200, { ok: true, message: '密码已重置，请用新密码在 Zotero 中登录' });
     }
 
     if (method === 'POST' && url === '/api/auth/login') {
@@ -667,6 +801,10 @@ const server = http.createServer(async (req, res) => {
       const user = findUserByEmail(input.email || '');
       if (!user || !verifyPassword(user, String(input.password || ''))) {
         return json(res, 401, { ok: false, error: '邮箱或密码错误' });
+      }
+      if (user.status === 'pending') {
+        return json(res, 403, { ok: false, code: 'email_unverified',
+          error: '邮箱未验证：请查收验证邮件并点击激活链接；未收到可在注册页点「重新发送」' });
       }
       const token = issueToken(user.id);
       user.lastLoginAt = new Date().toISOString();

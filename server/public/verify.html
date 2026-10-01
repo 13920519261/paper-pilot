@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>验证邮箱 · PaperPilot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --text:#1f2329; --muted:#6b7280;
+    --brand:#2563eb; --brand-weak:#dbeafe; --ok:#059669; --bad:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.7 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    display:flex; flex-direction:column; align-items:center; min-height:100vh; }
+  header { width:100%; background:#0d1526; color:#fff; padding:18px 24px;
+    display:flex; align-items:center; justify-content:center; gap:14px; }
+  header .logo { width:34px; height:34px; border-radius:9px; background:var(--brand);
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:18px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  main { width:100%; max-width:440px; padding:32px 16px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:26px 28px; text-align:center; }
+  .icon { font-size:40px; margin-bottom:10px; }
+  .msg { font-size:14px; color:var(--muted); }
+  .msg.ok { color:var(--ok); font-weight:600; }
+  .msg.err { color:var(--bad); }
+  a.btn { display:inline-block; margin-top:18px; background:var(--brand); color:#fff; text-decoration:none;
+    border-radius:8px; padding:9px 24px; font-size:14px; font-weight:600; }
+  .foot { color:var(--muted); font-size:12.5px; margin-top:16px; }
+</style>
+</head>
+<body>
+<header><div class="logo">P</div><h1>PaperPilot 邮箱验证</h1></header>
+<main>
+  <div class="card">
+    <div class="icon" id="v-icon">⏳</div>
+    <div class="msg" id="v-msg">正在验证……</div>
+    <a class="btn" id="v-next" href="https://pp.xinglintools.top/register" style="display:none">重新发送验证邮件</a>
+    <div class="foot">验证成功后即可在 Zotero → 设置 → PaperPilot 中登录。</div>
+  </div>
+</main>
+<script>
+'use strict';
+var token = new URLSearchParams(location.search).get('token');
+var msgEl = document.getElementById('v-msg'), iconEl = document.getElementById('v-icon'),
+    nextEl = document.getElementById('v-next');
+if (!token) {
+  iconEl.textContent = '⚠️';
+  msgEl.textContent = '缺少验证参数——请从邮件中的链接打开本页';
+  msgEl.className = 'msg err';
+} else {
+  fetch('/api/auth/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: token }),
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    if (j.ok) {
+      iconEl.textContent = '✅';
+      msgEl.textContent = j.message || '邮箱验证成功！';
+      msgEl.className = 'msg ok';
+    } else {
+      iconEl.textContent = '❌';
+      msgEl.textContent = j.error || '验证失败';
+      msgEl.className = 'msg err';
+      nextEl.style.display = '';
+    }
+  }).catch(function () {
+    iconEl.textContent = '⚠️';
+    msgEl.textContent = '网络异常，请稍后刷新重试';
+    msgEl.className = 'msg err';
+  });
+}
+</script>
+</body>
+</html>
