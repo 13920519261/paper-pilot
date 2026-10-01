@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
+/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -50,7 +50,9 @@ var Menus = {
         () => Zotero.PaperPilot.openWorkbench());
       const t4 = this._menuItem(doc, toolsPopup, "paperpilot-menu-cn-translators", "menuCnTranslators",
         () => CNTranslators.update(true));
-      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4);
+      const t5 = this._menuItem(doc, toolsPopup, "paperpilot-menu-cn-verify", "menuCNVerify",
+        () => CNVerify.interactive());
+      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5);
     }
 
     // ---- 条目右键：PaperPilot 子菜单 ----

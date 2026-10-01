@@ -5,8 +5,8 @@
  * 搜索链（早期命中即停）：
  *   1. PubScholar 中科院公益学术平台——开放 JSON API、无验证码、覆盖知网/万方/维普，
  *      含摘要/DOI/关键词，为首选源（移植自 jasminum pubscholar.ts，签名算法同源）
- *   2. CNKI 知网直接搜索——命中率高但可能触发滑块验证码（403）；
- *      触发后给出验证页引导（在 Zotero 内置标签页过一次验证即可恢复）
+ *   2. CNKI 知网直接搜索——命中率高但会触发风控：403 滑块 或 200 no-content 软拦；
+ *      被拦时由 CNVerify 引导用户在内置标签页过验证（0.14.8 起验证通过自动续抓）
  *
  * 保护策略：仅在条目元数据不完整（标题=文件名 或 缺作者/期刊）时回填；
  * 字段级保护——已有值的字段（除标题=文件名场景）一律不覆盖。
@@ -215,7 +215,8 @@ var CNFetch = {
   },
 
   /**
-   * CNKI 搜索 → {results:[...]} 或 {captcha:url}（403 触发验证码）或 {results:[]}
+   * CNKI 搜索 → {results:[...]} 正常 / {captcha:url}（403 滑块）/
+   * {maybeBlocked:true}（200 但 no-content 软拦或真空结果，需探测区分）
    * 结果字段：articleTitle/author/journal/date/citation/url/exportID/dbname/filename
    */
   async _searchCNKI(title, author) {
@@ -269,6 +270,12 @@ var CNFetch = {
     }
     const doc = new DOMParser().parseFromString(resp.responseText, "text/html");
     const rows = doc.querySelectorAll("table.result-table-list > tbody > tr");
+    // 软拦截特征：200 但 briefBox 里只有 no-content（"抱歉，暂无数据"）。
+    // 与真空结果同构，调用方需用 CNVerify.probe() 热词探测区分。
+    if (!rows.length && resp.responseText.includes("no-content")) {
+      this._diag("cnki no-content (soft block or genuine empty)");
+      return { results: [], maybeBlocked: true };
+    }
     const results = [];
     for (const r of rows) {
       const txt = (sel) => { const el = r.querySelector(sel); return el ? el.textContent.trim() : ""; };
@@ -405,6 +412,18 @@ var CNFetch = {
     return { title: title.replace(/\.(pdf|caj|kdh|nh|teb)$/i, ""), author: "" };
   },
 
+  /** CNKI 会话预热：GET 首页拿 SID cookie（Zotero.HTTP 与标签页共享 profile cookie 罐） */
+  async _seedCNKI() {
+    if (this._cnkiSeeded) return;
+    this._cnkiSeeded = true;
+    try {
+      await Zotero.HTTP.request("GET", "https://kns.cnki.net/kns8s/", { timeout: 8000 });
+      this._diag("cnki session seeded");
+    } catch (e) {
+      this._diag("cnki seed failed: " + (e && e.message));
+    }
+  },
+
   /** 单条目抓取流程；返回 {status, detail} */
   async _fetchForItem(item, opts) {
     // 附件上溯父条目
@@ -418,17 +437,29 @@ var CNFetch = {
     const { title, author } = this._searchTitleFor(item);
     if (!title || title.length < 4) return { status: "skip", detail: "no-title" };
 
-    // 搜索链：PubScholar → CNKI（可关）
+    // 搜索链：PubScholar → CNKI（可关；被风控时整批短路，避免反复触发）
     let results = [];
     try { results = await this._searchPubScholar(title, author); } catch (e) {
       this._diag("pubscholar chain error: " + (e && e.message));
     }
     let captcha = "";
     const exactHit = results.some((r) => this._isTitleMatch(r.articleTitle, title));
-    if (!exactHit && Prefs.get("cnFetchUseCNKI", true)) {
+    if (!exactHit && Prefs.get("cnFetchUseCNKI", true) && !this._batchBlocked) {
+      await this._seedCNKI();
       const r2 = await this._searchCNKI(title, author);
-      if (r2.captcha) captcha = r2.captcha;
-      if (r2.results.length) {
+      if (r2.captcha) {
+        captcha = r2.captcha;
+        this._batchBlocked = true;
+      } else if (r2.maybeBlocked) {
+        // no-content 软拦 vs 真空结果：热词探测一次定真伪（每批至多一次）
+        const ok = await CNVerify.probe();
+        if (!ok) {
+          captcha = "soft-block";
+          this._batchBlocked = true;
+          this._diag("cnki soft-blocked confirmed by probe");
+        }
+      }
+      if (!this._batchBlocked && r2.results.length) {
         const seen = new Set(results.map((r) => this._compact(r.articleTitle)));
         for (const r of r2.results) {
           if (!seen.has(this._compact(r.articleTitle))) results.push(r);
@@ -459,11 +490,13 @@ var CNFetch = {
     if (!items.length) { ItemSel.alertEmpty(); return; }
 
     const zh = I18n.isZh;
+    this._batchBlocked = false; // 批次级风控状态（软拦/滑块确认后整批短路 CNKI）
+    this._cnkiSeeded = false;
     const pw = new Zotero.ProgressWindow({ closeOnClick: true });
     pw.changeHeadline("PaperPilot · " + (zh ? "抓取中文元数据" : "Fetch CN metadata"));
     pw.show();
     let nOk = 0, nSkip = 0, nEmpty = 0;
-    let captchaUrl = "";
+    let blockedHit = false;
     for (const item of items) {
       let title = "";
       try { title = item.getDisplayTitle() || ""; } catch (e) { /* ignore */ }
@@ -477,9 +510,9 @@ var CNFetch = {
           progress.setText((zh ? "已回填（" : "Filled (") + (r.source || "") + "）");
         } else if (r.status === "empty") {
           nEmpty++;
-          if (r.captcha) captchaUrl = r.captcha;
+          if (r.captcha) blockedHit = true;
           progress.setText(r.captcha
-            ? (zh ? "知网触发验证码" : "CNKI captcha required")
+            ? (zh ? "知网触发安全验证" : "CNKI verification required")
             : (zh ? "未找到匹配" : "No match found"));
         } else {
           nSkip++;
@@ -501,18 +534,16 @@ var CNFetch = {
     summary.setProgress(100);
     pw.startCloseTimer(5000);
 
-    // 知网触发验证码 → 引导用户在内置标签页过一次滑块（与 Zotero.HTTP 共享 cookie）
-    if (captchaUrl) {
+    // 知网被风控（滑块/软拦）→ 引导在内置标签页过验证，通过后自动续抓本批
+    if (blockedHit) {
       const win = Zotero.getMainWindow();
       const go = Services.prompt.confirm(win,
         "PaperPilot · " + (zh ? "知网验证" : "CNKI verification"),
         zh
-          ? "知网触发了滑块验证码。是否现在打开验证页面？\n在打开的页面完成验证后，重新执行抓取即可。"
-          : "CNKI requires a slider captcha. Open the verification page now? Re-run fetch afterwards.");
+          ? "知网触发了安全验证（滑块/风控拦截）。\n是否现在打开知网页面完成验证？验证通过后会自动继续本次抓取。"
+          : "CNKI is blocking requests (slider/risk control). Open the CNKI page to verify? Fetching will resume automatically afterwards.");
       if (go) {
-        try { Zotero.getActiveZoteroPane().loadURI(captchaUrl); } catch (e) {
-          try { Zotero.launchURL(captchaUrl); } catch (e2) { /* ignore */ }
-        }
+        CNVerify.openAndWait(() => this.runForSelected());
       }
     }
   },
@@ -671,5 +702,93 @@ var CNFetch = {
       n + (zh ? " 条" : " item(s)"));
     line.setProgress(100);
     pw.startCloseTimer(2500);
+  },
+};
+
+/* ==================== 知网验证（0.14.8，茉莉花 passCaptchaToCookieBox 同等能力） ====================
+ * 知网风控两种形态：403 滑块 JSON；200 但 no-content 软拦（"抱歉，暂无数据"）。
+ * 解除唯一途径：在真实浏览器里过一次安全验证——Zotero 标签页与 Zotero.HTTP 共享
+ * profile cookie 罐，标签页里过验证后 XHR 即恢复。
+ * 本模块：热词探测（区分软拦/真空结果）→ 开验证页 → 轮询等待 → 通过回调（自动续抓）。
+ */
+var CNVerify = {
+  VERIFY_URL: "https://kns.cnki.net/",
+  _waiting: false,
+
+  _diag(msg) {
+    try { _ppDiag("cn-verify: " + msg); } catch (e) { /* ignore */ }
+  },
+
+  /** 探测知网当前是否可用：固定热词搜索，能出结果 = 未被风控 */
+  async probe() {
+    try {
+      const r = await CNFetch._searchCNKI("高血压", "");
+      const ok = !r.maybeBlocked && !r.captcha && r.results.length > 0;
+      this._diag("probe: " + (ok ? "ok" : "blocked"));
+      return ok;
+    } catch (e) {
+      this._diag("probe error: " + (e && e.message));
+      return false;
+    }
+  },
+
+  /**
+   * 打开知网验证页并轮询等待通过（最长 5 分钟）。
+   * onPass 在通过后回调（如自动续抓）；onGiveup 超时/异常时回调。
+   */
+  async openAndWait(onPass, onGiveup) {
+    if (this._waiting) return;
+    this._waiting = true;
+    const zh = I18n.isZh;
+    try {
+      try { Zotero.getActiveZoteroPane().loadURI(this.VERIFY_URL); }
+      catch (e) { try { Zotero.launchURL(this.VERIFY_URL); } catch (e2) { /* ignore */ } }
+      const pw = new Zotero.ProgressWindow({ closeOnClick: false });
+      pw.changeHeadline("PaperPilot · " + (zh ? "知网验证" : "CNKI verification"));
+      const line = new pw.ItemProgress("chrome://paperpilot/content/icons/chat.svg",
+        zh ? "已打开知网页面：请在页面中完成滑块/安全验证，通过后自动继续（最长等 5 分钟）…"
+           : "CNKI page opened — complete the slider verification there (wait up to 5 min)…");
+      pw.show();
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((ok) => setTimeout(ok, 3000));
+        if (await this.probe()) {
+          line.setText(zh ? "✓ 验证已通过，知网恢复访问" : "✓ Verification passed");
+          line.setProgress(100);
+          pw.startCloseTimer(2500);
+          this._waiting = false;
+          if (onPass) {
+            try { onPass(); } catch (e) { Zotero.logError(e); }
+          }
+          return;
+        }
+      }
+      line.setError();
+      line.setText(zh ? "等待超时——可稍后从工具菜单重新发起「知网验证」"
+                      : "Timed out — retry from the Tools menu later");
+      pw.startCloseTimer(4000);
+    } catch (e) {
+      Zotero.logError(e);
+    }
+    this._waiting = false;
+    if (onGiveup) {
+      try { onGiveup(); } catch (e) { Zotero.logError(e); }
+    }
+  },
+
+  /** 菜单入口：主动发起验证（先探测，未被拦则提示无需验证） */
+  async interactive() {
+    const zh = I18n.isZh;
+    if (await this.probe()) {
+      Zotero.alert(null, "PaperPilot",
+        zh ? "知网访问正常，无需验证。" : "CNKI is accessible — no verification needed.");
+      return;
+    }
+    await this.openAndWait(() => {
+      try {
+        Zotero.alert(null, "PaperPilot",
+          zh ? "✓ 知网验证已通过，可以重新抓取了。" : "✓ CNKI verification passed — fetch again now.");
+      } catch (e) { /* ignore */ }
+    });
   },
 };

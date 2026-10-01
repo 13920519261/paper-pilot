@@ -89,14 +89,28 @@ try {
         # intentionally stopped
     } else {
         Write-Log "paperpilot tunnel (20250) down, resurrecting..."
-        $vbs = Join-Path $cfDir "cloudflared-run-paperpilot-hidden.vbs"
-        if (Test-Path $vbs) {
-            & wscript.exe $vbs
-            Start-Sleep -Seconds 15
-            if (Test-Port 20250) { Write-Log "paperpilot tunnel back up" }
-            else { Write-Log "FATAL: paperpilot tunnel did not come up (see ~/.cloudflared/logs)" }
+        $cfExe = Join-Path $cfDir "cloudflared.exe"
+        $runBat = Join-Path $cfDir "cloudflared-run-paperpilot.bat"
+        if ((Test-Path $cfExe) -and (Test-Path $runBat)) {
+            # parse the run token from the runner bat (same convention as the
+            # medical platform guardians; never hardcoded here)
+            $m = [regex]::Match((Get-Content $runBat -Raw), '--token[=\s]+(\S+)')
+            if ($m.Success) {
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $cfExe
+                $psi.Arguments = 'tunnel --protocol http2 --edge-ip-version 4 --metrics 127.0.0.1:20250 --no-autoupdate run --token ' + $m.Groups[1].Value
+                $psi.WorkingDirectory = $cfDir
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                [void][System.Diagnostics.Process]::Start($psi)
+                Start-Sleep -Seconds 15
+                if (Test-Port 20250) { Write-Log "paperpilot tunnel back up" }
+                else { Write-Log "FATAL: paperpilot tunnel did not come up (see ~/.cloudflared/logs)" }
+            } else {
+                Write-Log "FATAL: could not parse tunnel token from runner bat"
+            }
         } else {
-            Write-Log "FATAL: cloudflared-run-paperpilot-hidden.vbs missing in .cloudflared"
+            Write-Log "FATAL: cloudflared.exe or runner bat missing in .cloudflared"
         }
     }
 } catch { Write-Log ("pass2 error: " + $_.Exception.Message) }

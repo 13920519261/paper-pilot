@@ -105,6 +105,7 @@ var I18n = (() => {
     menuCnMeta: zh ? "中文文件名识别元数据（知网/万方）" : "Parse Chinese Filename Metadata",
     menuCnFetch: zh ? "抓取中文元数据（网络搜索知网等）" : "Fetch CN Metadata (PubScholar/CNKI)",
     menuCnTranslators: zh ? "更新中文转换器（修复知网抓取）" : "Update CN Translators (fix CNKI)",
+    menuCNVerify: zh ? "知网验证（解除风控拦截）" : "CNKI Verification (unblock)",
     menuCnMatchAtt: zh ? "在下载文件夹中查找附件" : "Find Attachments in Downloads",
     menuCnNameMerge: zh ? "合并中文姓名（两栏→单栏）" : "Merge CN Names (to single field)",
     menuCnNameSplit: zh ? "拆分中文姓名（单栏→姓+名）" : "Split CN Names (to two fields)",
