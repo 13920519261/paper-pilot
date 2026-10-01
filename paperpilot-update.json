@@ -64,7 +64,7 @@
         },
         {
           "version": "0.13.0",
-          "update_link": "https://zotero.gujinbencao.com/paperpilot/paper-pilot-0.13.0.xpi",
+          "update_link": "https://gitee.com/cassiuschen9261/paper-pilot/raw/main/dist/paper-pilot-0.13.0.xpi",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999",

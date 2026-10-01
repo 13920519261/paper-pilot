@@ -15,5 +15,6 @@
       "strict_min_version": "6.999",
       "strict_max_version": "99.*"
     }
-  }
+  },
+  "update_url": "https://gitee.com/cassiuschen9261/paper-pilot/raw/main/paperpilot-update.json"
 }

@@ -1,5 +1,4 @@
 pref("extensions.zotero.paperpilot.aiBaseUrl", "http://127.0.0.1:18790/v1");
-// 注意：公开仓库不包含任何密钥。安装后请在 编辑→设置→PaperPilot 填写自己的 API Key
 pref("extensions.zotero.paperpilot.aiApiKey", "");
 pref("extensions.zotero.paperpilot.aiModel", "deepseek-v4-flash");
 pref("extensions.zotero.paperpilot.aiSystemPrompt", "你是一个学术研究助手，帮助用户分析论文、解读文献。回复使用中文，除非用户要求其他语言。使用 Markdown 格式输出。");
