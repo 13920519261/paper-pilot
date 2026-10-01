@@ -2,15 +2,31 @@
 /* global Zotero, Services, Prefs, AIClient, I18n, ItemSel */
 
 var AutoTag = {
-  /** 从 AI 回复中解析 #标签（容错：直接抓 # 开头的 token） */
+  /** 从 AI 回复中解析 #标签（容错：直接抓 # 开头的 token；模型不带 # 时按行兜底） */
   _parseTags(text) {
-    const found = String(text || "").match(/#[^\s，,;；。、"'“”‘’()（）\[\]]+/g) || [];
     const seen = new Set();
     const tags = [];
-    for (let t of found) {
-      t = t.replace(/[.。]+$/, "");
-      if (t.length < 3 || t.length > 40) continue;
+    const push = (t) => {
+      t = String(t || "").trim().replace(/[.。,，;；]+$/, "");
+      if (!t) return;
+      if (t[0] !== "#") t = "#" + t;
+      if (t.length < 3 || t.length > 40) return;
       if (!seen.has(t)) { seen.add(t); tags.push(t); }
+    };
+    const raw = String(text || "");
+    // 第一遍：抓 # 开头的 token（兼容行内混排）
+    const found = raw.match(/#[^\s，,;；。、"'“”‘’()（）\[\]]+/g) || [];
+    for (const t of found) push(t);
+    // 第二遍（兜底）：模型没按格式输出 # 时，按行解析（去编号/项目符号/代码围栏）
+    if (!tags.length) {
+      for (let line of raw.split(/\r?\n/)) {
+        line = line.trim();
+        if (!line || /^```/.test(line)) continue;
+        line = line.replace(/^(?:[-*•·]|\d+[.、)）])\s*/, "").trim();
+        line = line.replace(/^(?:标签|tags?)\s*[:：]\s*/i, "").trim();
+        // 行内可能有多个标签（顿号/逗号分隔）
+        for (const part of line.split(/[、,，;；]/)) push(part);
+      }
     }
     const max = Number(Prefs.get("autoTagMax", 6)) || 6;
     return tags.slice(0, Math.max(max, 6)); // 多解析一些供勾选
@@ -35,8 +51,9 @@ var AutoTag = {
       { role: "system", content: Prefs.get("aiSystemPrompt", "") || "" },
       { role: "user", content: q },
     ]);
+    try { Zotero.debug("[PaperPilot] AutoTag AI raw reply: " + String(reply).slice(0, 500)); } catch (e) { /* ignore */ }
     const tags = this._parseTags(reply);
-    if (!tags.length) throw new Error("AI 未返回有效标签");
+    if (!tags.length) throw new Error("AI 未返回有效标签（原始回复：" + String(reply || "").slice(0, 120) + "…）");
     return tags;
   },
 
@@ -93,6 +110,7 @@ var AutoTag = {
         progress.setProgress(100);
       } catch (e) {
         progress.setError();
+        try { progress.setText(String((e && e.message) || e).slice(0, 120)); } catch (_) { /* ignore */ }
         Zotero.logError(e);
       }
     }

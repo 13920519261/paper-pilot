@@ -15,6 +15,11 @@
 | 🏷 标签与状态 | AI 自动打标签、规则打标、阅读状态（未读/在读/已读，自动流转） |
 | ⚙ 数据列与配置 | 期刊分区列（easyScholar+离线兜底）、被引量列（Semantic Scholar）、AI 配置快照、功能中心统一入口 |
 
+## 文档
+
+- **[使用教程](docs/使用教程.md)**——安装、AI 大模型接入、easyScholar 分区秘钥、34 项功能详解、FAQ
+- [功能清单与分类](docs/PaperPilot-功能清单与分类.md) ｜ [安装配置指南](docs/PaperPilot-安装配置指南.md)
+
 ## 安装
 
 1. 到 [Releases](../../releases) 下载最新 `paper-pilot-x.y.z.xpi`
