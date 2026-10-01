@@ -2,13 +2,20 @@
 /* PaperPilot 账号后台 · account-server.js（Node >= 14，零依赖）
  *
  * 实现 Zotero 插件 0.14.0 账号系统契约（docs/账号系统与模型通道.md）：
- *   POST /api/auth/login    {email,password} → {ok,token,expiresAt,user} | 401
- *   POST /api/auth/logout   Bearer → {ok:true}
- *   GET  /api/auth/me       Bearer → {ok,user,expiresAt}（滑动续期 7 天）
- *   GET  /v1/models         Bearer → OpenAI 格式
+ *   POST /api/auth/register  {email,password,nickname} → {ok,user}（公开自助注册，固定 Free）
+ *   POST /api/auth/login     {email,password} → {ok,token,expiresAt,user} | 401
+ *   POST /api/auth/logout    Bearer → {ok:true}
+ *   GET  /api/auth/me        Bearer → {ok,user,expiresAt}（滑动续期 7 天）
+ *   GET  /v1/models          Bearer → OpenAI 格式
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
+ *   GET  /register           公开自助注册页（public/register.html）
  *
- * 本机管理 API（仅 127.0.0.1，供启动管理器 GUI 与 /admin 管理页）：
+ * 公网部署（Cloudflare Tunnel）：
+ *   cloudflared 回源 http://localhost:8000，socket 恒为回环但带 CF-Connecting-IP 头。
+ *   clientIp() 取真实访客 IP（限速按真实 IP 计）；管理接口/管理页仅认「本机直连」
+ *   （回环 socket 且无代理头）——公网用户只能注册/登录/调网关，摸不到管理面。
+ *
+ * 本机管理 API（仅本机直连，供启动管理器 GUI 与 /admin 管理页）：
  *   GET    /api/health
  *   GET    /admin                       浏览器管理页（public/admin.html）
  *   GET    /api/admin/providers         厂商预设目录
@@ -44,11 +51,13 @@ const HOST = '127.0.0.1';
 // 数据目录：默认 server/data；环境变量 PP_DATA_DIR 可覆盖（测试隔离用）
 const DATA_DIR = process.env.PP_DATA_DIR || path.join(__dirname, 'data');
 const ADMIN_HTML = path.join(__dirname, 'public', 'admin.html');
+const REGISTER_HTML = path.join(__dirname, 'public', 'register.html');
 
 const TOKEN_TTL_MS = 7 * 86400e3;       // 令牌 7 天，/me 滑动续期
 const DEFAULT_DAILY_LIMIT = 100;
-const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;  // 登录限速（每 IP 每分钟）
-const GATEWAY_TIMEOUT_MS = 120e3;       // 网关转发上限（流式应答可能较长）
+const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
+const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
+const GATEWAY_TIMEOUT_MS = 120e3;        // 网关转发上限（流式应答可能较长）
 
 /* ---------------- 存储 ---------------- */
 
@@ -152,7 +161,20 @@ function netErrorText(e) {
   return '网络错误：' + msg.slice(0, 120);
 }
 
-function isLoopback(req) {
+/** 客户端真实 IP：经 Cloudflare Tunnel/反向代理回源时 socket 恒为回环，取代理头 */
+function clientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  if (cf) return String(cf).split(',')[0].trim();
+  const xf = req.headers['x-forwarded-for'];
+  if (xf) return String(xf).split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+/** 管理请求判定：必须「本机直连」= 回环 socket 且无代理头。
+ *  Tunnel/反代回源虽也来自回环，但必带 CF-Connecting-IP / X-Forwarded-For——
+ *  一律视为公网请求并拒绝管理访问（公网只开放注册/登录/网关）。 */
+function isLocalAdmin(req) {
+  if (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']) return false;
   const ra = req.socket.remoteAddress || '';
   return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
 }
@@ -239,13 +261,13 @@ function touchToken(req) {
   if (rec) rec.expiresAt = Date.now() + TOKEN_TTL_MS; // 滑动续期
 }
 
-const loginAttempts = new Map(); // ip → [ts]
-function loginThrottled(ip) {
+const rateAttempts = new Map(); // key → [ts]
+function rateThrottled(key, max, windowMs) {
   const now = Date.now();
-  const list = (loginAttempts.get(ip) || []).filter((t) => now - t < LOGIN_WINDOW_MS);
-  if (list.length >= LOGIN_MAX) { loginAttempts.set(ip, list); return true; }
+  const list = (rateAttempts.get(key) || []).filter((t) => now - t < windowMs);
+  if (list.length >= max) { rateAttempts.set(key, list); return true; }
   list.push(now);
-  loginAttempts.set(ip, list);
+  rateAttempts.set(key, list);
   return false;
 }
 
@@ -591,22 +613,25 @@ const server = http.createServer(async (req, res) => {
   try {
     /* --- 静态与管理页 --- */
     if (method === 'GET' && (url === '/admin' || url === '/admin.html')) {
-      if (!isLoopback(req)) return json(res, 403, { ok: false, error: '管理页仅限本机访问' });
+      if (!isLocalAdmin(req)) return json(res, 403, { ok: false, error: '管理页仅限本机访问' });
       let html;
       try { html = fs.readFileSync(ADMIN_HTML); }
       catch (e) { return json(res, 500, { ok: false, error: 'admin.html 缺失' }); }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
-    // 插件「注册账号」链接打开 {server}/register → 管理页注册（本机自建后端的场景）
+    // 公开自助注册页（插件「注册账号」链接指向这里；本机/公网均可访问）
     if (method === 'GET' && url === '/register') {
-      res.writeHead(302, { Location: '/admin#users' });
-      return res.end();
+      let html;
+      try { html = fs.readFileSync(REGISTER_HTML); }
+      catch (e) { return json(res, 500, { ok: false, error: 'register.html 缺失' }); }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
     }
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.0.0',
+        ok: true, service: 'paperpilot-account-server', version: '1.1.0',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         users: usersStore.data.users.length,
         channels: channelsStore.data.channels.length,
@@ -615,9 +640,28 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* --- 插件契约：鉴权 --- */
+    if (method === 'POST' && url === '/api/auth/register') {
+      const ip = clientIp(req);
+      if (rateThrottled('register:' + ip, REG_MAX, LOGIN_WINDOW_MS)) {
+        return json(res, 429, { ok: false, error: '注册过于频繁，请稍后再试' });
+      }
+      let input;
+      try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+      // 公开自助注册：固定 Free 套餐（升级/有效期管理走本机管理页或启动管理器）
+      const r = await adminCreateUser(Object.assign({}, input, { plan: 'Free' }));
+      if (r.error) return json(res, 400, { ok: false, error: r.error });
+      log('user self-registered:', r.user.email, 'ip', ip);
+      return json(res, 200, {
+        ok: true,
+        user: { email: r.user.email, name: r.user.nickname, plan: r.user.plan },
+      });
+    }
+
     if (method === 'POST' && url === '/api/auth/login') {
-      const ip = req.socket.remoteAddress || 'unknown';
-      if (loginThrottled(ip)) return json(res, 429, { ok: false, error: '尝试过于频繁，请稍后再试' });
+      const ip = clientIp(req);
+      if (rateThrottled('login:' + ip, LOGIN_MAX, LOGIN_WINDOW_MS)) {
+        return json(res, 429, { ok: false, error: '尝试过于频繁，请稍后再试' });
+      }
       let input;
       try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
       const user = findUserByEmail(input.email || '');
@@ -670,7 +714,7 @@ const server = http.createServer(async (req, res) => {
 
     /* --- 以下为管理 API：仅本机 --- */
     if (url.startsWith('/api/admin/')) {
-      if (!isLoopback(req)) return json(res, 403, { ok: false, error: '管理接口仅限本机调用' });
+      if (!isLocalAdmin(req)) return json(res, 403, { ok: false, error: '管理接口仅限本机调用' });
 
       if (method === 'GET' && url === '/api/admin/providers') {
         return json(res, 200, { ok: true, providers: providersForClient() });
