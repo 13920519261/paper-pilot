@@ -1,6 +1,8 @@
 // 0.14.0: 账号系统 + AI 模型通道管理
 // 账号服务器（登录/鉴权/官方模型网关同源）；会话令牌存数据目录 JSON，不进 pref
-pref("extensions.zotero.paperpilot.accountServerUrl", "http://127.0.0.1:8000");
+// 官方账号服务器（公开服务：自助注册 https://pp.xinglintools.top/register）
+// 自建后台的用户可改回 http://127.0.0.1:8000（server/account-server.js）
+pref("extensions.zotero.paperpilot.accountServerUrl", "https://pp.xinglintools.top");
 // 模型通道注册表 {channels:[{id,name,provider,baseUrl,apiKey,model,models,extraBody,timeoutMs}],active}
 // 官方通道(official)的 baseUrl/apiKey 由账号系统运行时注入，不落盘
 pref("extensions.zotero.paperpilot.aiChannels", "");

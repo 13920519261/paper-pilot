@@ -15,7 +15,7 @@
     <vbox style="padding:6px;">
       <!-- 未登录：登录表单 -->
       <vbox id="pp-login-view">
-        <label value="登录账号即可免费使用官方模型；不登录也可在下方「AI 模型通道」配置自己的接口。"/>
+        <label value="登录账号即可免费使用官方模型；没有账号点「注册账号」（浏览器打开官方注册页）。"/>
         <label value="邮箱"/>
         <html:input type="text" id="pp-login-email" style="width:100%;" placeholder="you@example.com"/>
         <label value="密码"/>
@@ -27,9 +27,9 @@
                      style="color:#0969da;cursor:pointer;text-decoration:underline;font-size:12.5px;">注册账号</html:span>
           <html:span id="pp-login-result" style="color:#888;font-size:12.5px;"></html:span>
         </hbox>
-        <label value="账号服务器地址（自建/官方网关，一般无需修改）" style="margin-top:8px;"/>
+        <label value="账号服务器（官方公网，一般无需修改；自建后台填 http://127.0.0.1:8000）" style="margin-top:8px;"/>
         <html:input type="text" preference="extensions.zotero.paperpilot.accountServerUrl" id="pp-account-server"
-                    style="width:100%;" placeholder="http://127.0.0.1:8000"/>
+                    style="width:100%;" placeholder="https://pp.xinglintools.top"/>
       </vbox>
       <!-- 已登录：账号卡片 -->
       <vbox id="pp-account-view" style="display:none;">
