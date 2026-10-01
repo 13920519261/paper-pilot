@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -25,6 +25,8 @@ Zotero.PaperPilot = {
     const files = [
       "core/utils.js",
       "ai/providers.js",
+      "ai/account.js",
+      "ai/channels.js",
       "ai/client.js",
       "ai/chat.js",
       "ai/prompts.js",
@@ -67,9 +69,12 @@ Zotero.PaperPilot = {
     }
     await this._diag("subscripts loaded");
 
-    // 暴露给设置窗口脚本（prefs-pane.js 运行在设置窗口作用域，访问不到 bootstrap 作用域，
-    // 但能访问 Zotero 全局）
+    // 暴露给设置窗口脚本（prefs-pane.js / prefs-account.js 运行在设置窗口作用域，
+    // 访问不到 bootstrap 作用域，但能访问 Zotero 全局）
     this.providers = AIProviders;
+    // 0.14.0 账号系统 + 模型通道（面板与各窗口脚本经此访问）
+    this.account = Account;
+    this.channels = Channels;
     this.rankColumn = RankColumn;
     this.citationColumn = CitationColumn;
     this.s2 = S2Client;
@@ -115,6 +120,21 @@ Zotero.PaperPilot = {
       await this._diag("pref migration failed: " + (e && (e.stack || e.message) || e));
     }
 
+    // 0.14.0：旧版单通道配置/快照 → 模型通道体系（幂等）；随后恢复账号会话
+    // （restore 含网络校验，异步执行不阻塞启动；完成后 UI 经 onSessionChanged 对齐）
+    try {
+      Channels.migrateLegacy();
+      await this._diag("channels migrated (active=" + (Channels.list().active) + ")");
+    } catch (e) {
+      await this._diag("channels migration FAILED: " + (e && (e.stack || e.message) || e));
+    }
+    try {
+      Account.restore().catch((e) => this._diag("account restore failed: " + (e && e.message)));
+      await this._diag("account restore scheduled");
+    } catch (e) {
+      await this._diag("account restore schedule FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
     // 注册设置面板（prefs.xhtml 为 fragment，配套脚本处理测试连接/文件选择）
     // 显式给稳定 id：openPreferences(paneID) 导航需要它（自动生成的 id 带随机串，
     // 且传 pluginID 给 openPreferences 无法定位面板——Z10 preferences.js 实证）
@@ -123,7 +143,10 @@ Zotero.PaperPilot = {
         pluginID: id,
         id: "paperpilot-prefs",
         src: rootURI + "chrome/content/prefs.xhtml",
-        scripts: [rootURI + "chrome/content/prefs-pane.js"],
+        scripts: [
+          rootURI + "chrome/content/prefs-pane.js",
+          rootURI + "chrome/content/prefs-account.js",
+        ],
         label: "PaperPilot",
         image: "chrome://paperpilot/content/icons/icon.png",
       });

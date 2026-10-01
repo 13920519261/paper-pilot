@@ -235,36 +235,40 @@
     });
     applyTheme();
 
-    /* ---------- 模型与配置快照 ---------- */
+    /* ---------- 模型与通道切换（0.14.0：取代配置快照） ---------- */
     function refreshModel() {
-      $("pp-wb-model").textContent = getPref("extensions.zotero.paperpilot.aiModel", "") || "";
+      $("pp-wb-model").textContent = PP.aiClient.model() || "";
     }
-    function fillProfiles() {
+    function fillChannels() {
       const sel = $("pp-wb-profile");
       sel.textContent = "";
-      const opt0 = h("option", "", zh ? "当前配置" : "Current");
+      const opt0 = h("option", "", zh ? "切换通道…" : "Channel…");
       opt0.value = "";
       sel.appendChild(opt0);
-      let profiles = [];
-      try { profiles = PP.providers.getProfiles(); } catch (e) { /* ignore */ }
-      for (const p of profiles) {
-        const o = h("option", "", p.name);
-        o.value = p.name;
+      let data = { channels: [], active: null };
+      try { data = PP.channels.list(); } catch (e) { /* ignore */ }
+      for (const c of data.channels) {
+        const label = c.name + (c.official && !c.available ? "（需登录）" : "");
+        const o = h("option", "", label + (c.id === data.active ? " ✓" : ""));
+        o.value = c.id;
         sel.appendChild(o);
       }
     }
     $("pp-wb-profile").addEventListener("change", (ev) => {
-      const name = ev.target.value;
-      if (!name) return;
+      const id = ev.target.value;
+      if (!id) return;
       try {
-        if (PP.providers.applyProfile(name)) {
-          setStatus((zh ? "✓ 已切换配置：" : "✓ Profile: ") + name);
+        const r = PP.channels.setActive(id);
+        if (r.ok) {
+          setStatus((zh ? "✓ 已切换通道：" : "✓ Channel: ") + id);
           refreshModel();
+        } else {
+          setStatus((zh ? "切换失败：" : "Failed: ") + r.error, "var(--pp-danger)");
         }
       } catch (e) { setStatus((zh ? "切换失败：" : "Failed: ") + (e.message || e), "var(--pp-danger)"); }
       ev.target.value = "";
     });
-    fillProfiles();
+    fillChannels();
     refreshModel();
 
     /* ---------- 会话管理 ---------- */
@@ -600,7 +604,9 @@
       const text = $("pp-wb-input").value.trim();
       if (!text) return;
       if (!PP.aiClient.hasKey()) {
-        addNotice(zh ? "请先在设置中填写 API Key" : "Set API key first", true);
+        addNotice(zh
+          ? "请先在 设置 → PaperPilot 登录账号（官方模型免费），或在「AI 模型通道」配置自己的接口"
+          : "Log in under Settings → PaperPilot, or configure your own AI channel", true);
         return;
       }
       $("pp-wb-input").value = "";

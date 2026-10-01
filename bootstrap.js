@@ -112,4 +112,12 @@ function install(data, reason) {
 
 function uninstall(data, reason) {
   _ppDiag("uninstall reason=" + reason);
+  // 0.14.0：彻底卸载时清除账号会话文件（含登录令牌，数据目录下 paperpilot-account.json）
+  try {
+    var d = Zotero.DataDirectory && Zotero.DataDirectory.dir;
+    if (d) {
+      var f = PathUtils.join(d, "paperpilot-account.json");
+      IOUtils.remove(f, { ignoreAbsent: true }).catch(function () { /* ignore */ });
+    }
+  } catch (e) { /* ignore */ }
 }

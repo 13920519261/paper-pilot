@@ -1,23 +1,70 @@
 /* PaperPilot AI 客户端：OpenAI 兼容接口（/chat/completions）
  * 兼容 OpenAI / DeepSeek / 通义 / 月之暗面 / SiliconFlow / 本地网关等
+ * 0.14.0：配置改由「AI 模型通道」体系提供（Channels.getActiveConfig），
+ * 官方通道需登录账号（未登录给出明确指引）；通道 extraBody 并入请求；
+ * 官方通道 401 自动失效会话并提醒重新登录。Channels 缺位时兜底旧 pref。
  */
-/* global Zotero, Prefs, fetch, AbortController, TextDecoder, setTimeout, clearTimeout */
+/* global Zotero, Prefs, Channels, Account, fetch, AbortController, TextDecoder, setTimeout, clearTimeout */
 
 var AIClient = {
-  _endpoint() {
-    return this.baseUrl() + "/chat/completions";
+  /**
+   * 解析当前调用配置（每次调用时读取，通道切换即时生效）。
+   * 返回 {ok:true, channelId, baseUrl, apiKey, model, extraBody}
+   * 或 {notLoggedIn:true}（官方通道未登录）/ {noKey:true}（无任何可用配置）
+   */
+  _config() {
+    if (typeof Channels !== "undefined" && Channels) {
+      const cfg = Channels.getActiveConfig();
+      if (cfg.ok) return cfg;
+      if (cfg.reason === "not_logged_in") return { notLoggedIn: true };
+      if (cfg.reason === "no_key") return { noKey: true };
+      // no_active：理论上不会发生（官方通道恒存在），兜底走旧 pref
+    }
+    const base = (Prefs.get("aiBaseUrl", "") || "").replace(/\/+$/, "");
+    const key = Prefs.get("aiApiKey", "");
+    if (base && key) {
+      return {
+        ok: true, channelId: "legacy",
+        baseUrl: base, apiKey: key,
+        model: Prefs.get("aiModel", "") || "auto",
+        extraBody: {},
+      };
+    }
+    return { noKey: true };
+  },
+
+  /** AI 是否就绪（官方通道未登录视为未就绪；本地免密接口视为就绪） */
+  hasKey() {
+    const c = this._config();
+    return !c.notLoggedIn && !c.noKey && !!c.ok;
   },
 
   baseUrl() {
-    return (Prefs.get("aiBaseUrl", "") || "").replace(/\/+$/, "");
+    const c = this._config();
+    return c.ok ? c.baseUrl : "";
   },
 
   model() {
-    return Prefs.get("aiModel", "");
+    const c = this._config();
+    return c.ok ? c.model : "";
   },
 
-  hasKey() {
-    return !!Prefs.get("aiApiKey", "");
+  /** 官方通道未登录的统一提示（34 项功能的 catch 链都能直接展示这条消息） */
+  _notLoggedInError() {
+    return new Error("官方模型需要登录：请在 设置 → PaperPilot 登录账号（登录后免费使用），或在「AI 模型通道」中配置自己的接口");
+  },
+
+  /** 官方通道鉴权失败：异步失效会话 + 弹窗，不阻塞当前错误返回 */
+  _maybeAuthFailure(status) {
+    if (status !== 401 && status !== 403) return;
+    if (typeof Account === "undefined" || !Account) return;
+    try {
+      Account.handleAuthFailure("官方模型请求被拒绝（HTTP " + status + "）").catch(() => {});
+    } catch (e) { /* ignore */ }
+  },
+
+  _endpoint(cfg) {
+    return String(cfg.baseUrl || "").replace(/\/+$/, "") + "/chat/completions";
   },
 
   /**
@@ -25,29 +72,33 @@ var AIClient = {
    * @returns {Promise<string>} 助手回复文本
    */
   async chat(messages) {
-    const apiKey = Prefs.get("aiApiKey", "");
-    if (!apiKey) throw new Error("NO_API_KEY");
+    const cfg = this._config();
+    if (cfg.notLoggedIn) throw this._notLoggedInError();
+    if (!cfg.ok || !cfg.apiKey && !this._noKeyLocal(cfg)) throw new Error("NO_API_KEY");
 
     const temperature = Number(Prefs.get("aiTemperature", 0.3));
     const payload = {
-      model: Prefs.get("aiModel", "gpt-4o-mini"),
+      model: cfg.model,
       messages,
       temperature: isNaN(temperature) ? 0.3 : Math.min(2, Math.max(0, temperature)),
       max_tokens: Number(Prefs.get("aiMaxTokens", 4096)) || 4096,
+      ...(cfg.extraBody || {}),
     };
 
     let req;
     try {
-      req = await Zotero.HTTP.request("POST", this._endpoint(), {
+      req = await Zotero.HTTP.request("POST", this._endpoint(cfg), {
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + apiKey,
+          "Authorization": "Bearer " + (cfg.apiKey || ""),
         },
         body: JSON.stringify(payload),
         responseType: "json",
         timeout: 180000,
       });
     } catch (e) {
+      const status = e && e.xmlhttp && e.xmlhttp.status;
+      if (cfg.channelId === "official") this._maybeAuthFailure(status);
       throw this._wrapError(e);
     }
 
@@ -57,6 +108,11 @@ var AIClient = {
       : "";
     if (!content) throw new Error("AI 返回内容为空");
     return content;
+  },
+
+  /** 免密本地接口（Ollama 等）：无 Key 但可调用 */
+  _noKeyLocal(cfg) {
+    return /127\.0\.0\.1|localhost/.test(String(cfg.baseUrl || ""));
   },
 
   /**
@@ -77,8 +133,9 @@ var AIClient = {
   },
 
   async _streamImpl(messages, onDelta, controller) {
-    const apiKey = Prefs.get("aiApiKey", "");
-    if (!apiKey) throw new Error("NO_API_KEY");
+    const cfg = this._config();
+    if (cfg.notLoggedIn) throw this._notLoggedInError();
+    if (!cfg.ok || !cfg.apiKey && !this._noKeyLocal(cfg)) throw new Error("NO_API_KEY");
 
     // 流式总开关 / fetch 不可用：整体回退非流式（走完再一次性回调）
     const wantStream = Prefs.get("readerPopupStream", true) !== false &&
@@ -91,11 +148,12 @@ var AIClient = {
 
     const temperature = Number(Prefs.get("aiTemperature", 0.3));
     const payload = {
-      model: Prefs.get("aiModel", "gpt-4o-mini"),
+      model: cfg.model,
       messages,
       temperature: isNaN(temperature) ? 0.3 : Math.min(2, Math.max(0, temperature)),
       max_tokens: Number(Prefs.get("aiMaxTokens", 4096)) || 4096,
       stream: true,
+      ...(cfg.extraBody || {}),
     };
 
     // 首字节 30s（防非流式网关挂死）+ 总计 180s（与 chat() 对齐）。
@@ -112,17 +170,18 @@ var AIClient = {
     const clearTimers = () => { clearTimeout(firstByteTimer); clearTimeout(totalTimer); };
 
     try {
-      const resp = await fetch(this._endpoint(), {
+      const resp = await fetch(this._endpoint(cfg), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer " + apiKey,
+          "Authorization": "Bearer " + (cfg.apiKey || ""),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
       if (!resp.ok) {
+        if (cfg.channelId === "official") this._maybeAuthFailure(resp.status);
         let detail = "";
         try {
           const txt = await resp.text();

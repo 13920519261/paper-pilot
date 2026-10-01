@@ -70,8 +70,8 @@ var I18n = (() => {
     chatSaved: zh ? "已保存为笔记" : "Saved as note",
     chatEmptyHistory: zh ? "还没有可保存的对话" : "Nothing to save yet",
     chatNoKey: zh
-      ? "请先在 编辑 → 设置 → PaperPilot 中填写 API Key"
-      : "Please set your API key in Edit → Settings → PaperPilot first",
+      ? "请先在 编辑 → 设置 → PaperPilot 中登录账号（官方模型免费），或在「AI 模型通道」中配置自己的接口"
+      : "Log in under Edit → Settings → PaperPilot (official model is free), or configure your own channel",
     chatNoPdf: zh
       ? "该条目没有可读取的 PDF 全文（扫描件请先 OCR）"
       : "No readable PDF full text (OCR scanned PDFs first)",
@@ -93,9 +93,10 @@ var I18n = (() => {
     menuRefImport: zh ? "参考文献一键入库…" : "Import References…",
     menuPasteCheck: zh ? "粘贴文献列表核验（AI 幻觉检测）…" : "Verify Pasted References…",
     menuWorkbench: zh ? "PaperPilot 工作台（独立窗口）" : "PaperPilot Workbench (standalone window)",
-    menuProfiles: zh ? "PaperPilot AI 配置快照" : "PaperPilot AI Profiles",
-    menuProfilesEmpty: zh ? "（暂无快照，在设置中保存）" : "(No profiles — save in Settings)",
-    profileSwitched: zh ? "已切换 AI 配置" : "AI profile switched",
+    menuChannels: zh ? "PaperPilot AI 模型通道" : "PaperPilot AI Channels",
+    menuChannelsEmpty: zh ? "（暂无通道，在设置中新增）" : "(No channels — add in Settings)",
+    channelSwitched: zh ? "已切换 AI 通道" : "AI channel switched",
+    channelSwitchBlocked: zh ? "无法切换" : "Cannot switch",
     errPrefix: zh ? "出错：" : "Error: ",
     // ---- 0.11.0 新增 ----
     menuHub: zh ? "PaperPilot 功能中心" : "PaperPilot Feature Hub",

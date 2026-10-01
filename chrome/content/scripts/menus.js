@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, AIProviders, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
+/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -36,13 +36,13 @@ var Menus = {
         () => Zotero.PaperPilot.openHub());
       const t1 = this._menuItem(doc, toolsPopup, "paperpilot-menu-conn-test", "menuConnTest",
         () => this.testConnection());
-      // AI 配置快照快速切换（popupshowing 时动态填充）
+      // AI 模型通道快速切换（popupshowing 时动态填充；0.14.0 取代配置快照菜单）
       const pmenu = this._xul(doc, "menu");
-      pmenu.id = "paperpilot-menu-profiles";
-      pmenu.setAttribute("label", I18n.t("menuProfiles"));
+      pmenu.id = "paperpilot-menu-channels";
+      pmenu.setAttribute("label", I18n.t("menuChannels"));
       const ppopup = this._xul(doc, "menupopup");
       pmenu.appendChild(ppopup);
-      ppopup.addEventListener("popupshowing", () => this._fillProfilesMenu(doc, ppopup));
+      ppopup.addEventListener("popupshowing", () => this._fillChannelsMenu(doc, ppopup));
       toolsPopup.appendChild(pmenu);
       const t2 = this._menuItem(doc, toolsPopup, "paperpilot-menu-settings", "menuSettings",
         () => this.openSettings());
@@ -146,33 +146,37 @@ var Menus = {
   },
 
   /** 工具菜单 → AI 配置快照：popupshowing 时动态列出快照，点击即切换 */
-  _fillProfilesMenu(doc, popup) {
+  _fillChannelsMenu(doc, popup) {
     while (popup.firstChild) popup.removeChild(popup.firstChild);
-    let profiles = [];
-    try { profiles = AIProviders.getProfiles(); } catch (e) { /* ignore */ }
-    if (!profiles.length) {
+    let data = { channels: [], active: null };
+    try { data = Channels.list(); } catch (e) { /* ignore */ }
+    if (!data.channels.length) {
       const empty = this._xul(doc, "menuitem");
-      empty.setAttribute("label", I18n.t("menuProfilesEmpty"));
+      empty.setAttribute("label", I18n.t("menuChannelsEmpty"));
       empty.setAttribute("disabled", "true");
       popup.appendChild(empty);
       return;
     }
-    const curModel = AIClient.model();
-    const curBase = AIClient.baseUrl();
-    for (const p of profiles) {
+    for (const c of data.channels) {
       const mi = this._xul(doc, "menuitem");
-      const current = p.model === curModel && p.base === curBase;
-      mi.setAttribute("label", (current ? "✓ " : "") + `${p.name}（${p.model}）`);
+      const current = c.id === data.active;
+      const suffix = c.official && !c.available ? "（需登录）" : `（${c.model}）`;
+      mi.setAttribute("label", (current ? "✓ " : "") + `${c.name}${suffix}`);
       mi.setAttribute("type", "radio");
       if (current) mi.setAttribute("checked", "true");
       mi.addEventListener("command", () => {
         try {
-          AIProviders.applyProfile(p.name);
+          const r = Channels.setActive(c.id);
+          if (!r.ok) {
+            Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot",
+              I18n.t("channelSwitchBlocked") + "：" + r.error);
+            return;
+          }
           const pw = new Zotero.ProgressWindow({ closeOnClick: true });
           pw.changeHeadline("PaperPilot");
           const prog = new pw.ItemProgress(
             "chrome://paperpilot/content/icons/chat.svg",
-            I18n.t("profileSwitched") + `：${p.name}（${p.model}）`
+            I18n.t("channelSwitched") + `：${c.name}（${c.model}）`
           );
           prog.setProgress(100);
           pw.show();

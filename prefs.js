@@ -1,5 +1,10 @@
-// 0.13.2: 默认接入 PaperPilot 账号系统网关(账号系统个人中心生成 API Key 后填入)
-// 也可在设置面板切换为直连厂商(DeepSeek/通义/GLM/Kimi...)或自定义接口
+// 0.14.0: 账号系统 + AI 模型通道管理
+// 账号服务器（登录/鉴权/官方模型网关同源）；会话令牌存数据目录 JSON，不进 pref
+pref("extensions.zotero.paperpilot.accountServerUrl", "http://127.0.0.1:8000");
+// 模型通道注册表 {channels:[{id,name,provider,baseUrl,apiKey,model,models,extraBody,timeoutMs}],active}
+// 官方通道(official)的 baseUrl/apiKey 由账号系统运行时注入，不落盘
+pref("extensions.zotero.paperpilot.aiChannels", "");
+// —— 以下三项为 0.13 及更早的单通道配置，0.14.0 启动时自动迁移为通道，仅作兜底 ——
 pref("extensions.zotero.paperpilot.aiBaseUrl", "http://127.0.0.1:8000/v1");
 pref("extensions.zotero.paperpilot.aiApiKey", "");
 pref("extensions.zotero.paperpilot.aiModel", "auto");
@@ -14,7 +19,7 @@ pref("extensions.zotero.paperpilot.rankDataPath", "");
 // 0.5.0 新增：easyScholar 在线期刊等级（离线 JSON 数据仍为优先兜底）
 pref("extensions.zotero.paperpilot.easyScholarEnabled", true);
 pref("extensions.zotero.paperpilot.easyScholarKey", "");
-// 0.5.0 新增：国产大模型服务商与配置快照(0.13.2 默认值见文件头部)
+// 0.5.0 新增：AI 配置快照(0.14.0 起由模型通道体系取代，仅作迁移数据源)
 pref("extensions.zotero.paperpilot.aiProfiles", "[]");
 pref("extensions.zotero.paperpilot.readerPopupEnabled", true);
 pref("extensions.zotero.paperpilot.customPrompts", "");

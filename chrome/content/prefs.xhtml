@@ -9,26 +9,107 @@
       xmlns:html="http://www.w3.org/1999/xhtml"
       style="padding:12px;overflow-y:auto;" flex="1">
 
+  <!-- 0.14.0：账号系统（登录后免费使用官方模型） -->
   <groupbox>
-    <caption label="AI 服务（国产大模型 / OpenAI 兼容接口）"/>
+    <caption label="PaperPilot 账号（登录后免费使用官方 AI 模型）"/>
     <vbox style="padding:6px;">
-      <label value="API Key（粘贴后点「自动探测」，并发请求各服务商 /models 识别上游）"/>
-      <html:input type="password" preference="extensions.zotero.paperpilot.aiApiKey" id="pp-apikey" style="width:100%;"/>
-      <hbox style="margin-top:4px;align-items:center;gap:8px;">
-        <html:button id="pp-detect" style="padding:4px 12px;">自动探测服务商</html:button>
-        <html:span id="pp-detect-result" style="color:#888;"></html:span>
+      <!-- 未登录：登录表单 -->
+      <vbox id="pp-login-view">
+        <label value="登录账号即可免费使用官方模型；不登录也可在下方「AI 模型通道」配置自己的接口。"/>
+        <label value="邮箱"/>
+        <html:input type="text" id="pp-login-email" style="width:100%;" placeholder="you@example.com"/>
+        <label value="密码"/>
+        <html:input type="password" id="pp-login-password" style="width:100%;"
+                    placeholder="登录密码（只用于登录请求，不会保存）"/>
+        <hbox style="margin-top:6px;align-items:center;gap:10px;">
+          <html:button id="pp-login-btn" style="padding:4px 16px;">登录</html:button>
+          <html:span id="pp-register-link"
+                     style="color:#0969da;cursor:pointer;text-decoration:underline;font-size:12.5px;">注册账号</html:span>
+          <html:span id="pp-login-result" style="color:#888;font-size:12.5px;"></html:span>
+        </hbox>
+        <label value="账号服务器地址（自建/官方网关，一般无需修改）" style="margin-top:8px;"/>
+        <html:input type="text" preference="extensions.zotero.paperpilot.accountServerUrl" id="pp-account-server"
+                    style="width:100%;" placeholder="http://127.0.0.1:8000"/>
+      </vbox>
+      <!-- 已登录：账号卡片 -->
+      <vbox id="pp-account-view" style="display:none;">
+        <hbox style="align-items:center;gap:10px;">
+          <html:div id="pp-account-badge"
+                    style="width:36px;height:36px;border-radius:50%;background:#6698ff;color:#fff;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center;">P</html:div>
+          <vbox flex="1">
+            <html:b id="pp-account-name" style="font-size:14px;"></html:b>
+            <html:span id="pp-account-email" style="color:#888;font-size:12px;"></html:span>
+          </vbox>
+        </hbox>
+        <html:div id="pp-account-meta" style="color:#666;font-size:12px;margin-top:6px;line-height:1.7;"></html:div>
+        <hbox style="margin-top:6px;align-items:center;gap:8px;">
+          <label value="官方模型"/>
+          <html:select id="pp-account-official-model" style="min-width:180px;"></html:select>
+        </hbox>
+        <hbox style="margin-top:8px;align-items:center;gap:8px;">
+          <html:button id="pp-account-refresh" style="padding:4px 12px;">刷新状态</html:button>
+          <html:button id="pp-logout-btn" style="padding:4px 12px;">退出登录</html:button>
+          <html:span id="pp-account-result" style="color:#888;font-size:12.5px;"></html:span>
+        </hbox>
+      </vbox>
+    </vbox>
+  </groupbox>
+
+  <!-- 0.14.0：AI 模型通道管理（移植自 AI 带教中心的通道面板，多套配置一键切换） -->
+  <groupbox>
+    <caption label="AI 模型通道（多套配置，一键切换；活动通道供全部 AI 功能使用）"/>
+    <vbox style="padding:6px;">
+      <html:div id="pp-ch-status" style="font-size:12.5px;color:#666;"></html:div>
+      <vbox id="pp-ch-list" style="margin-top:6px;gap:6px;"></vbox>
+      <hbox style="margin-top:8px;">
+        <html:button id="pp-ch-add" style="padding:4px 14px;">＋ 新增通道</html:button>
       </hbox>
-      <label value="服务商" style="margin-top:8px;"/>
-      <html:select id="pp-provider" style="width:100%;"></html:select>
-      <label value="Base URL（可修改）"/>
-      <html:input type="text" preference="extensions.zotero.paperpilot.aiBaseUrl" id="pp-baseurl"
-                  style="width:100%;" placeholder="https://api.openai.com/v1"/>
-      <label value="模型（可从下拉选择，或直接填写自定义模型名）"/>
-      <hbox style="gap:6px;">
-        <html:select id="pp-model-select" style="flex:1;"></html:select>
-        <html:input type="text" preference="extensions.zotero.paperpilot.aiModel" id="pp-model"
-                    style="flex:1;" placeholder="gpt-4o-mini"/>
-      </hbox>
+      <!-- 通道编辑表单（新增/参数） -->
+      <vbox id="pp-ch-form" style="display:none;margin-top:12px;border-top:1px dashed #ccc;padding-top:12px;gap:4px;">
+        <label value="厂商预设（选择后自动填充接口地址与建议模型）"/>
+        <html:select id="pp-mf-provider" style="width:100%;"></html:select>
+        <html:div id="pp-mf-provider-note" style="color:#888;font-size:11.5px;"></html:div>
+        <label value="通道 id（小写字母/数字/连字符，创建后不可改）"/>
+        <html:input type="text" id="pp-mf-id" placeholder="如 deepseek-main" style="width:100%;"/>
+        <label value="名称"/>
+        <html:input type="text" id="pp-mf-name" placeholder="如 DeepSeek 日常通道" style="width:100%;"/>
+        <label value="接口地址 baseUrl（OpenAI 兼容 /v1）"/>
+        <html:input type="text" id="pp-mf-baseUrl" placeholder="https://api.deepseek.com/v1" style="width:100%;"/>
+        <label value="API Key（编辑时留空 = 保持原密钥不变）"/>
+        <hbox style="gap:6px;">
+          <html:input type="password" id="pp-mf-apiKey" placeholder="sk-..." style="flex:1;"/>
+          <html:button id="pp-mf-detect" style="padding:4px 10px;white-space:nowrap;"
+                       title="按密钥/接口地址自动识别厂商并拉取模型列表">🔍 检测</html:button>
+        </hbox>
+        <html:div id="pp-mf-detect-result" style="font-size:12px;min-height:14px;"></html:div>
+        <label value="模型列表（上游拉取或手动添加）"/>
+        <html:div id="pp-mf-models" style="display:flex;flex-wrap:wrap;gap:4px;"></html:div>
+        <hbox style="gap:6px;">
+          <html:input type="text" id="pp-mf-model-add" placeholder="添加模型名（如 glm-4.5 / ep-xxx）" style="flex:1;"/>
+          <html:button id="pp-mf-models-add" style="padding:4px 10px;">＋ 添加</html:button>
+          <html:button id="pp-mf-models-fetch" style="padding:4px 10px;white-space:nowrap;"
+                       title="用当前接口地址与密钥拉取上游模型">📡 拉取</html:button>
+        </hbox>
+        <label value="默认模型 model（列表没有也可填自定义名）"/>
+        <html:input type="text" id="pp-mf-model" placeholder="auto / deepseek-chat / glm-4.5 ..." style="width:100%;"/>
+        <label value="附加请求参数 extraBody（JSON，如推理档/温度覆盖）"/>
+        <html:textarea id="pp-mf-extraBody" rows="2" style="width:100%;" placeholder='{"reasoning_effort":"low"}'/>
+        <label value="探活超时（毫秒，正式对话不受此限制）"/>
+        <html:input type="number" id="pp-mf-timeoutMs" placeholder="12000" style="width:140px;"/>
+        <hbox style="gap:8px;margin-top:6px;">
+          <html:button id="pp-mf-save" style="flex:1;padding:6px;">保存通道</html:button>
+          <html:button id="pp-mf-cancel" style="flex:1;padding:6px;">取消</html:button>
+        </hbox>
+        <html:div id="pp-mf-err" style="color:#c0392b;font-size:12px;min-height:14px;"></html:div>
+      </vbox>
+      <html:div id="pp-ch-test-result" style="font-size:12px;margin-top:6px;min-height:14px;"></html:div>
+    </vbox>
+  </groupbox>
+
+  <!-- 0.14.0：全局 AI 参数（作用于活动通道） -->
+  <groupbox>
+    <caption label="AI 参数（应用于活动通道）"/>
+    <vbox style="padding:6px;">
       <hbox style="gap:16px;align-items:flex-end;">
         <vbox>
           <label value="最大输出 tokens"/>
@@ -39,37 +120,16 @@
           <html:input type="number" preference="extensions.zotero.paperpilot.aiTemperature" style="width:140px;"
                       min="0" max="2" step="0.1"/>
         </vbox>
+        <vbox>
+          <label value="送入 AI 的全文最大字符数（超长截断）"/>
+          <html:input type="number" preference="extensions.zotero.paperpilot.aiFullTextMaxChars" style="width:140px;"/>
+        </vbox>
       </hbox>
       <label value="System Prompt"/>
       <html:textarea preference="extensions.zotero.paperpilot.aiSystemPrompt" rows="4" style="width:100%;"/>
-      <hbox style="margin-top:6px;align-items:center;gap:8px;">
-        <html:button id="pp-test-connection" style="padding:4px 12px;">测试连接</html:button>
-        <html:span id="pp-test-result" style="color:#888;"></html:span>
-      </hbox>
     </vbox>
   </groupbox>
 
-  <groupbox>
-    <caption label="AI 配置快照（一键切换）"/>
-    <vbox style="padding:6px;">
-      <html:select id="pp-profile-list" size="3" style="width:100%;"></html:select>
-      <hbox style="margin-top:6px;gap:8px;">
-        <html:input type="text" id="pp-profile-name" placeholder="快照名称，如：DeepSeek 日常"/>
-        <html:button id="pp-profile-save" style="padding:4px 10px;">保存当前</html:button>
-        <html:button id="pp-profile-apply" style="padding:4px 10px;">应用选中</html:button>
-        <html:button id="pp-profile-del" style="padding:4px 10px;">删除选中</html:button>
-      </hbox>
-      <html:span id="pp-profile-result" style="color:#888;"></html:span>
-    </vbox>
-  </groupbox>
-
-  <groupbox>
-    <caption label="PDF 全文"/>
-    <vbox style="padding:6px;">
-      <label value="送入 AI 的全文最大字符数（超长截断）"/>
-      <html:input type="number" preference="extensions.zotero.paperpilot.aiFullTextMaxChars" style="width:160px;"/>
-    </vbox>
-  </groupbox>
 
   <groupbox>
     <caption label="期刊分区列（easyScholar 在线 + 离线数据兜底）"/>
