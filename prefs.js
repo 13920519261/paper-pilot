@@ -1,6 +1,9 @@
-pref("extensions.zotero.paperpilot.aiBaseUrl", "http://127.0.0.1:18790/v1");
+// 0.13.2: 默认接入 PaperPilot 账号系统网关(账号系统个人中心生成 API Key 后填入)
+// 也可在设置面板切换为直连厂商(DeepSeek/通义/GLM/Kimi...)或自定义接口
+pref("extensions.zotero.paperpilot.aiBaseUrl", "http://127.0.0.1:8000/v1");
 pref("extensions.zotero.paperpilot.aiApiKey", "");
-pref("extensions.zotero.paperpilot.aiModel", "deepseek-v4-flash");
+pref("extensions.zotero.paperpilot.aiModel", "auto");
+pref("extensions.zotero.paperpilot.aiProvider", "account");
 pref("extensions.zotero.paperpilot.aiSystemPrompt", "你是一个学术研究助手，帮助用户分析论文、解读文献。回复使用中文，除非用户要求其他语言。使用 Markdown 格式输出。");
 pref("extensions.zotero.paperpilot.aiMaxTokens", 4096);
 // 注意：Mozilla pref 没有浮点类型（int 会截断 0.3→0），温度一律存字符串，代码里 Number() 解析
@@ -11,8 +14,7 @@ pref("extensions.zotero.paperpilot.rankDataPath", "");
 // 0.5.0 新增：easyScholar 在线期刊等级（离线 JSON 数据仍为优先兜底）
 pref("extensions.zotero.paperpilot.easyScholarEnabled", true);
 pref("extensions.zotero.paperpilot.easyScholarKey", "");
-// 0.5.0 新增：国产大模型服务商与配置快照
-pref("extensions.zotero.paperpilot.aiProvider", "");
+// 0.5.0 新增：国产大模型服务商与配置快照(0.13.2 默认值见文件头部)
 pref("extensions.zotero.paperpilot.aiProfiles", "[]");
 pref("extensions.zotero.paperpilot.readerPopupEnabled", true);
 pref("extensions.zotero.paperpilot.customPrompts", "");

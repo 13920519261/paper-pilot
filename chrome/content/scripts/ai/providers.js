@@ -9,6 +9,11 @@
 
 var AIProviders = {
   PROVIDERS: [
+    // 0.13.2: 账号系统网关(本地) - 统一多模型入口, Key 在账号系统个人中心生成
+    // /v1/models 自动返回可用模型(auto + 各渠道模型); model 支持:
+    //   auto / 纯模型名(默认渠道透传) / provider:model 指定渠道
+    { id: "account", name: "PaperPilot 账号系统（本地网关）",
+      base: "http://127.0.0.1:8000/v1", models: ["auto"] },
     { id: "deepseek", name: "DeepSeek 深度求索", base: "https://api.deepseek.com/v1",
       models: ["deepseek-chat", "deepseek-reasoner"] },
     { id: "qwen", name: "通义千问（阿里百炼）", base: "https://dashscope.aliyuncs.com/compatible-mode/v1",

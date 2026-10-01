@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "PaperPilot 文献副驾",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "国产大模型 + 工作台 2.0（流式/多会话/三模式）+ 功能中心 + 划词翻译/精读问答 + 全文对照翻译 + AI 综述/思维导图/Anki 制卡 + 中文元数据 + 阅读状态 + 期刊分区/被引量 · Zotero 7-10 插件",
   "author": "you",
   "icons": {
