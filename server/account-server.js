@@ -57,6 +57,25 @@ const VERIFY_HTML = path.join(__dirname, 'public', 'verify.html');
 const FORGOT_HTML = path.join(__dirname, 'public', 'forgot.html');
 const RESET_HTML = path.join(__dirname, 'public', 'reset.html');
 
+/* 本地配置文件 {DATA_DIR}/pp.env（KEY=VALUE 每行；server/data/ 已 gitignore，密钥不进 git）：
+ * PP_RESEND_KEY=re_xxx      启用邮箱验证/密码找回（Resend）
+ * PP_MAIL_FROM=...          发件人（可选）
+ * PP_PUBLIC_URL=https://... 邮件链接前缀（可选，默认按 Host 头推断）
+ * 已有的同名进程环境变量优先，不会被覆盖。 */
+(function loadEnvFile() {
+  try {
+    const envPath = path.join(DATA_DIR, 'pp.env');
+    if (!fs.existsSync(envPath)) return;
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (m && m[1] && !m[1].startsWith('#') && process.env[m[1]] === undefined) {
+        process.env[m[1]] = m[2];
+      }
+    }
+    log('pp.env loaded (keys:', Object.keys(process.env).filter((k) => /^PP_/.test(k)).join(', ') + ')');
+  } catch (e) { log('pp.env load failed:', e.message); }
+})();
+
 const TOKEN_TTL_MS = 7 * 86400e3;       // 令牌 7 天，/me 滑动续期
 const DEFAULT_DAILY_LIMIT = 100;
 const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
