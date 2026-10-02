@@ -25,6 +25,11 @@ pref("extensions.zotero.paperpilot.rankDataPath", "");
 // 本 pref 留空 = 使用内置官方 Key；填入自定义值则优先于内置 Key（用户自有额度）
 pref("extensions.zotero.paperpilot.easyScholarEnabled", true);
 pref("extensions.zotero.paperpilot.easyScholarKey", "");
+// 0.18.0 分区列细化：数据集开关（逗号分隔 kind，空=默认集）、badge 数量上限、
+// 配色风格（color=分区色阶 / mono=跟随主题强调色）
+pref("extensions.zotero.paperpilot.rankDataSets", "");
+pref("extensions.zotero.paperpilot.rankMaxBadges", 6);
+pref("extensions.zotero.paperpilot.rankBadgeStyle", "color");
 // 0.5.0 新增：AI 配置快照(0.14.0 起由模型通道体系取代，仅作迁移数据源)
 pref("extensions.zotero.paperpilot.aiProfiles", "[]");
 pref("extensions.zotero.paperpilot.readerPopupEnabled", true);
@@ -83,6 +88,8 @@ pref("extensions.zotero.paperpilot.pdfTheme", "default");
 pref("extensions.zotero.paperpilot.uiWallpaper", "theme");
 // custom 壁纸的本地文件路径（图片 jpg/png/webp/gif/bmp 或视频 mp4/webm/mkv/mov）
 pref("extensions.zotero.paperpilot.uiWallpaperPath", "");
+// 0.18.0 新增：在线壁纸 URL（图片或视频直链；优先于本地路径，下载缓存到数据目录）
+pref("extensions.zotero.paperpilot.uiWallpaperUrl", "");
 // 壁纸可见度 10-90（越大面板越透、壁纸越明显；主题可带推荐值，用户滑条可覆盖）
 pref("extensions.zotero.paperpilot.uiWallpaperOpacity", 70);
 // 自定义 PDF 叠色：颜色 + 不透明度（5-60，百分整数；Mozilla pref 无浮点）

@@ -137,22 +137,35 @@
     const box = $("pp-wp-custom-preview");
     if (!box) return;
     while (box.firstChild) box.removeChild(box.firstChild);
+    // 在线 URL 优先，其次本地路径
+    const onlineUrl = String(getPref("uiWallpaperUrl", "") || "").trim();
     const path = String(getPref("uiWallpaperPath", "") || "");
-    if (!path) { box.style.display = "none"; return; }
+    if (!onlineUrl && !path) { box.style.display = "none"; return; }
     box.style.display = "block";
     try {
-      const file = Zotero.File.pathToFile(path);
-      if (!file.exists()) {
-        const warn = h("div");
-        warn.setAttribute("class", "pp-hint");
-        warn.style.color = "var(--pp-danger)";
-        warn.textContent = zh ? "⚠ 文件不存在或不可读" : "⚠ File not found";
-        box.appendChild(warn);
-        return;
+      let url, isVideo, label;
+      if (/^https?:\/\//i.test(onlineUrl)) {
+        url = onlineUrl;
+        isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)(\?|#|$)/i.test(onlineUrl);
+        label = zh ? "在线资源预览" : "Online preview";
+      } else {
+        const file = Zotero.File.pathToFile(path);
+        if (!file.exists()) {
+          const warn = h("div");
+          warn.setAttribute("class", "pp-hint");
+          warn.style.color = "var(--pp-danger)";
+          warn.textContent = zh ? "⚠ 文件不存在或不可读" : "⚠ File not found";
+          box.appendChild(warn);
+          return;
+        }
+        url = Services.io.newFileURI(file).spec;
+        isVideo = isVideoPath(path);
+        label = isVideo
+          ? (zh ? "视频壁纸预览（静音循环）" : "Video preview (muted loop)")
+          : (zh ? "图片预览" : "Image preview");
       }
-      const url = Services.io.newFileURI(file).spec;
       let el;
-      if (isVideoPath(path)) {
+      if (isVideo) {
         el = h("video");
         el.src = url;
         el.muted = true;
@@ -170,9 +183,7 @@
       const cap = h("div");
       cap.setAttribute("class", "pp-hint");
       cap.style.marginTop = "4px";
-      cap.textContent = isVideoPath(path)
-        ? (zh ? "视频壁纸预览（静音循环）" : "Video preview (muted loop)")
-        : (zh ? "图片预览" : "Image preview");
+      cap.textContent = label;
       box.appendChild(cap);
     } catch (e) { /* ignore */ }
   }
@@ -181,10 +192,15 @@
     // 壁纸模式
     const mode = $("pp-wp-mode");
     const customRow = $("pp-wp-custom-row");
+    const urlRow = $("pp-wp-url-row");
+    const freeRow = $("pp-wp-free-row");
     const syncModeUI = () => {
       const v = mode ? mode.value : "theme";
-      if (customRow) customRow.style.display = v === "custom" ? "flex" : "none";
-      if (v === "custom") refreshCustomPreview();
+      const isCustom = v === "custom";
+      if (customRow) customRow.style.display = isCustom ? "flex" : "none";
+      if (urlRow) urlRow.style.display = isCustom ? "flex" : "none";
+      if (freeRow) freeRow.style.display = isCustom ? "flex" : "none";
+      if (isCustom) refreshCustomPreview();
       else {
         const box = $("pp-wp-custom-preview");
         if (box) box.style.display = "none";
@@ -209,13 +225,47 @@
       slider.addEventListener("input", sync);
       sync();
     }
-    // 自定义文件路径 + 浏览（图片 + 视频）
+    // 本地文件路径 + 浏览（图片 + 视频）
     const path = $("pp-wp-path");
     if (path) {
       path.value = String(getPref("uiWallpaperPath", "") || "");
       path.addEventListener("change", () => {
         setPref("uiWallpaperPath", path.value.trim());
         refreshCustomPreview();
+      });
+    }
+    // 在线 URL（0.18.0：优先于本地路径）
+    const urlInput = $("pp-wp-url");
+    if (urlInput) {
+      urlInput.value = String(getPref("uiWallpaperUrl", "") || "");
+      urlInput.addEventListener("change", () => {
+        setPref("uiWallpaperUrl", urlInput.value.trim());
+        refreshCustomPreview();
+      });
+    }
+    // 免费资源：picsum.photos（CC0 摄影图，无需 Key）
+    const picsum = $("pp-wp-picsum");
+    if (picsum) {
+      picsum.addEventListener("click", () => {
+        // 随机图：加时间戳参数避免缓存同一张
+        const u = "https://picsum.photos/1920/1080?random=" + Date.now();
+        setPref("uiWallpaperUrl", u);
+        setPref("uiWallpaper", "custom");
+        if (urlInput) urlInput.value = u;
+        if (mode) mode.value = "custom";
+        syncModeUI();
+      });
+    }
+    const picsumSeed = $("pp-wp-picsum-seed");
+    if (picsumSeed) {
+      picsumSeed.addEventListener("click", () => {
+        const seed = Math.random().toString(36).slice(2, 9);
+        const u = "https://picsum.photos/seed/" + seed + "/1920/1080";
+        setPref("uiWallpaperUrl", u);
+        setPref("uiWallpaper", "custom");
+        if (urlInput) urlInput.value = u;
+        if (mode) mode.value = "custom";
+        syncModeUI();
       });
     }
     const browse = $("pp-wp-browse");

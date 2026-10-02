@@ -93,6 +93,152 @@
     btn.style.opacity = "0.55";
   }
 
+  /* ---------- 分区显示细化（0.18.0） ---------- */
+
+  /** 数据集勾选 chips：勾选状态写 rankDataSets pref（逗号分隔 kind） */
+  function renderDatasets() {
+    const box = $("pp-rank-datasets");
+    const rc = rankColumn();
+    if (!box || !rc || !rc.DATASETS) return;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    const enabled = rc.enabledKinds();
+    for (const ds of rc.DATASETS) {
+      const on = enabled.has(ds.kind);
+      const chip = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
+      chip.setAttribute("class", "pp-ds-chip" + (on ? " pp-ds-on" : ""));
+      chip.textContent = (on ? "✓ " : "") + ds.label;
+      chip.addEventListener("click", () => {
+        const cur = rc.enabledKinds();
+        if (cur.has(ds.kind)) cur.delete(ds.kind); else cur.add(ds.kind);
+        // 保持 DATASETS 声明顺序写入 pref
+        const ordered = rc.DATASETS.map((d) => d.kind).filter((k) => cur.has(k));
+        Zotero.Prefs.set(PREFIX + "rankDataSets", ordered.join(","), true);
+        renderDatasets();
+        renderRankPreview();
+      });
+      box.appendChild(chip);
+    }
+  }
+
+  /** 徽章预览：示例数据集按当前配色风格渲染（配色/数量即时可见） */
+  function renderRankPreview() {
+    const box = $("pp-rank-preview");
+    const rc = rankColumn();
+    if (!box || !rc) return;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    const demo = [
+      { kind: "jcr", text: "Q1", level: 1 },
+      { kind: "ssci", text: "SSCI Q2", level: 2 },
+      { kind: "cas", text: "中科院1区", level: 1, top: true },
+      { kind: "casSmall", text: "小类2区", level: 2 },
+      { kind: "ccf", text: "CCF-A", level: 1 },
+      { kind: "if", text: "IF 9.4", level: 0 },
+      { kind: "warning", text: "⚠预警", level: 1 },
+      { kind: "esi", text: "ESI 计算机", level: 0 },
+    ];
+    const kinds = rc.enabledKinds();
+    const max = rc.maxBadges();
+    const all = demo.filter((b) => kinds.has(b.kind));
+    const cap = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
+    cap.style.cssText = "color:var(--pp-muted);font-size:11px;margin-right:6px;";
+    cap.textContent = "预览：";
+    box.appendChild(cap);
+    for (const b of all.slice(0, max)) {
+      const el = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
+      el.setAttribute("class", "pp-badge-demo");
+      el.textContent = b.text;
+      el.style.background = rc.badgeStyleMode() === "mono" ? "var(--pp-accent)" : rc._badgeColor(b);
+      if (b.top) el.style.boxShadow = "inset 0 0 0 1.5px #ffd76a";
+      box.appendChild(el);
+    }
+    if (all.length > max) {
+      const more = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
+      more.style.cssText = "color:var(--pp-muted);font-size:10.5px;";
+      more.textContent = "+" + (all.length - max);
+      box.appendChild(more);
+    }
+    if (!all.length) {
+      const empty = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
+      empty.style.cssText = "color:var(--pp-muted);font-size:11px;";
+      empty.textContent = "（未勾选任何数据集）";
+      box.appendChild(empty);
+    }
+  }
+
+  /* ---------- 分区配置导入导出（0.18.0） ---------- */
+
+  const RANK_CFG_KEYS = ["rankDataSets", "rankMaxBadges", "rankBadgeStyle"];
+
+  function exportRankCfg() {
+    const cfg = {};
+    for (const k of RANK_CFG_KEYS) cfg[k] = getPref(k, "");
+    try {
+      const nsIFilePicker = Components.interfaces.nsIFilePicker;
+      const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+      fp.init(window, "导出分区配置", nsIFilePicker.modeSave);
+      fp.defaultString = "paperpilot-rank-config.json";
+      fp.appendFilter("JSON", "*.json");
+      fp.open((rv) => {
+        if (rv !== nsIFilePicker.returnOK && rv !== nsIFilePicker.returnReplace) return;
+        try {
+          const fos = Components.classes["@mozilla.org/network/file-output-stream;1"]
+            .createInstance(Components.interfaces.nsIFileOutputStream);
+          fos.init(fp.file, 0x02 | 0x08 | 0x20, 0o644, 0);
+          const text = JSON.stringify(cfg, null, 2);
+          const cos = Components.classes["@mozilla.org/intl/converter-output-stream;1"]
+            .createInstance(Components.interfaces.nsIConverterOutputStream);
+          cos.init(fos, "UTF-8");
+          cos.writeString(text);
+          cos.close();
+          fos.close();
+          setText("pp-rank-cfg-result", "✓ 已导出", "var(--pp-success)");
+        } catch (e) {
+          setText("pp-rank-cfg-result", "导出失败: " + e.message, "var(--pp-danger)");
+        }
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  function importRankCfg() {
+    try {
+      const nsIFilePicker = Components.interfaces.nsIFilePicker;
+      const fp = Components.classes["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
+      fp.init(window, "导入分区配置", nsIFilePicker.modeOpen);
+      fp.appendFilter("JSON", "*.json");
+      fp.open((rv) => {
+        if (rv !== nsIFilePicker.returnOK || !fp.file) return;
+        try {
+          const fis = Components.classes["@mozilla.org/network/file-input-stream;1"]
+            .createInstance(Components.interfaces.nsIFileInputStream);
+          fis.init(fp.file, 0x01, 0, 0);
+          const cis = Components.classes["@mozilla.org/intl/converter-input-stream;1"]
+            .createInstance(Components.interfaces.nsIConverterInputStream);
+          cis.init(fis, "UTF-8", 4096, 0);
+          const out = {};
+          const read = {};
+          let text = "";
+          while (cis.readString(4096, read) !== 0) text += read.value;
+          cis.close();
+          fis.close();
+          const cfg = JSON.parse(text);
+          let applied = 0;
+          for (const k of RANK_CFG_KEYS) {
+            if (cfg[k] !== undefined) {
+              const v = k === "rankMaxBadges" ? Number(cfg[k]) : String(cfg[k]);
+              Zotero.Prefs.set(PREFIX + k, v, true);
+              applied++;
+            }
+          }
+          renderDatasets();
+          renderRankPreview();
+          setText("pp-rank-cfg-result", "✓ 已导入 " + applied + " 项配置", "var(--pp-success)");
+        } catch (e) {
+          setText("pp-rank-cfg-result", "导入失败: " + e.message, "var(--pp-danger)");
+        }
+      });
+    } catch (e) { /* ignore */ }
+  }
+
   /* ---------- 初始化（DOM 就绪探测） ---------- */
 
   function init() {
@@ -110,11 +256,18 @@
 
     try { refreshEsStats(); } catch (e) { /* ignore */ }
     try { refreshS2Stats(); } catch (e) { /* ignore */ }
+    try { renderDatasets(); } catch (e) { /* ignore */ }
+    try { renderRankPreview(); } catch (e) { /* ignore */ }
 
     const bind = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };
     bind("pp-es-clear", "click", onEsClear);
     bind("pp-s2-clear", "click", onS2Clear);
     bind("pp-rank-browse", "click", browseRankData);
+    bind("pp-rank-export", "click", exportRankCfg);
+    bind("pp-rank-import", "click", importRankCfg);
+    // 配色风格/数量变化即时重绘预览（pref 双向绑定已持久化，主模块 observer 刷新列）
+    bind("pp-rank-style", "change", renderRankPreview);
+    bind("pp-rank-max", "input", renderRankPreview);
     // 敏感字段掩码切换（easyScholar Key / S2 Key；
     // 0.15.0 起账号服务器地址不再出现在设置界面——官方地址内置固定）
     bindEye("pp-es-key", "pp-es-key-eye");

@@ -665,17 +665,24 @@ var UiTheme = {
   },
 
   /** 壁纸解析：返回 {kind, svg?, url?, opacity} 或 null。
-   *  uiWallpaper = "theme"（主题包壁纸）/"off"/"custom"（用户图片或视频） */
+   *  uiWallpaper = "theme"（主题包壁纸）/"off"/"custom"（本地文件或在线 URL） */
   wallpaper(theme) {
     const sel = String(Prefs.get(this.PREF_WP, "theme") || "theme");
     let base = null;
     if (sel === "off") return null;
     if (sel === "custom") {
-      const path = String(Prefs.get(this.PREF_WP_PATH, "") || "");
-      if (!path || !this._isReadableFile(path)) return null;
-      const url = Services.io.newFileURI(Zotero.File.pathToFile(path)).spec;
-      const isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)$/i.test(path);
-      base = { kind: isVideo ? "video" : "image", url: url };
+      // 0.18.0：在线 URL 优先（http/https 直链），其次本地文件
+      const url = String(Prefs.get("uiWallpaperUrl", "") || "").trim();
+      if (/^https?:\/\//i.test(url)) {
+        const isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)(\?|#|$)/i.test(url);
+        base = { kind: isVideo ? "video" : "image", url: url };
+      } else {
+        const path = String(Prefs.get(this.PREF_WP_PATH, "") || "");
+        if (!path || !this._isReadableFile(path)) return null;
+        const fileUrl = Services.io.newFileURI(Zotero.File.pathToFile(path)).spec;
+        const isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)$/i.test(path);
+        base = { kind: isVideo ? "video" : "image", url: fileUrl };
+      }
     } else {
       // "theme"：主题包自带壁纸
       if (!theme || !theme.wp) return null;

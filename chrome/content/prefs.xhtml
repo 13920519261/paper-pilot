@@ -230,6 +230,26 @@
           </html:div>
           <html:div class="pp-hint">0.15.0 起内置官方默认 SecretKey，无需申请即可用；填入自己的 Key 则优先走你的自有额度（easyscholar.cn 注册获取）</html:div>
         </html:div>
+        <html:div class="pp-field" style="margin-top:12px;">
+          <html:label class="pp-label">显示哪些分区数据（勾选即展示；一篇文章的全部命中分区以徽章完整展示）</html:label>
+          <html:div id="pp-rank-datasets" class="pp-datasets"></html:div>
+        </html:div>
+        <html:div class="pp-row">
+          <html:span class="pp-label">徽章配色风格</html:span>
+          <html:select preference="extensions.zotero.paperpilot.rankBadgeStyle" id="pp-rank-style" class="pp-select">
+            <html:option value="color">分区色阶（Q1 红 / Q2 橙 / Q3 蓝 / CCF 绿 / TOP 金描边）</html:option>
+            <html:option value="mono">单色（跟随界面主题强调色）</html:option>
+          </html:select>
+          <html:span class="pp-label">每行最多显示</html:span>
+          <html:input type="number" preference="extensions.zotero.paperpilot.rankMaxBadges" id="pp-rank-max" class="pp-input" min="1" max="12" style="width:64px;"/>
+          <html:span class="pp-hint">个徽章（超出显示 +N）</html:span>
+        </html:div>
+        <html:div id="pp-rank-preview" class="pp-rank-preview"></html:div>
+        <html:div class="pp-row">
+          <html:button id="pp-rank-export" class="pp-btn pp-btn-sm">导出分区配置</html:button>
+          <html:button id="pp-rank-import" class="pp-btn pp-btn-sm">导入分区配置</html:button>
+          <html:span id="pp-rank-cfg-result" class="pp-msg"></html:span>
+        </html:div>
         <html:div class="pp-field" style="margin-top:10px;">
           <html:label class="pp-label">自定义分区数据 JSON 路径</html:label>
           <html:div class="pp-row" style="margin-top:0;">
@@ -389,8 +409,17 @@
           <html:input type="text" id="pp-wp-path" class="pp-input pp-grow" placeholder="本地图片或视频路径（jpg/png/mp4/webm…）"/>
           <html:button id="pp-wp-browse" class="pp-btn pp-btn-sm">浏览…</html:button>
         </html:div>
+        <html:div id="pp-wp-url-row" class="pp-row" style="margin-top:6px;display:none;">
+          <html:span class="pp-label">在线 URL</html:span>
+          <html:input type="text" id="pp-wp-url" class="pp-input pp-grow" placeholder="图片或视频直链 https://…（优先于本地路径）"/>
+        </html:div>
+        <html:div id="pp-wp-free-row" class="pp-row" style="margin-top:6px;display:none;">
+          <html:span class="pp-label">免费资源</html:span>
+          <html:button id="pp-wp-picsum" class="pp-btn pp-btn-sm" title="picsum.photos 随机摄影图（CC0 免费）">🎲 随机美图</html:button>
+          <html:button id="pp-wp-picsum-seed" class="pp-btn pp-btn-sm" title="固定种子的 picsum 图（每次相同）">🌄 固定美图</html:button>
+        </html:div>
         <html:div id="pp-wp-custom-preview" style="display:none;margin-top:8px;"></html:div>
-        <html:div class="pp-hint">自定义文件仅按路径引用（不复制入库）；视频以静音循环播放作为动态壁纸</html:div>
+        <html:div class="pp-hint">自定义文件仅按路径引用（不复制入库）；在线 URL 走浏览器缓存；视频以静音循环播放作为动态壁纸；免费资源来自 picsum.photos（CC0 摄影图，无需 Key）</html:div>
       </html:div>
 
       <!-- 8.2 自定义配色（自定义主题用） -->
