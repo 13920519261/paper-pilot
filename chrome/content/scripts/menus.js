@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, Automation, AutoRead, NoteGraph, ReadingStats */
+/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, Automation, AutoRead, NoteGraph, ReadingStats, MetaRules, Discovery, MCP */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -40,11 +40,18 @@ var Menus = {
       // 0.23.0：自动化规则（触发-条件-动作 + 入库自动精读的开关都在这一个窗口里）
       const t0c = this._menuItem(doc, toolsPopup, "paperpilot-menu-automation", "menuAutomation",
         () => Automation.openDialog());
-      // 0.24.0：笔记关系图谱 + 阅读报告
+      // 0.23.0：笔记关系图谱 + 阅读报告
       const t0d = this._menuItem(doc, toolsPopup, "paperpilot-menu-note-graph", "menuNoteGraph",
         () => NoteGraph.openDialog());
       const t0e = this._menuItem(doc, toolsPopup, "paperpilot-menu-reading-report", "menuReadingReport",
         () => ReadingStats.run());
+      // 0.24.0：文献发现（arXiv 日推）/ 元数据体检 / MCP 对外供给
+      const t0f = this._menuItem(doc, toolsPopup, "paperpilot-menu-discovery", "menuDiscovery",
+        () => Discovery.openDialog());
+      const t0g = this._menuItem(doc, toolsPopup, "paperpilot-menu-meta-rules", "menuMetaRules",
+        () => MetaRules.openDialog());
+      const t0h = this._menuItem(doc, toolsPopup, "paperpilot-menu-mcp", "menuMcp",
+        () => MCP.openDialog());
       const t1 = this._menuItem(doc, toolsPopup, "paperpilot-menu-conn-test", "menuConnTest",
         () => this.testConnection());
       // AI 模型通道快速切换（popupshowing 时动态填充；0.14.0 取代配置快照菜单）
@@ -87,7 +94,7 @@ var Menus = {
       // 等开源插件也把外观入口放在视图侧）；视图菜单缺失时回退到工具菜单。
       const viewPopup = doc.getElementById("menu_ViewPopup");
       (viewPopup || toolsPopup).appendChild(themeMenu);
-      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu); this._track(t0b); this._track(t0c); this._track(t0d); this._track(t0e);
+      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu); this._track(t0b); this._track(t0c); this._track(t0d); this._track(t0e); this._track(t0f); this._track(t0g); this._track(t0h);
     }
 
     // ---- 条目右键：PaperPilot 子菜单 ----
@@ -182,6 +189,9 @@ var Menus = {
         () => TagCurator.run(false));
       this._menuItem(doc, popup, "paperpilot-itemmenu-tag-normalize", "menuTagNormalize",
         () => TagCurator.run(true));
+      // ---- 0.24.0 元数据体检（规则补齐）----
+      this._menuItem(doc, popup, "paperpilot-itemmenu-meta-rules", "menuMetaRules",
+        () => MetaRules.openDialog());
       // ---- 0.23.0 自动化与入库自动精读 ----
       this._menuItem(doc, popup, "paperpilot-itemmenu-automation", "menuAutomationRun",
         () => Automation.runForSelected());

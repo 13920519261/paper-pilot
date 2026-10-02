@@ -131,8 +131,24 @@ pref("extensions.zotero.paperpilot.autoReadDailyCap", 10);
 pref("extensions.zotero.paperpilot.autoReadDailyCount", "");
 pref("extensions.zotero.paperpilot.autoReadTag", "#AI精读");
 pref("extensions.zotero.paperpilot.autoReadMaxPerFlush", 5);
-// 0.24.0 新增：阅读行为统计（心跳采集开关 + 数据 JSON，仅存最近 60 天）
+// 0.23.0 新增：阅读行为统计（心跳采集开关 + 数据 JSON，仅存最近 60 天）
 pref("extensions.zotero.paperpilot.readingStatsEnabled", true);
 pref("extensions.zotero.paperpilot.readingStats", "");
-// 0.24.0 新增：笔记关系图谱节点上限（超出按连接度截断）
+// 0.23.0 新增：笔记关系图谱节点上限（超出按连接度截断）
 pref("extensions.zotero.paperpilot.noteGraphMaxNodes", 400);
+// 0.24.0 新增：元数据体检（期刊名转换方向 expand|abbrev|both|off；用户自定义刊名表，每行「缩写=全称」）
+pref("extensions.zotero.paperpilot.metaRulesJournalDir", "expand");
+pref("extensions.zotero.paperpilot.metaRulesJournals", "");
+// 0.24.0 新增：文献发现（arXiv 每日推荐）——默认关闭，避免未预期联网
+pref("extensions.zotero.paperpilot.discoveryEnabled", false);
+pref("extensions.zotero.paperpilot.discoveryCategories", "cs.AI, cs.CL, cs.LG");
+pref("extensions.zotero.paperpilot.discoveryMaxPerFeed", 100);
+pref("extensions.zotero.paperpilot.discoveryMaxResults", 30);
+pref("extensions.zotero.paperpilot.discoveryProfileTerms", 40);
+pref("extensions.zotero.paperpilot.discoveryLastRun", "");
+pref("extensions.zotero.paperpilot.discoveryResults", "");
+pref("extensions.zotero.paperpilot.discoveryIgnored", "[]");
+pref("extensions.zotero.paperpilot.discoveryCollectionName", "arXiv 推荐");
+// 0.24.0 新增：MCP 对外供给（默认关闭；令牌首次自动生成并持久化）
+pref("extensions.zotero.paperpilot.mcpEnabled", false);
+pref("extensions.zotero.paperpilot.mcpToken", "");

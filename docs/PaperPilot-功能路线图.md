@@ -52,6 +52,12 @@
 | 元数据规则补齐 | 期刊缩写全称互转、作者名归一化、DOI 有效性体检、问题清单 + 勾选修复 | zotero-format-metadata |
 | 能力集市 | 功能中心升级为「按场景推荐配置包 + 可选插件索引」（含来源白名单） | zotero-addons |
 
+> **实际落地（0.24.0）**：前三项已实现（见第八节）；**「能力集市」本轮未做** ——
+> 它本质是「分发别人的插件」，涉及来源可信度与版本适配的长期维护成本，
+> 在当前阶段收益低于前三项，留待有明确的生态策略后再评估。
+> 另：文献发现未采用「向量化库兴趣」，而是**词元加权画像**（无嵌入依赖、可离线单测）；
+> 若后续命中率不足，可与阶段 4 的向量检索一并升级。
+
 ### 阶段 4（评估后决定）
 
 - **OCR 文本层**：扫描版 PDF 的 AI 可用性（需外部二进制，做成可选依赖）
@@ -69,9 +75,9 @@
 ## 四、进度
 
 - [x] 阶段 1：`lib-search` / `tag-curator` / `attach-doctor`（0.22.0，2026-10-03 已发版）
-- [x] 阶段 2 第一批：`automation`（自动化引擎）/ `auto-read`（入库自动精读）（已提交 `1af13c9`，**发版待协调版本号**）
-- [x] 阶段 2 第二批：`note-graph`（笔记关系图谱）/ `reading-stats`（阅读行为统计）（本次；`figure-view` 图表速览暂缓，理由见下）
-- [ ] 阶段 3
+- [x] 阶段 2 第一批：`automation`（自动化引擎）/ `auto-read`（入库自动精读）（0.23.0，与 B 线会员体系合并发版）
+- [x] 阶段 2 第二批：`note-graph`（笔记关系图谱）/ `reading-stats`（阅读行为统计）（0.23.0 一并发版；`figure-view` 图表速览暂缓，理由见下）
+- [x] 阶段 3：`discovery`（arXiv 日推）/ `mcp`（MCP 对外供给）/ `meta-rules`（元数据规则补齐）（0.24.0）
 - [ ] 阶段 4
 
 > **图表速览为何暂缓**：从 PDF 抽取图/表/公式依赖 pdf.js 算子级的版面分析（坐标聚类 + 图像对象识别），
@@ -177,3 +183,47 @@
 
 1. **附件记录缺失导致 pdf 链接解析失败**：`collect()` 原来只采集条目与笔记，笔记里的 `zotero://open-pdf/.../items/<附件KEY>` 找不到附件记录 → 边指向不存在的节点。现在采集附件记录（仅作解析中介），`buildGraph()` 里把附件排除出节点集。
 2. **悬空边污染统计**：指向未采集 key（群组库条目等）的边原本会计入 degree 与边数。现在统一剪除「端点不在可见节点集合里」的边，再据此重算连接度。
+
+## 八、阶段 3 实施记录（0.24.0）
+
+### 新增文件
+
+| 文件 | 说明 |
+|---|---|
+| `chrome/content/scripts/features/discovery.js` | 文献发现：`buildProfile()`（标题 ×3 / 标签 ×3 / 期刊 ×2 / 摘要 ×1 加权词频，泛词过滤下限 3 条）+ `extractArxiv()`（从 extra / url / archiveID 抽 arXiv id 与分类）+ `parseAtom()`（自写 arXiv Atom 正则解析器，含 XML 实体解码）+ `scoreEntry()`（标题 ×3 / 摘要 ×1 + 分类加成 + 7 天新近度）+ `rank()`（去重 / 排除已入库 / 排除忽略 / 截断）+ `buildQuery()`（分类优先，否则画像词元）+ `run()`（全流程 + 按天缓存）+ 每日定时 + `collect()`（建 preprint 条目并加入「arXiv 推荐」分类） |
+| `chrome/content/discovery.xhtml` + `discovery-ui.js` | 推荐窗口：分类输入、刷新、每日自动刷新开关、卡片（标题 / 作者 / 日期 / 分类 / 命中理由 / 摘要展开）、打开 / PDF / 收藏到库 / 忽略、存为笔记、恢复已忽略 |
+| `chrome/content/scripts/features/mcp.js` | MCP 服务：JSON-RPC 2.0 核心（`handleMessage` / `handlePayload`，支持 initialize、tools/list、tools/call、ping、resources/list、prompts/list 与 batch）、8 个工具定义与实现、Bearer 鉴权（常量时间比较）、`Zotero.Server.Endpoints['/paperpilot/mcp']` 注册（GET 返回 info / POST 走 JSON-RPC）、`serverStatus()` 与 `ensureServer()`（检测并恢复 Zotero 本地 HTTP 服务）、端到端 `selfTest()` |
+| `chrome/content/mcp.xhtml` + `mcp-ui.js` | 状态与配置窗口：启停、端点、令牌（显示 / 重置）、工具清单、Zotero 本地服务状态（含一键启用）、自检、可复制的客户端配置 JSON |
+| `chrome/content/scripts/features/meta-rules.js` | 元数据体检：`normJournal` / `journalIndex`（内置 100 条刊表 + 用户自定义）/ `journalHint`（expand \| abbrev \| both \| off）/ `normalizeCreators`（单栏拆分、逗号逆序、全角空格与空白、尾随句点且不误伤 Jr.）/ `doiHint` / `fixPages` / `snapshot` / `detect`（9 条规则，fix 与 warn 两类）/ `scanAll`（含重复 DOI 索引）/ 报告与笔记 |
+| `chrome/content/meta-rules.xhtml` + `meta-rules-ui.js` | 体检窗口：范围（选中 / 整库）、期刊方向、按「分组 → 规则 → 条目」渲染的清单、逐条与逐规则勾选、全选 / 全不选、修复勾选项、存为报告笔记 |
+
+### 实修的两个问题（写测试时暴露）
+
+1. **`snapshot()` 漏读必备字段** → 「类型必备字段」规则会对**所有**条目误报「缺少出版社 / 授予单位」等：这些字段不在快照里，判定恒为空。现补上 publisher / university / institution / issuingAuthority。
+2. **画像泛词过滤下限过严** → 下限取 2 时，小库（新用户只有几篇）里「出现在 2 篇」的真兴趣词会被当成泛词剔除，画像接近清空 → 用户视角「推荐没效果」。改为下限 3。
+
+### 验证证据
+
+| 检查 | 结果 |
+|---|---|
+| 语法检查（`node --check` × 10，XHTML × 3，prefs.js） | 全部通过 |
+| 阶段 3 单测（`E:/tmp/pp_test/pp-s3-test.js`） | **155 项断言全通过**：MetaRules 47 项（归一化 / 刊名表与方向 / 作者名 8 种情形 / DOI 三类 / 页码 / 规则命中 / 重复 DOI / 报告）、Discovery 60 项（Atom 解析含实体解码与中文作者 / 画像 / 打分权重 / 排序去重 / 查询构造 / 端到端 run 与缓存）、MCP 48 项（工具定义与深拷贝隔离 / 协议协商 / 通知 / 批量 / 9 类错误码 / 5 种鉴权 / HTTP 状态码 503·403·200·204 / 工具错误 / 注册注销 / 本地服务状态与恢复） |
+| 前序回归 | 47（阶段 1）+ 78（阶段 2 第一批）+ 76（阶段 2 第二批）全绿 |
+| 全模块加载冒烟 | **49 个模块 0 失败**，关键全局无缺失，三个新模块的纯函数加载后可用 |
+| 接线一致性 | hub 的 37 个 `PP.*` 全部有暴露；menus 调用的 33 个模块名均有声明；features 无漏加载；6 个对话框脚本、windowtype 唯一性、3 个单实例枚举名全部匹配；阶段 3 用到的 11 个 pref 键均有默认值 |
+
+### 关于 MCP 载体的一次实勘
+
+本机实测 `http://127.0.0.1:23119/connector/ping` 返回 **HTTP 000**（当时 Zotero 进程未运行）。
+查 omni.ja 确认：端点由 Zotero 自带的连接器服务承载，受核心 pref `httpServer.enabled`（默认 **true**）控制，
+`zotero.js:718` 在启动时按该开关调用 `Zotero.Server.init()`；
+且 `Zotero.Server.responseCodes` **没有 401 / 202**（可用码见 `server.js`），
+故鉴权失败改用 **403**、纯通知响应用 **204**。
+据此新增 `serverStatus()` / `ensureServer()`：窗口显式展示本地服务状态，被关闭时可一键恢复，
+避免「客户端配好了却连不上」这类静默失败。
+
+### 真机验证（仍未做）
+
+Zotero 当前运行的是 **0.21.3**（profile 内 xpi 时间 10-03 01:00 + boot 日志 `startup begin v0.21.3`），
+即 **0.22.0 / 0.23.0 / 0.24.0 均未在 Zotero 中实装过**。需要重启或本地强制升级后实测：
+阶段 1 三个入口、阶段 2 的自动化与笔记图谱、阶段 3 的三窗口与 MCP 端到端（`selfTest`）。

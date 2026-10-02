@@ -238,9 +238,13 @@ var I18n = (() => {
     menuAutomation: zh ? "自动化规则（触发→条件→动作）…" : "Automation Rules…",
     menuAutomationRun: zh ? "按自动化规则处理所选（先预览）" : "Run Automation Rules on Selection (preview)",
     menuAutoReadNow: zh ? "立即 AI 精读所选文献" : "AI Deep-read Selected Now",
-    // ---- 0.24.0 笔记关系图谱 / 阅读报告 ----
+    // ---- 0.23.0 笔记关系图谱 / 阅读报告 ----
     menuNoteGraph: zh ? "笔记关系图谱…" : "Note Graph…",
     menuReadingReport: zh ? "阅读报告（生成笔记）" : "Reading Report (note)",
+    // ---- 0.24.0 文献发现 / 元数据体检 / MCP 对外供给 ----
+    menuDiscovery: zh ? "文献发现（arXiv 每日推荐）…" : "Discovery (arXiv Daily)…",
+    menuMetaRules: zh ? "元数据体检（规则补齐）…" : "Metadata Rules (checklist)…",
+    menuMcp: zh ? "MCP 对外供给（让外部 AI 调用文献库）…" : "MCP Server (expose library)…",
   };
   return {
     t(key) { return table[key] || key; },

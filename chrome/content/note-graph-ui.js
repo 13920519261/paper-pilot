@@ -1,4 +1,4 @@
-/* PaperPilot 笔记关系图谱窗口（0.24.0）
+/* PaperPilot 笔记关系图谱窗口（0.23.0）
  * 只做渲染与交互：构图/布局全部由 Zotero.PaperPilot.noteGraph 完成（便于单测）。
  * 数据通道与其它窗口一致：Zotero/Services 经 window.arguments 传入。
  */

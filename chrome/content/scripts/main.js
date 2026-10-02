@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, Automation, AutoRead, NoteGraph, ReadingStats, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, Automation, AutoRead, NoteGraph, ReadingStats, MetaRules, Discovery, MCP, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -62,9 +62,13 @@ Zotero.PaperPilot = {
       // 0.23.0 自动化引擎 + 入库自动精读（阶段 2）
       "features/automation.js",
       "features/auto-read.js",
-      // 0.24.0 笔记关系图谱 + 阅读行为统计（阶段 2 第二批）
+      // 0.23.0 笔记关系图谱 + 阅读行为统计（阶段 2 第二批）
       "features/note-graph.js",
       "features/reading-stats.js",
+      // 0.24.0 阶段 3：元数据规则补齐 / 文献发现（arXiv 日推）/ MCP 对外供给
+      "features/meta-rules.js",
+      "features/discovery.js",
+      "features/mcp.js",
       "features/ui-theme.js",
       "features/pdf-theme.js",
       "columns/rank-column.js",
@@ -130,9 +134,13 @@ Zotero.PaperPilot = {
     // 0.23.0 自动化（对话框与菜单经此访问）
     this.automation = Automation;
     this.autoRead = AutoRead;
-    // 0.24.0 笔记关系图谱 + 阅读统计
+    // 0.23.0 笔记关系图谱 + 阅读统计
     this.noteGraph = NoteGraph;
     this.readingStats = ReadingStats;
+    // 0.24.0 阶段 3：元数据体检 / 文献发现 / MCP
+    this.metaRules = MetaRules;
+    this.discovery = Discovery;
+    this.mcp = MCP;
     // 0.13.0 工作台 2.0 需要：Prompt 技能库
     this.prompts = Prompts;
     // 0.16.0 主题系统：设置面板脚本经此访问主题库与切换接口
@@ -319,12 +327,29 @@ Zotero.PaperPilot = {
       await this._diag("auto read FAILED: " + (e && (e.stack || e.message) || e));
     }
 
-    // 0.24.0 阅读行为统计：心跳采集（每 60s 结算一次「阅读器处于焦点」的时长）
+    // 0.23.0 阅读行为统计：心跳采集（每 60s 结算一次「阅读器处于焦点」的时长）
     try {
       ReadingStats.start();
       await this._diag("reading stats heartbeat started");
     } catch (e) {
       await this._diag("reading stats FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.24.0 MCP 对外供给：注册 Zotero 本地端点 /paperpilot/mcp
+    // （端点常驻注册，是否真正对外服务由 pref mcpEnabled 决定，未启用时返回 503）
+    try {
+      const ok = MCP.register();
+      await this._diag("mcp endpoint register=" + ok + " enabled=" + MCP.enabled());
+    } catch (e) {
+      await this._diag("mcp FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.24.0 文献发现：每日刷新检查（开关默认关，未开启时定时器空转不做网络请求）
+    try {
+      Discovery.start();
+      await this._diag("discovery daily timer started (enabled=" + Prefs.get("discoveryEnabled", false) + ")");
+    } catch (e) {
+      await this._diag("discovery FAILED: " + (e && (e.stack || e.message) || e));
     }
 
     // 监听配置变更：分区开关 / 数据路径 即时生效（非关键功能，失败不得拖死 startup）
@@ -479,6 +504,8 @@ Zotero.PaperPilot = {
     try { Automation.unregister(); } catch (e) { Zotero.logError(e); }
     try { AutoRead.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReadingStats.stop(); } catch (e) { Zotero.logError(e); }
+    try { Discovery.stop(); } catch (e) { Zotero.logError(e); }
+    try { MCP.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReadingState.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReaderPopup.unregister(); } catch (e) { Zotero.logError(e); }
     try { AIChatPane.unregister(); } catch (e) { Zotero.logError(e); }

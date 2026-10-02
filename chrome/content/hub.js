@@ -35,6 +35,7 @@
         features: [
           { t: zh ? "库内问答（问整个库）" : "Ask the library", d: zh ? "用一句话提问，自动检索候选文献（标题/标签/摘要+全文复核）后由 AI 依据候选作答，带 [n] 引用编号" : "Natural-language Q&A across your library with [n] citations", run: () => PP.libSearch.openDialog() },
           { t: zh ? "库内检索（只看候选）" : "Retrieve only", d: zh ? "只要候选文献列表与命中片段，不调用 AI（可在对话框内关闭 AI 回答）" : "Candidate list only, no AI call", run: () => PP.libSearch.openDialog() },
+          { t: zh ? "文献发现（arXiv 每日推荐）" : "Discovery (arXiv daily)", d: zh ? "用库里已有文献建兴趣画像，从 arXiv 最新提交里挑出值得看的新论文；自动排除已入库的，可一键收藏到「推荐」分类" : "arXiv recommendations built from your library's interests", run: () => PP.discovery.openDialog() },
         ],
       },
       {
@@ -76,6 +77,7 @@
           { t: zh ? "下载文件夹查找附件" : "Match attachments", d: zh ? "把下载目录里已下载的 PDF/CAJ 按标题匹配到条目" : "Match downloaded PDFs to items", run: () => PP.cnFetch.matchAttachmentsFromDownloads() },
           { t: zh ? "元数据补全" : "Enrich metadata", d: zh ? "S2 查询回写空缺字段（不覆盖已有值）" : "Fill missing fields via S2", run: () => PP.metaEnrich.runForSelected() },
           { t: zh ? "元数据规范清洗" : "Metadata lint", d: zh ? "DOI/日期/标题/URL 格式规范化" : "Normalize DOI/date/title/URL", run: () => PP.metaLint.runForSelected() },
+          { t: zh ? "元数据体检（规则补齐）" : "Metadata rules", d: zh ? "期刊缩写↔全称互转、作者名归一化、DOI 有效性、类型必备字段、重复 DOI —— 出问题清单后勾选修复" : "Journal abbrev/full, author names, DOI validity, required fields, duplicate DOIs (checklist fix)", run: () => PP.metaRules.openDialog() },
           { t: zh ? "智能清理" : "Smart cleanup", d: zh ? "扫描重复/无附件/缺元数据条目" : "Scan duplicates & gaps", run: () => PP.smartCleanup.run() },
           { t: zh ? "真假文献识别" : "Fake check", d: zh ? "AI 幻觉检测：题录是否真实存在" : "Detect hallucinated references", run: () => PP.fakeCheck.runForSelected() },
           { t: zh ? "粘贴文献列表核验" : "Verify pasted list", d: zh ? "粘贴一段参考文献列表逐条核验真伪" : "Verify a pasted reference list", run: () => PP.fakeCheck.openPasteDialog() },
@@ -97,6 +99,14 @@
           { t: zh ? "标记为「未读」" : "Mark unread", d: zh ? "阅读状态三态互斥（未读/在读/已读）" : "Mutually exclusive states", run: () => PP.readingState.markForSelected("未读") },
           { t: zh ? "标记为「在读」" : "Mark reading", d: zh ? "打开 PDF 也会自动从「未读」转为「在读」" : "Auto-updated when opening PDF", run: () => PP.readingState.markForSelected("在读") },
           { t: zh ? "标记为「已读」" : "Mark done", d: zh ? "读完后归档状态" : "Finished state", run: () => PP.readingState.markForSelected("已读") },
+        ],
+      },
+      {
+        id: "integrate", icon: "🔌",
+        title: zh ? "集成与互操作" : "Integration",
+        desc: zh ? "把 PaperPilot 的能力交给外部 AI 客户端使用（本地、带鉴权）" : "Expose PaperPilot's abilities to external AI clients",
+        features: [
+          { t: zh ? "MCP 对外供给" : "MCP server", d: zh ? "把「库检索 / 读全文 / 读批注 / 写笔记 / 分类统计」封装为 MCP 工具，供 Claude Desktop、Cursor 或自建 Agent 调用；仅监听 127.0.0.1 且需 Bearer 令牌，默认关闭" : "Expose library tools over MCP (localhost + token, off by default)", run: () => PP.mcp.openDialog() },
         ],
       },
       {
