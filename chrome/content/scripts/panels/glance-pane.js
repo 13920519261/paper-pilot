@@ -59,7 +59,7 @@ var GlancePane = {
           style: "max-height:160px;overflow-y:auto;padding:6px 8px;border-radius:6px;" +
             "background:#88888812;border:1px solid #88888830;white-space:pre-wrap;word-break:break-word;",
         }, "—");
-        const ftLabel = H("div", { style: "font-weight:600;color:#666;font-size:12px;" },
+        const ftLabel = H("div", { style: "font-weight:600;color:var(--fill-secondary,#666);font-size:12px;" },
           I18n.isZh ? "全文开篇" : "Opening");
         const ftEl = H("div", {
           style: "max-height:220px;overflow-y:auto;padding:6px 8px;border-radius:6px;" +

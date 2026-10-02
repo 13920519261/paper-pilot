@@ -13,10 +13,10 @@
   <hbox flex="1" style="min-height:0;">
 
     <!-- 左侧：类别导航 -->
-    <vbox style="width:170px;min-width:170px;border-right:1px solid #ccc;background:#f0f0f2;padding:8px 6px;gap:2px;">
+    <vbox style="width:170px;min-width:170px;border-right:1px solid var(--material-border,1px solid #ccc);background:var(--material-sidepane,#f0f0f2);padding:8px 6px;gap:2px;">
       <html:div style="font-weight:700;font-size:14px;padding:4px 8px 10px;">PaperPilot</html:div>
       <vbox id="pp-hub-nav" flex="1" style="gap:2px;"/>
-      <html:div id="pp-hub-selcount" style="color:#777;font-size:11px;padding:8px 8px 2px;border-top:1px solid #ddd;"></html:div>
+      <html:div id="pp-hub-selcount" style="color:var(--fill-secondary,#777);font-size:11px;padding:8px 8px 2px;border-top:1px solid var(--material-border,1px solid #ddd);"></html:div>
     </vbox>
 
     <!-- 右侧：类别页 -->
@@ -24,13 +24,13 @@
       <hbox style="align-items:flex-end;gap:10px;">
         <vbox flex="1" style="min-width:0;">
           <html:div id="pp-hub-cat-title" style="font-weight:700;font-size:16px;"></html:div>
-          <html:div id="pp-hub-cat-desc" style="color:#666;font-size:12px;"></html:div>
+          <html:div id="pp-hub-cat-desc" style="color:var(--fill-secondary,#666);font-size:12px;"></html:div>
         </vbox>
         <html:input type="text" id="pp-hub-filter" placeholder="搜索功能…"
                     style="width:180px;padding:3px 8px;"/>
       </hbox>
       <vbox id="pp-hub-cards" flex="1" style="overflow-y:auto;gap:8px;padding-right:4px;"/>
-      <html:div id="pp-hub-status" style="color:#888;font-size:12px;min-height:16px;"></html:div>
+      <html:div id="pp-hub-status" style="color:var(--fill-tertiary,#888);font-size:12px;min-height:16px;"></html:div>
     </vbox>
   </hbox>
 </window>

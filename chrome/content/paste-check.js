@@ -61,7 +61,7 @@
     div.appendChild(head);
     if (sub) {
       const s = document.createElementNS(XHTML, "div");
-      s.style.cssText = "color:#777;font-size:12px;padding-left:22px;";
+      s.style.cssText = "color:var(--fill-secondary,#777);font-size:12px;padding-left:22px;";
       s.textContent = sub;
       div.appendChild(s);
     }

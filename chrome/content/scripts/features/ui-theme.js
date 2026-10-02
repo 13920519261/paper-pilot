@@ -708,6 +708,35 @@ var UiTheme = {
   _wpSurface(hex, wp) { return wp ? this._rgba(hex, (100 - wp.opacity) / 100) : hex; },
   _wpBar(hex, wp) { return wp ? this._rgba(hex, 1 - wp.opacity / 200) : hex; },
 
+  /** PaperPilot 设置面板变量组（0.17.1 修复：--pp- 从主题色板派生，
+   *  覆盖 prefs.css 里只跟 prefers-color-scheme 的默认值——主题强制深/浅色
+   *  与系统明暗不一致时，设置卡片不再与窗口背景割裂） */
+  _ppVars(theme) {
+    const c = theme.colors;
+    const dark = theme.dark;
+    const mix = (a, b, t) => this._mix(a, b, t);
+    const success = dark ? "#3fb950" : "#1a7f37";
+    const danger = dark ? "#f85149" : "#cf222e";
+    const warn = dark ? "#d29922" : "#9a6700";
+    return [
+      "--pp-surface: " + c.surface,
+      "--pp-surface-2: " + mix(c.surface, c.background, 0.55),
+      "--pp-border: " + c.line,
+      "--pp-text: " + c.ink,
+      "--pp-muted: " + c.ink2,
+      "--pp-accent: " + c.accent,
+      "--pp-accent-emphasis: " + mix(c.accent, dark ? "#ffffff" : "#000000", 0.82),
+      "--pp-accent-weak: " + this._rgba(c.accent, 0.16),
+      "--pp-success: " + success,
+      "--pp-danger: " + danger,
+      "--pp-warn: " + warn,
+      "--pp-btn-hover: " + this._rgba(c.ink, 0.07),
+      "--pp-focus-ring: " + this._rgba(c.accent, 0.22),
+      "--pp-ok-bg: " + this._rgba(success, 0.15),
+      "--pp-warn-bg: " + this._rgba(warn, 0.15),
+    ];
+  },
+
   _css(theme, wp) {
     if (!theme) return "";
     const c = theme.colors;
@@ -742,12 +771,32 @@ var UiTheme = {
       "--lwt-accent-color: " + this._wpBar(c.toolbar, wp),
       "--lwt-selected-tab-background-color: " + this._wpSurface(c.background, wp),
       "--tabpanel-background-color: " + this._wpSurface(c.background, wp),
-    ].map((d) => d + " !important;").join("\n  ");
+    ];
+    // 设置面板变量组随主题派生
+    // ⚠️ 必须直接命中 .pp-root 元素自身：CSS 自定义属性按声明元素层叠，
+    // .pp-root 在 prefs.css 里的自身声明永远胜过从父级继承的值（哪怕父级带
+    // !important）——注入到 #zotero-prefs 容器上是无效的（0.17.1 仿真实测确认）
+    const ppDecls = this._ppVars(theme);
+    const mainDecls = decls.map((d) => d + " !important;").join("\n  ");
+    const prefsDecls = decls.concat(ppDecls).map((d) => d + " !important;").join("\n  ");
+    const ppRootDecls = ppDecls.map((d) => d + " !important;").join("\n  ");
 
     let css =
       "/* PaperPilot 主题 · " + theme.name + (wp ? " + 壁纸 " + wp.kind : "") + " */\n" +
-      "#main-window {\n  " + decls + "\n}\n" +
-      "#zotero-prefs {\n  " + decls + "\n}\n";
+      "#main-window {\n  " + mainDecls + "\n}\n" +
+      "#zotero-prefs {\n  " + decls.map((d) => d + " !important;").join("\n  ") + "\n}\n" +
+      "#zotero-prefs .pp-root {\n  " + ppRootDecls + "\n}\n" +
+      // 功能中心 + 小对话框窗口（0.17.1 纳入主题作用域）：decls + pp 变量组
+      "window[windowtype='paperpilot:hub'],\n" +
+      "window[windowtype='paperpilot:dialog'] {\n  " + prefsDecls + "\n}\n" +
+      // 对话框表单控件：深色主题下原生白底输入框突兀，随主题化
+      "window[windowtype='paperpilot:dialog'] textarea,\n" +
+      "window[windowtype='paperpilot:dialog'] input:not([type='checkbox']):not([type='radio']),\n" +
+      "window[windowtype='paperpilot:hub'] textarea,\n" +
+      "window[windowtype='paperpilot:hub'] input:not([type='checkbox']):not([type='radio']) {\n" +
+      "  background-color: " + c.surface + " !important;\n" +
+      "  color: " + c.ink + " !important;\n" +
+      "  border-color: " + c.line + " !important;\n}\n";
 
     if (wp) {
       css += this._glassCSS(wp);
@@ -766,8 +815,10 @@ var UiTheme = {
     }
 
     css +=
+      // 条目树行：hover 加强（0.17.1：6% → 14%，深浅主题下都可辨识）
       "#main-window .virtualized-table .row:hover:not(.selected) {\n" +
-      "  background-color: " + this._mix(c.ink, c.background, 0.06) + " !important;\n}\n" +
+      "  background-color: " + this._mix(c.ink, c.background, 0.14) + " !important;\n" +
+      "  color: " + c.ink + " !important;\n}\n" +
       "#main-window #zotero-items-tree .selected,\n" +
       "#main-window #zotero-collections-tree .selected {\n" +
       "  background-color: " + select + " !important;\n" +
@@ -776,6 +827,23 @@ var UiTheme = {
       "  background-color: " + this._mix(c.ink, c.tab, 0.08) + " !important;\n}\n" +
       "#main-window .tabs .tab.selected {\n" +
       "  background-color: " + (wp ? this._wpBar(c.surface, wp) : c.surface) + " !important;\n" +
+      "  color: " + c.ink + " !important;\n}\n" +
+      // ---- 0.17.1 Zotero 原生硬编码元素补丁（保守清单：只补实测不吃变量的）----
+      // 菜单弹窗项：hover 在部分 Z7 版本硬编码浅灰
+      "#main-window menupopup menuitem[_moz-menuactive='true']:not([disabled='true']),\n" +
+      "#main-window menupopup menu[_moz-menuactive='true']:not([disabled='true']) {\n" +
+      "  background-color: " + this._rgba(c.accent, 0.2) + " !important;\n" +
+      "  color: " + c.ink + " !important;\n}\n" +
+      // 标签选择器 chips
+      "#main-window #zotero-tag-selector-container .tag-selector-item {\n" +
+      "  color: " + c.ink + " !important;\n}\n" +
+      // 条目详情面板字段标签/分隔
+      "#main-window #zotero-item-pane label,\n" +
+      "#main-window .item-pane-content label {\n" +
+      "  color: " + c.ink2 + " !important;\n}\n" +
+      // tooltip（html-tooltip 独立于 arrowpanel 变量）
+      "#main-window tooltip {\n" +
+      "  background-color: " + c.surface + " !important;\n" +
       "  color: " + c.ink + " !important;\n}\n";
     return css;
   },
@@ -900,7 +968,10 @@ var UiTheme = {
       if (!root) return;
       const isMain = root.id === "main-window";
       const isPrefs = root.id === "zotero-prefs";
-      if (!isMain && !isPrefs) return;
+      // 0.17.1：功能中心 + 小对话框纳入主题作用域（workbench 有自治 wbTheme 体系，不纳入）
+      const wtype = root.getAttribute("windowtype") || "";
+      const isThemedWindow = wtype === "paperpilot:hub" || wtype === "paperpilot:dialog";
+      if (!isMain && !isPrefs && !isThemedWindow) return;
       const theme = this.current();
       let style = win.document.getElementById(this.STYLE_ID);
       if (!theme) {
@@ -908,7 +979,7 @@ var UiTheme = {
         if (isMain) this._applyWallpaper(win, null);
         return;
       }
-      // 壁纸只出现在主窗口；设置窗口（独立顶层）用不透明调色板
+      // 壁纸只出现在主窗口；设置/功能中心（独立顶层）用不透明调色板
       const wp = isMain ? this.wallpaper(theme) : null;
       if (!style) {
         style = win.document.createElementNS("http://www.w3.org/1999/xhtml", "style");

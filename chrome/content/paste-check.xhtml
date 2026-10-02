@@ -3,6 +3,7 @@
 <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         xmlns:html="http://www.w3.org/1999/xhtml"
         title="PaperPilot · 文献列表核验（AI 幻觉检测）"
+        windowtype="paperpilot:dialog"
         width="760" height="600">
   <script src="chrome://paperpilot/content/paste-check.js"></script>
   <vbox flex="1" style="padding:12px;">
@@ -13,11 +14,11 @@
     <hbox style="gap:8px;align-items:center;">
       <html:button id="pp-pc-run" style="font-weight:bold;">开始核验</html:button>
       <html:button id="pp-pc-clear">清空</html:button>
-      <html:span id="pp-pc-status" style="color:#666;"></html:span>
+      <html:span id="pp-pc-status" style="color:var(--fill-secondary,#666);"></html:span>
       <spacer flex="1"/>
       <html:button id="pp-pc-close">关闭</html:button>
     </hbox>
     <vbox id="pp-pc-results" flex="1"
-      style="overflow-y:auto;border:1px solid #999;padding:8px;margin-top:8px;background:#fff;font-size:13px;"/>
+      style="overflow-y:auto;border:1px solid var(--fill-tertiary,#999);padding:8px;margin-top:8px;background:var(--material-surface,#fff);color:var(--fill-primary,#222);font-size:13px;"/>
   </vbox>
 </window>

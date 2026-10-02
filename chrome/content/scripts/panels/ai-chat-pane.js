@@ -63,14 +63,14 @@ var AIChatPane = {
 
         // 当前文献标题
         const titleEl = H("div", {
-          style: "font-weight:600;color:#666;white-space:nowrap;overflow:hidden;" +
+          style: "font-weight:600;color:var(--fill-secondary,#666);white-space:nowrap;overflow:hidden;" +
             "text-overflow:ellipsis;",
         }, "—");
 
         const msgs = H("div", {
           style: "display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto;",
         });
-        const hint = H("div", { style: "color:#888;padding:4px 0;" }, I18n.t("chatEmpty"));
+        const hint = H("div", { style: "color:var(--fill-tertiary,#888);padding:4px 0;" }, I18n.t("chatEmpty"));
         msgs.appendChild(hint);
 
         // 工具行：Prompt 下拉 + 执行 / 存为笔记 / 清空
@@ -179,7 +179,7 @@ var AIChatPane = {
     if (!st.refs) return;
     st.refs.msgs.textContent = "";
     st.refs.hint = this._h(st.refs.msgs.ownerDocument, "div",
-      { style: "color:#888;padding:4px 0;" }, I18n.t("chatEmpty"));
+      { style: "color:var(--fill-tertiary,#888);padding:4px 0;" }, I18n.t("chatEmpty"));
     st.refs.msgs.appendChild(st.refs.hint);
   },
 

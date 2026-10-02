@@ -127,7 +127,7 @@
 
     function setStatus(t, color) {
       status.textContent = t || "";
-      status.style.color = color || "#888";
+      status.style.color = color || "var(--fill-tertiary,#888)";
     }
 
     function renderNav() {
@@ -136,10 +136,10 @@
         const active = c.id === activeId;
         const btn = h("div",
           "padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;" +
-          (active ? "background:#2563eb;color:#fff;font-weight:600;" : "color:#333;"),
+          (active ? "background:var(--color-accent,#2563eb);color:#fff;font-weight:600;" : "color:var(--fill-primary,#333);"),
           `${c.icon} ${c.title}`);
         if (!active) {
-          btn.addEventListener("mouseenter", () => { btn.style.background = "#e2e2e6"; });
+          btn.addEventListener("mouseenter", () => { btn.style.background = "var(--fill-quinary,#e2e2e6)"; });
           btn.addEventListener("mouseleave", () => { btn.style.background = ""; });
         }
         btn.addEventListener("click", () => { activeId = c.id; renderAll(); });
@@ -156,21 +156,21 @@
       const feats = cat.features.filter((f) =>
         !kw || (f.t + " " + f.d).toLowerCase().includes(kw));
       if (!feats.length) {
-        cards.appendChild(h("div", "color:#999;padding:12px;",
+        cards.appendChild(h("div", "color:var(--fill-tertiary,#999);padding:12px;",
           zh ? "没有匹配的功能" : "No matching features"));
         return;
       }
       for (const f of feats) {
         const card = h("div",
-          "display:flex;align-items:center;gap:10px;border:1px solid #ddd;border-radius:8px;" +
-          "padding:10px 12px;background:#fafafa;");
+          "display:flex;align-items:center;gap:10px;border:1px solid var(--material-border,1px solid #ddd);border-radius:8px;" +
+          "padding:10px 12px;background:var(--material-surface,#fafafa);");
         const left = h("div", "flex:1;min-width:0;");
         left.appendChild(h("div", "font-weight:600;font-size:13px;", f.t));
-        left.appendChild(h("div", "color:#666;font-size:12px;margin-top:2px;", f.d));
+        left.appendChild(h("div", "color:var(--fill-secondary,#666);font-size:12px;margin-top:2px;", f.d));
         card.appendChild(left);
         if (f.info) {
           card.appendChild(h("span",
-            "color:#2563eb;font-size:11px;border:1px solid #2563eb55;border-radius:10px;" +
+            "color:var(--color-accent,#2563eb);font-size:11px;border:1px solid var(--color-accent,#2563eb);border-radius:10px;" +
             "padding:1px 8px;white-space:nowrap;",
             zh ? "自动" : "auto"));
         } else {
@@ -180,9 +180,9 @@
             setStatus("");
             try {
               const r = f.run();
-              if (r && r.catch) r.catch((e) => setStatus((zh ? "出错：" : "Error: ") + (e && e.message || e), "#c0392b"));
+              if (r && r.catch) r.catch((e) => setStatus((zh ? "出错：" : "Error: ") + (e && e.message || e), "var(--accent-red,#c0392b)"));
             } catch (e) {
-              setStatus((zh ? "出错：" : "Error: ") + (e && e.message || e), "#c0392b");
+              setStatus((zh ? "出错：" : "Error: ") + (e && e.message || e), "var(--accent-red,#c0392b)");
             }
           });
           card.appendChild(btn);

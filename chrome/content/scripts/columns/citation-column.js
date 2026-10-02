@@ -292,7 +292,7 @@ var CitationColumn = {
         if (data !== "" && data !== null && data !== undefined) {
           span.textContent = String(data);
           if (typeof data === "number" && data >= 100) {
-            span.style.cssText = "color:#c0392b;font-weight:600;";
+            span.style.cssText = "color:var(--accent-red,#c0392b);font-weight:600;";
           }
         }
         return span;
