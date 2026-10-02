@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -54,6 +54,8 @@ Zotero.PaperPilot = {
       "features/oa-fetch.js",
       "features/anki-export.js",
       "features/lib-graph.js",
+      "features/ui-theme.js",
+      "features/pdf-theme.js",
       "columns/rank-column.js",
       "columns/citation-column.js",
       "panels/ai-chat-pane.js",
@@ -112,6 +114,9 @@ Zotero.PaperPilot = {
     this.libGraph = LibGraph;
     // 0.13.0 工作台 2.0 需要：Prompt 技能库
     this.prompts = Prompts;
+    // 0.16.0 主题系统：设置面板脚本经此访问主题库与切换接口
+    this.uiTheme = UiTheme;
+    this.pdfTheme = PdfTheme;
 
     // 一次性迁移：aiTemperature 旧版本默认是浮点 0.3，被 Mozilla int pref 截断成 0；
     // 0.4.0 起改存字符串。若用户 pref 仍是 int 类型则清掉，让新的字符串默认值生效
@@ -167,6 +172,7 @@ Zotero.PaperPilot = {
         scripts: [
           rootURI + "chrome/content/prefs-pane.js",
           rootURI + "chrome/content/prefs-account.js",
+          rootURI + "chrome/content/prefs-theme.js",
         ],
         stylesheets: [
           rootURI + "chrome/content/prefs.css",
@@ -237,6 +243,20 @@ Zotero.PaperPilot = {
       await this._diag("menus registered");
     } catch (e) {
       await this._diag("menus FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.16.0 主题系统：界面主题（CSS 变量换肤）+ PDF 阅读主题（叠色/反色）
+    try {
+      UiTheme.register();
+      await this._diag("ui theme registered");
+    } catch (e) {
+      await this._diag("ui theme FAILED: " + (e && (e.stack || e.message) || e));
+    }
+    try {
+      PdfTheme.register();
+      await this._diag("pdf theme registered");
+    } catch (e) {
+      await this._diag("pdf theme FAILED: " + (e && (e.stack || e.message) || e));
     }
 
     // 阅读器划词浮窗
@@ -333,7 +353,7 @@ Zotero.PaperPilot = {
     // （FF140 实证：addObserver(..., weak=true) 直接抛错拖死 startup）。
     // 改用 Zotero.Prefs.registerObserver——Zotero 自己在主作用域持有单个
     // nsIObserver 再分发，按「完整 pref key」注册（无前缀监听，逐 key 注册）。
-    this._prefObserverSymbols = ["rankDataPath", "rankColumnEnabled", "easyScholarEnabled", "easyScholarKey", "citationColumnEnabled"].map((key) =>
+    this._prefObserverSymbols = ["rankDataPath", "rankColumnEnabled", "easyScholarEnabled", "easyScholarKey", "citationColumnEnabled", "uiTheme", "uiThemeCustom", "pdfTheme", "pdfThemeCustomColor", "pdfThemeCustomOpacity"].map((key) =>
       Zotero.Prefs.registerObserver(Prefs.PREFIX + key, () => {
         this._onPrefChanged(key).catch((e) => {
           try { Zotero.logError(e); } catch (_) { /* ignore */ }
@@ -364,6 +384,12 @@ Zotero.PaperPilot = {
       // 开关或密钥变化：清查找缓存并立即重绘（ES 结果按内容缓存，无需清空）
       try { RankColumn._lookupCache.clear(); } catch (e) { /* ignore */ }
       try { Zotero.ItemTreeManager.refreshColumns(); } catch (e) { /* ignore */ }
+    } else if (key === "uiTheme" || key === "uiThemeCustom") {
+      // 主题即时生效：设置面板/菜单任何一处改动，全部窗口立即换肤
+      try { UiTheme.apply(); } catch (e) { /* ignore */ }
+    } else if (key === "pdfTheme" || key === "pdfThemeCustomColor" || key === "pdfThemeCustomOpacity") {
+      // PDF 阅读主题即时生效：重刷全部已打开 reader
+      try { PdfTheme.refresh(); } catch (e) { /* ignore */ }
     }
   },
 
@@ -375,6 +401,8 @@ Zotero.PaperPilot = {
       this._prefObserverSymbols = null;
     }
     try { Menus.destroy(); } catch (e) { Zotero.logError(e); }
+    try { UiTheme.unregister(); } catch (e) { Zotero.logError(e); }
+    try { PdfTheme.unregister(); } catch (e) { Zotero.logError(e); }
     try { RuleTag.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReadingState.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReaderPopup.unregister(); } catch (e) { Zotero.logError(e); }

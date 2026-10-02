@@ -350,5 +350,105 @@
       </html:div>
     </html:div>
   </html:div>
+  <!-- ============ 8 · 界面主题（0.16.0） ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">🎨</html:span><html:span class="pp-card-title">界面主题</html:span></html:div>
+    <html:div class="pp-card-desc">整体更换 Zotero 界面配色（含设置窗口）；界面主题与 PDF 阅读主题可独立搭配</html:div>
+    <html:div class="pp-card-body">
+      <html:div id="pp-ui-theme-grid" class="pp-theme-grid"></html:div>
+      <html:div class="pp-hint" style="margin-top:8px;">☀️ = 浅色基调 · 🌙 = 深色基调 · 切换即时生效；「跟随原生」恢复 Zotero 自身外观设置</html:div>
+
+      <!-- 8.1 自定义色板 -->
+      <html:div class="pp-sub">
+        <html:div class="pp-sub-title">自定义色板（选用「自定义色板」主题时生效）</html:div>
+        <html:div class="pp-sub-desc">只填核心角色，工具栏/标签栏/次级文字等由模块自动派生；深浅基调决定链接色等少数派生值</html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">窗口底色 background</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-bg" class="pp-input pp-grow" placeholder="#ffffff"/>
+              <html:input type="color" id="pp-ut-bg-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">侧栏 / 工具栏 side</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-side" class="pp-input pp-grow" placeholder="#f6f8fa"/>
+              <html:input type="color" id="pp-ut-side-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">卡片表面 surface</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-surface" class="pp-input pp-grow" placeholder="#ffffff"/>
+              <html:input type="color" id="pp-ut-surface-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">正文文字 ink</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-ink" class="pp-input pp-grow" placeholder="#1f2328"/>
+              <html:input type="color" id="pp-ut-ink-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">强调色 accent</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-accent" class="pp-input pp-grow" placeholder="#0969da"/>
+              <html:input type="color" id="pp-ut-accent-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">分割线 line</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-ut-line" class="pp-input pp-grow" placeholder="#d1d9e0"/>
+              <html:input type="color" id="pp-ut-line-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+        </html:div>
+        <html:label class="pp-check">
+          <html:input type="checkbox" id="pp-ut-dark"/>
+          <html:span>按深色基调派生（链接/状态色取深色系）</html:span>
+        </html:label>
+        <html:div class="pp-row">
+          <html:button id="pp-ut-apply" class="pp-btn pp-btn-primary">应用自定义色板</html:button>
+          <html:span id="pp-ut-result" class="pp-msg"></html:span>
+        </html:div>
+      </html:div>
+    </html:div>
+  </html:div>
+
+  <!-- ============ 9 · PDF 阅读主题（0.16.0） ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">📖</html:span><html:span class="pp-card-title">PDF 阅读主题</html:span></html:div>
+    <html:div class="pp-card-desc">更换 PDF 页面底色：护眼/羊皮纸等浅色叠色不改动 PDF 本身；夜间模式将页面反色（黑纸白字）</html:div>
+    <html:div class="pp-card-body">
+      <html:div id="pp-pdf-theme-list" class="pp-pdf-list"></html:div>
+      <html:div class="pp-hint" style="margin-top:8px;">也可在 PDF 阅读器工具栏点 🎨 快速切换；对新打开的 PDF 自动应用</html:div>
+
+      <!-- 9.1 自定义叠色 -->
+      <html:div class="pp-sub">
+        <html:div class="pp-sub-title">自定义叠色（选用「自定义颜色」时生效）</html:div>
+        <html:div class="pp-sub-desc">半透明色层叠在原 PDF 上——深色叠白底即护眼底色，文字仍清晰透出</html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">叠色颜色</html:label>
+            <html:div class="pp-row" style="margin-top:0;">
+              <html:input type="text" id="pp-pt-color" class="pp-input pp-grow" placeholder="#578f32"/>
+              <html:input type="color" id="pp-pt-color-pick" class="pp-color" style="width:34px;height:26px;padding:1px;"/>
+            </html:div>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">不透明度（5-60）</html:label>
+            <html:input type="number" id="pp-pt-opacity" class="pp-input" min="5" max="60" step="5" placeholder="30"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-row">
+          <html:button id="pp-pt-apply" class="pp-btn pp-btn-primary">保存并预览</html:button>
+          <html:span id="pp-pt-result" class="pp-msg"></html:span>
+        </html:div>
+      </html:div>
+    </html:div>
+  </html:div>
 
 </vbox>

@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph */
+/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -52,7 +52,27 @@ var Menus = {
         () => CNTranslators.update(true));
       const t5 = this._menuItem(doc, toolsPopup, "paperpilot-menu-cn-verify", "menuCNVerify",
         () => CNVerify.interactive());
-      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5);
+      // 0.16.0 外观主题：界面主题 / PDF 阅读主题 两组 radio（popupshowing 动态填充，
+      // 交互模式与上面的模型通道菜单一致）
+      const themeMenu = this._xul(doc, "menu");
+      themeMenu.id = "paperpilot-menu-themes";
+      themeMenu.setAttribute("label", I18n.t("menuThemes"));
+      const themePopup = this._xul(doc, "menupopup");
+      themeMenu.appendChild(themePopup);
+      const uiSub = this._xul(doc, "menu");
+      uiSub.setAttribute("label", I18n.t("menuUiTheme"));
+      const uiSubPopup = this._xul(doc, "menupopup");
+      uiSub.appendChild(uiSubPopup);
+      uiSubPopup.addEventListener("popupshowing", () => this._fillUiThemesMenu(doc, uiSubPopup));
+      const pdfSub = this._xul(doc, "menu");
+      pdfSub.setAttribute("label", I18n.t("menuPdfTheme"));
+      const pdfSubPopup = this._xul(doc, "menupopup");
+      pdfSub.appendChild(pdfSubPopup);
+      pdfSubPopup.addEventListener("popupshowing", () => this._fillPdfThemesMenu(doc, pdfSubPopup));
+      themePopup.appendChild(uiSub);
+      themePopup.appendChild(pdfSub);
+      toolsPopup.appendChild(themeMenu);
+      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu);
     }
 
     // ---- 条目右键：PaperPilot 子菜单 ----
@@ -195,6 +215,55 @@ var Menus = {
           pw.show();
           pw.startCloseTimer(1800);
         } catch (e) { Zotero.logError(e); }
+      });
+      popup.appendChild(mi);
+    }
+  },
+
+  /** 工具菜单 → 外观主题 · 界面主题：radio 列表（"跟随 Zotero 原生" + 全部内置 + 自定义） */
+  _fillUiThemesMenu(doc, popup) {
+    while (popup.firstChild) popup.removeChild(popup.firstChild);
+    const current = String(Prefs.get("uiTheme", "") || "");
+    const mk = (label, id, checked) => {
+      const mi = this._xul(doc, "menuitem");
+      mi.setAttribute("label", label);
+      mi.setAttribute("type", "radio");
+      if (checked) mi.setAttribute("checked", "true");
+      mi.addEventListener("command", () => {
+        try { UiTheme.setTheme(id); } catch (e) { Zotero.logError(e); }
+      });
+      popup.appendChild(mi);
+    };
+    mk(I18n.t("themeFollowNative"), "", current === "");
+    const groups = [
+      { key: "standard", label: I18n.t("themeGroupStandard") },
+      { key: "anime", label: I18n.t("themeGroupAnime") },
+    ];
+    for (const g of groups) {
+      const items = UiTheme.THEMES.filter((t) => t.tag === g.key);
+      if (!items.length) continue;
+      popup.appendChild(this._xul(doc, "menuseparator"));
+      const head = this._xul(doc, "menuitem");
+      head.setAttribute("label", g.label);
+      head.setAttribute("disabled", "true");
+      popup.appendChild(head);
+      for (const t of items) mk((t.dark ? "🌙 " : "☀️ ") + t.name, t.id, current === t.id);
+    }
+    popup.appendChild(this._xul(doc, "menuseparator"));
+    mk("🎨 " + I18n.t("themeCustom"), "custom", current === "custom");
+  },
+
+  /** 工具菜单 → 外观主题 · PDF 阅读主题：radio 列表 */
+  _fillPdfThemesMenu(doc, popup) {
+    while (popup.firstChild) popup.removeChild(popup.firstChild);
+    const current = PdfTheme ? PdfTheme.current().id : "default";
+    for (const t of PdfTheme.THEMES) {
+      const mi = this._xul(doc, "menuitem");
+      mi.setAttribute("label", (t.dark ? "🌙 " : "📄 ") + t.name);
+      mi.setAttribute("type", "radio");
+      if (t.id === current) mi.setAttribute("checked", "true");
+      mi.addEventListener("command", () => {
+        try { PdfTheme.setTheme(t.id); } catch (e) { Zotero.logError(e); }
       });
       popup.appendChild(mi);
     }

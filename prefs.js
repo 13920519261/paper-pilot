@@ -65,3 +65,16 @@ pref("extensions.zotero.paperpilot.cnFetchUseCNKI", true);
 pref("extensions.zotero.paperpilot.cnDownloadDir", "");
 // 0.14.7 新增：设置界面敏感信息默认掩码（接口地址明文开关）
 pref("extensions.zotero.paperpilot.uiShowFullUrl", false);
+// 0.16.0 新增：界面主题（"" = 跟随 Zotero 原生；主题 id 见 ui-theme.js THEMES）
+// 借鉴 yaobian-zotero（CSS 变量映射换肤）与 zotero-night（Nord 色板）设计
+pref("extensions.zotero.paperpilot.uiTheme", "");
+// 自定义界面主题色板 JSON：{__dark,background,side,surface,ink,accent,line,select}
+// 只填核心角色，toolbar/tab/menu/ink2/ink3 等由模块运行时派生（yaobian 思路）
+pref("extensions.zotero.paperpilot.uiThemeCustom", "");
+// 0.16.0 新增：PDF 阅读主题（default/careeye/sepia/sakura/mint/night/night-warm/custom）
+// 借鉴 zotero-pdf-background（textLayer 半透明叠色 + 阅读器工具栏按钮）
+// 与 zotero-night（canvas invert 反色夜间模式）
+pref("extensions.zotero.paperpilot.pdfTheme", "default");
+// 自定义 PDF 叠色：颜色 + 不透明度（5-60，百分整数；Mozilla pref 无浮点）
+pref("extensions.zotero.paperpilot.pdfThemeCustomColor", "#578f32");
+pref("extensions.zotero.paperpilot.pdfThemeCustomOpacity", 30);

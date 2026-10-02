@@ -130,6 +130,14 @@ var I18n = (() => {
     menuOaFetch: zh ? "开放获取补全文（Unpaywall）" : "Find OA Full Text (Unpaywall)",
     menuAnki: zh ? "AI 制卡导出 Anki…" : "AI Cards to Anki…",
     menuLibGraph: zh ? "PaperPilot 文献统计图谱（HTML 报告）" : "PaperPilot Library Report (HTML)",
+    // 0.16.0 外观主题
+    menuThemes: zh ? "外观主题" : "Appearance Themes",
+    menuUiTheme: zh ? "界面主题" : "UI Theme",
+    menuPdfTheme: zh ? "PDF 阅读主题" : "PDF Reading Theme",
+    themeFollowNative: zh ? "跟随 Zotero 原生" : "Follow Zotero native",
+    themeGroupStandard: zh ? "— 标准系列 —" : "— Standard —",
+    themeGroupAnime: zh ? "— 动漫系列 —" : "— Anime —",
+    themeCustom: zh ? "自定义色板" : "Custom palette",
   };
   return {
     t(key) { return table[key] || key; },

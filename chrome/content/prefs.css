@@ -147,3 +147,49 @@
   color: var(--pp-accent); font-weight: 600;
 }
 .pp-root .pp-chip-x { cursor: pointer; color: var(--pp-danger); font-weight: 700; margin-left: 4px; }
+
+/* ---------- 0.16.0 主题系统 ---------- */
+/* 界面主题卡片网格：每卡 = 四色色板预览条 + 名称 + 分组标签 */
+.pp-root .pp-theme-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+.pp-root .pp-theme-card {
+  border: 1px solid var(--pp-border); border-radius: 8px; padding: 8px;
+  cursor: pointer; text-align: center; background: var(--pp-surface-2);
+  transition: border-color .12s, box-shadow .12s;
+}
+.pp-root .pp-theme-card:hover { border-color: var(--pp-accent); }
+.pp-root .pp-theme-on {
+  border-color: var(--pp-accent); box-shadow: 0 0 0 2px var(--pp-focus-ring);
+  background: var(--pp-accent-weak);
+}
+.pp-root .pp-theme-swatches {
+  display: flex; height: 26px; border-radius: 5px; overflow: hidden;
+  border: 1px solid var(--pp-border);
+}
+.pp-root .pp-theme-chip { flex: 1; }
+.pp-root .pp-theme-name {
+  font-size: 12px; font-weight: 600; color: var(--pp-text);
+  margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pp-root .pp-theme-tag { font-size: 10px; color: var(--pp-muted); margin-top: 2px; }
+/* PDF 阅读主题单选列表 */
+.pp-root .pp-pdf-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.pp-root .pp-pdf-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+  border: 1px solid var(--pp-border); border-radius: 7px; cursor: pointer;
+  background: var(--pp-surface-2); font-size: 12.5px; color: var(--pp-text);
+}
+.pp-root .pp-pdf-item:hover { border-color: var(--pp-accent); }
+.pp-root .pp-pdf-on {
+  border-color: var(--pp-accent); background: var(--pp-accent-weak);
+}
+.pp-root .pp-pdf-badge {
+  font-size: 10.5px; color: var(--pp-muted); margin-left: auto; white-space: nowrap;
+}
+/* 取色器与文本输入对齐 */
+.pp-root .pp-color {
+  border: 1px solid var(--pp-border); border-radius: 6px;
+  background: var(--pp-surface-2); cursor: pointer; flex: none;
+}
