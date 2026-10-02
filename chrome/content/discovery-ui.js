@@ -132,6 +132,13 @@
 
   function render() {
     listEl.textContent = "";
+    // 推荐与库内兴趣毫无重合时（只命中分类）显式告警，不给出「看起来正常的无用清单」
+    if (data.note) {
+      listEl.appendChild(el("div",
+        "padding:9px 11px;margin-bottom:8px;border:1px solid var(--accent-orange,#d9822b);border-radius:8px;" +
+        "color:var(--accent-orange,#d9822b);font-size:12.5px;line-height:1.6;background:transparent;",
+        "⚠️ " + data.note));
+    }
     const ignored = D.ignoredSet();
     const items = (data.items || []).filter((e) => !ignored.has(e.arxivId));
     if (!items.length) {

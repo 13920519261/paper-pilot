@@ -262,12 +262,13 @@ var Discovery = {
     const sw = new Map();
     for (const t of this.tokenize(entry.summary)) sw.set(t, (sw.get(t) || 0) + 1);
     let score = 0;
+    let termHits = 0;   // 命中的画像词元个数（不含仅分类加成）——判断推荐是否真有信号
     const reasons = [];
     for (const { term, weight } of profile.terms || []) {
       let hit = 0;
       if (tw.has(term)) hit += 3 * Math.min(2, tw.get(term));
       if (sw.has(term)) hit += 1 * Math.min(3, sw.get(term));
-      if (hit) { score += weight * hit; if (reasons.length < 6) reasons.push(term); }
+      if (hit) { score += weight * hit; termHits++; if (reasons.length < 6) reasons.push(term); }
     }
     const prefCats = new Set(o.categories || []);
     let catHit = "";
@@ -282,7 +283,7 @@ var Discovery = {
       if (isFinite(days) && days >= 0) dayBoost = Math.max(0, 6 * (1 - days / 7));
     } catch (e) { dayBoost = 0; }
     score += dayBoost;
-    return { score: Math.round(score * 100) / 100, reasons: [...new Set(reasons)] };
+    return { score: Math.round(score * 100) / 100, reasons: [...new Set(reasons)], termHits };
   },
 
   /** 排序 + 去重 + 截断（纯函数）：输入原始条目与画像，输出推荐数组 */
@@ -297,7 +298,7 @@ var Discovery = {
       seen.add(e.arxivId);
       const s = this.scoreEntry(e, profile, { categories: o.categories, now: o.now });
       if (s.score <= 0 && !o.keepZero) continue;
-      scored.push(Object.assign({}, e, { score: s.score, reasons: s.reasons }));
+      scored.push(Object.assign({}, e, { score: s.score, reasons: s.reasons, termHits: s.termHits }));
     }
     scored.sort((a, b) => b.score - a.score || String(b.published).localeCompare(String(a.published)));
     return scored.slice(0, o.max || 30);
@@ -409,11 +410,25 @@ var Discovery = {
       categories: cats,
       max: Number(Prefs.get("discoveryMaxResults", 30)) || 30,
     });
+    // ★ 真机验证后新增：只命中分类、没有任何画像词元命中时，推荐其实「没有信号」。
+    // 必须显式说明并给出可执行建议，而不是静静给出一张看起来正常的无用清单
+    // （实测：中医/抽动障碍主题的库 + 默认 cs.AI/cs.CL/cs.LG → 30 条推荐全 9.1 分、零词元命中）
+    const withTermHits = ranked.filter((e) => (e.termHits || 0) > 0).length;
+    let note = "";
+    if (ranked.length && withTermHits === 0) {
+      note = zh
+        ? "本批推荐没有任何一条与你的库内兴趣词真实重合（只命中了分类）。很可能所选 arXiv 分类与你的研究领域不匹配——"
+          + "请把分类改成领域对应的（例如神经科学用 q-bio.NC、医学信息学用 q-bio.QM），或清空分类框改用库内兴趣词检索。"
+        : "None of these recommendations match your library's interest terms (category boost only). "
+          + "The chosen categories likely don't match your field — change them, or clear the field to search by interest terms.";
+    }
     const data = {
       generatedAt: new Date().toISOString(),
       scope: cats.length ? (zh ? "分类：" : "Categories: ") + cats.join(", ") : (zh ? "按库内兴趣词" : "By interest terms"),
       query,
       fetched: entries.length,
+      termMatched: withTermHits,
+      note,
       profile: { terms: profile.terms.slice(0, 20), categories: profile.categories },
       items: ranked,
     };
@@ -503,6 +518,7 @@ var Discovery = {
     let md = "## " + (zh ? "arXiv 每日推荐" : "arXiv Daily") + "\n" +
       "- " + (zh ? "生成时间" : "Generated") + "：" + String(data.generatedAt || "").replace("T", " ").slice(0, 16) + "\n" +
       "- " + (zh ? "范围" : "Scope") + "：" + (data.scope || "-") + "\n\n";
+      if (data.note) md += "\n> ⚠️ " + data.note + "\n";
     (data.items || []).forEach((e, i) => {
       md += "### " + (i + 1) + ". " + e.title + "\n";
       md += "- " + (e.authors || []).slice(0, 4).join(", ") + ((e.authors || []).length > 4 ? " et al." : "") + "\n";
