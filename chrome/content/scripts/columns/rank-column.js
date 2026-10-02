@@ -19,12 +19,11 @@ var RankColumn = {
   /* easyScholar 状态 */
   ES_ENDPOINT: "https://www.easyscholar.cc/open/getPublicationRank",
 
-  /* ⚠️ 内置官方默认 SecretKey（0.15.0）：前期用户开箱即用。
-   * ┌─ 发版前必改：把下方空字符串填入官方 SecretKey（easyscholar.cc 控制台获取）。
-   * ├─ 用户在设置中填了自定义 Key 时优先使用用户值（走用户自有额度）。
-   * └─ 注意：此值会随插件分发公开，请使用可公开共享的官方 Key，勿填私人高额 Key。
+  /* 内置官方默认 SecretKey（0.15.0）：前期用户开箱即用。
+   * - 用户在设置中填了自定义 Key 时优先使用用户值（走用户自有额度）。
+   * - 此值随插件公开分发（用户主动决策共享），2026-10-02 实测有效（code:200）。
    */
-  ES_OFFICIAL_KEY: "",
+  ES_OFFICIAL_KEY: "0ad3dcb704e74f6780c6f66d868d8a23",
 
   _esCache: new Map(),     // 规范化刊名 -> {text, detail, neg, t, retryAfter}
   _esQueue: [],
