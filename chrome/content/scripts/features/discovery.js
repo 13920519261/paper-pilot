@@ -23,20 +23,65 @@ var Discovery = {
 
   /* ---------------- 分词与画像（纯函数，可离线单测） ---------------- */
 
-  /** 分词：英文单词 + 中文 bigram（复用 LibSearch 的实现，保持单一真源） */
+  /* ★ 画像专用停用词（真机验证后补）。
+     背景：LibSearch 的 STOP 只挡了最基础的一批；实测真实库的画像第一词是
+     `inspire`（783）、随后是 `found`/`from`/`that`/`this`/`results` —— 全是
+     功能词与插件噪声，推荐结果因此完全跑偏。这里补上完整的功能词与泛学术词。 */
+  EXTRA_STOP: new Set(("a an the and or but if then than that this these those there their them they its it " +
+    "as at by for from with without within into onto over under between among during after before above below across through upon per via " +
+    "is are was were be been being am do does did done have has had having " +
+    "will would shall should can could may might must not no nor so such also too very just only even still yet " +
+    "more most much many some any all both each other another one two three first second third new same different " +
+    "what which who whom whose when where why how " +
+    "about results result show shows shown showed found find finds finding propose proposed present presented provide provides " +
+    "using used use uses based however therefore thus furthermore moreover although while due given including include includes " +
+    "respectively respectively paper papers study studies " +
+    // 中文功能词与泛学术词（真机验证显示，中文库里「治疗/临床/中国/杂志/专家/指南/进展」
+    // 这类词会占据画像前列；更多泛词由「出现于过多条目」的 df 过滤兜底）
+    "研究 分析 方法 结果 目的 结论 探讨 本文 我们 进行 通过 以及 具有 显著 表明 提示 相关 不同 高于 低于 " +
+    "治疗 临床 中国 杂志 专家 指南 进展 共识 作用 影响 关系 意义 现状 问题 应用 观察 疾病 患者 医药 统计 资料 对象 疗效 " +
+    "疗效 观察 分析 比较 评价 系统 综述 报道 调查 检测 诊断 组 例 一般资料").split(/\s+/).filter(Boolean)),
+
+  /* 状态/管理类标签识别（★ 真机验证后新增）。
+     实测：Better BibTeX 之类插件会给条目打「⛔ No INSPIRE recid found」（261 条）、
+     「⛔ No DOI found」（94 条），阅读状态类还有「/unread」「未读」。
+     这些是**管理标记**不是研究兴趣，但标签权重 ×3 → `inspire` 一度成为画像第一词。
+     规则：以非字母数字非汉字开头（⛔ / # @ …）即视为标记；再加一小份状态词表。 */
+  STATUS_WORDS: new Set(["unread", "read", "reading", "to read", "toread", "done", "todo", "important",
+    "未读", "在读", "已读", "待读", "待看", "已归档", "归档"]),
+
+  isNoiseTag(tag) {
+    const t = String(tag == null ? "" : tag).trim();
+    if (!t) return true;
+    const c = t.codePointAt(0);
+    const wordStart = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+      (c >= 0x4e00 && c <= 0x9fff);
+    if (wordStart) {
+      if (/^no\s+(doi|inspire|arxiv|pmid|issn)/i.test(t)) return true;
+      return this.STATUS_WORDS.has(t.toLowerCase());
+    }
+    // 非文字开头：引号/书名号/括号开头视为**内容**标签（实测库里有「《中医方剂大辞典》」这类），
+    // 其余（⛔ ✓ × # / @ ⭐ …）一律视为标记
+    return "《“‘”’「『(（[【<".indexOf(t[0]) < 0;
+  },
+
+  /** 分词：复用 LibSearch（单一真源），再叠加画像专用的停用词 */
   tokenize(text) {
+    let toks;
     if (typeof LibSearch !== "undefined" && LibSearch && LibSearch.tokenize) {
-      return LibSearch.tokenize(text);
+      toks = LibSearch.tokenize(text);
+    } else {
+      // 兜底（LibSearch 未加载时的最小实现，行为与之一致）
+      const s = String(text || "").toLowerCase();
+      toks = [];
+      for (const m of s.match(/[a-z][a-z0-9\-_.]{1,}/g) || []) if (m.length >= 2) toks.push(m);
+      for (const run of s.match(/[\u4e00-\u9fa5]{2,}/g) || []) {
+        if (run.length <= 4) toks.push(run);
+        for (let i = 0; i + 2 <= run.length; i++) toks.push(run.slice(i, i + 2));
+      }
+      toks = [...new Set(toks)];
     }
-    // 兜底（LibSearch 未加载时的最小实现，行为与之一致）
-    const s = String(text || "").toLowerCase();
-    const out = [];
-    for (const m of s.match(/[a-z][a-z0-9\-_.]{1,}/g) || []) if (m.length >= 2) out.push(m);
-    for (const run of s.match(/[\u4e00-\u9fa5]{2,}/g) || []) {
-      if (run.length <= 4) out.push(run);
-      for (let i = 0; i + 2 <= run.length; i++) out.push(run.slice(i, i + 2));
-    }
-    return [...new Set(out)];
+    return toks.filter((t) => !this.EXTRA_STOP.has(t));
   },
 
   /** 条目 → arXiv 分类 / arXiv id 抽取（扫 extra、url、archiveID、repository） */
@@ -65,7 +110,10 @@ var Discovery = {
     for (const it of items || []) {
       const g = (f) => { try { return String(it.getField(f) || ""); } catch (e) { return ""; } };
       let tags = "";
-      try { tags = (it.getTags() || []).map((t) => t.tag).join(" "); } catch (e) { tags = ""; }
+      try {
+        // 跳过状态/管理类标签（⛔ / # / unread / 未读 …），否则它们会主导画像
+        tags = (it.getTags() || []).map((t) => t.tag).filter((t) => !this.isNoiseTag(t)).join(" ");
+      } catch (e) { tags = ""; }
       const title = g("title");
       const abstract = g("abstractNote");
       const journal = g("publicationTitle") || g("bookTitle") || g("proceedingsTitle") || "";
@@ -91,7 +139,10 @@ var Discovery = {
     const maxRatio = o.maxDocFreq || 0.4;
     const floor = Math.max(3, Math.ceil(docs.length * maxRatio));
     const terms = [...total.entries()]
-      .filter(([t]) => (df.get(t) || 0) < floor && t.length >= 3)
+      // 长度下限必须 **≥2**：中文词元是 bigram（2 字），写 ≥3 会把
+      // 「抽动 / 障碍 / 中医 / 数据」这类核心中文词**整体丢掉**
+      // （真机验证在中文库上实测：画像 Top 里一个中文词都没有）
+      .filter(([t]) => (df.get(t) || 0) < floor && t.length >= 2)
       .map(([term, weight]) => ({ term, weight: Math.round(weight * 100) / 100 }))
       .sort((a, b) => b.weight - a.weight)
       .slice(0, topTerms);

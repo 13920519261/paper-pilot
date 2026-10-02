@@ -138,7 +138,16 @@ var MetaRules = {
     patent: [["issuingAuthority", "授予机构"]],
   },
 
-  DOI_RE: /^10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+$/,
+  /* DOI 合法性：必须允许 **shortDOI**（Crossref 的 `10/xxxxxx` 短形式）。
+     真机验证教训：原正则 `^10\.\d{4,9}\/…` 把真实库里的 71 条 shortDOI
+     全部误报成「语法不符」——这是一整类合法 DOI。
+     尾段用 `\S+`（不出现空白即可），避免对 Wiley 旧式含 < > ( ) 的合法 DOI 误报。 */
+  DOI_RE: /^10(\.\d+)?\/\S+$/,
+
+  /** 是否缩写体刊名：存在「1–4 字符 + 句点」的词（Ann. / J. / Res.）即视为缩写，不应去尾点 */
+  looksAbbrevJournal(s) {
+    return /(?:^|\s)\S{1,4}\./.test(String(s || ""));
+  },
 
   /* ---------------- 纯函数工具 ---------------- */
 
@@ -266,7 +275,8 @@ var MetaRules = {
     if (!s) return null;
     if (/^https?:\/\//i.test(s) || /^doi:\s*/i.test(s)) return "DOI 含 URL/doi: 前缀（用「元数据规范清洗」可自动去掉）";
     if (/\s/.test(String(value))) return "DOI 含空格，DOI 不应有空白字符";
-    if (!this.DOI_RE.test(s)) return "不符合 DOI 语法（应为 10.xxxx/…）";
+    // 接受 shortDOI（10/xxxxxx，Crossref 官方短形式）与常规 10.xxxx/…
+    if (!this.DOI_RE.test(s)) return "不符合 DOI 语法（应为 10.xxxx/… 或 shortDOI 形式 10/…）";
     return null;
   },
 
@@ -351,8 +361,12 @@ var MetaRules = {
       detect(s) {
         const v = s.fields.publicationTitle;
         if (!v) return [];
+        // ★ 真机验证后加的保护：缩写体刊名（Ann. Neurol. / J. Child Neurol. / Psychiatry Res.）
+        // 的末尾句点是**缩写规范的一部分**，去掉反而破坏；只有「全称末尾多了一个句点」
+        // （如 Nature. / Science.）才该清理。
+        if (MetaRules.looksAbbrevJournal(v)) return [];
         const to = String(v).replace(/[.\s]+$/, "");
-        return to && to !== v ? [{ field: "publicationTitle", from: v, to, note: "去掉尾随句点" }] : [];
+        return to && to !== v ? [{ field: "publicationTitle", from: v, to, note: "去掉全称末尾多余句点" }] : [];
       },
     },
     {
