@@ -797,18 +797,20 @@ var UiTheme = {
       const url = String(Prefs.get("uiWallpaperUrl", "") || "").trim();
       if (/^https?:\/\//i.test(url)) {
         const isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)(\?|#|$)/i.test(url);
-        base = { kind: isVideo ? "video" : "image", url: url };
+        base = { kind: isVideo ? "video" : "image", url: url, key: "url:" + url };
       } else {
         const path = String(Prefs.get(this.PREF_WP_PATH, "") || "");
         if (!path || !this._isReadableFile(path)) return null;
         const fileUrl = Services.io.newFileURI(Zotero.File.pathToFile(path)).spec;
         const isVideo = /\.(mp4|webm|mkv|mov|m4v|ogv)$/i.test(path);
-        base = { kind: isVideo ? "video" : "image", url: fileUrl };
+        base = { kind: isVideo ? "video" : "image", url: fileUrl, key: "path:" + path };
       }
     } else {
       // "theme"：主题包自带壁纸
       if (!theme || !theme.wp) return null;
-      base = { kind: theme.wp.kind, svg: theme.wp.svg, anim: !!theme.wp.anim };
+      // key 用主题 id：v2 的 mesh 壁纸各主题结构一致、只有颜色不同，SVG 长度会撞车
+      // （15 套只有 11 种长度），拿长度当签名会导致切主题时壁纸不重建
+      base = { kind: theme.wp.kind, svg: theme.wp.svg, anim: !!theme.wp.anim, key: "theme:" + theme.id };
     }
     let opacity = Number(Prefs.get(this.PREF_WP_OPACITY, 70));
     if (!isFinite(opacity)) opacity = 70;
@@ -1038,7 +1040,8 @@ var UiTheme = {
         stack.prepend(layer);
       }
       // 引擎签名：内容相同则跳过重建（避免动画/视频被反复重置）
-      const sig = wp.kind + "|" + (wp.svg ? wp.svg.length : wp.url || "");
+      // 0.19.0：优先用 wallpaper() 给的 key（主题 id / URL），SVG 长度会撞车不可靠
+      const sig = wp.kind + "|" + (wp.key || (wp.svg ? wp.svg.length : wp.url || ""));
       if (layer.getAttribute("data-pp-sig") === sig) return;
       layer.setAttribute("data-pp-sig", sig);
       while (layer.firstChild) layer.removeChild(layer.firstChild);
