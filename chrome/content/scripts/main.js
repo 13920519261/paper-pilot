@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -36,6 +36,7 @@ Zotero.PaperPilot = {
       "features/annotations.js",
       "features/collection-stats.js",
       "features/reader-popup.js",
+      "features/pdf-compare.js",
       "features/rule-tag.js",
       "features/citation-trace.js",
       "features/fake-check.js",
@@ -117,6 +118,8 @@ Zotero.PaperPilot = {
     // 0.16.0 主题系统：设置面板脚本经此访问主题库与切换接口
     this.uiTheme = UiTheme;
     this.pdfTheme = PdfTheme;
+    // 0.21.0 多篇 PDF 并排对比（菜单/功能中心经此调起；窗口脚本经 window.arguments 拿引用）
+    this.pdfCompare = PdfCompare;
 
     // 一次性迁移：aiTemperature 旧版本默认是浮点 0.3，被 Mozilla int pref 截断成 0；
     // 0.4.0 起改存字符串。若用户 pref 仍是 int 类型则清掉，让新的字符串默认值生效
@@ -288,6 +291,17 @@ Zotero.PaperPilot = {
       CNTranslators.scheduleAuto();
     } catch (e) {
       await this._diag("cn translators auto-update schedule FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.21.0：多篇 PDF 对比自检（pref compareSelfTest，默认关）。
+    // 内嵌预览失败是静默的（面板空白），自检把结果写进 boot 日志以便定位。
+    if (Prefs.get("compareSelfTest", false)) {
+      try {
+        this.pdfCompare.selfTest().catch((e) => this._diag("compare self-test rejected: " + (e && e.message)));
+        await this._diag("compare self-test scheduled");
+      } catch (e) {
+        await this._diag("compare self-test FAILED: " + (e && (e.stack || e.message) || e));
+      }
     }
 
     this._initialized = true;

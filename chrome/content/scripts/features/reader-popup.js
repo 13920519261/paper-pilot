@@ -123,6 +123,16 @@ var ReaderPopup = {
       : "Briefly explain the following excerpt from a paper in Chinese (100-200 chars), plain text only, no Markdown:\n\n") + text;
   },
 
+  /** 打开 PaperPilot 设置面板（浮窗里「未就绪」提示的一键入口） */
+  _openSettings() {
+    try {
+      const paneID = (Zotero.PaperPilot && Zotero.PaperPilot._paneID) || "paperpilot-prefs";
+      Zotero.Utilities.Internal.openPreferences(paneID);
+    } catch (e) {
+      try { Zotero.logError(e); } catch (_) { /* ignore */ }
+    }
+  },
+
   _onPopup(event) {
     try {
       if (!Prefs.get("readerPopupEnabled", true)) return;
@@ -132,7 +142,11 @@ var ReaderPopup = {
         (params && params.text) || "";
       const cleanText = text.trim();
       if (!cleanText || cleanText.length < 2) return;
-      if (!AIClient.hasKey()) return;
+      // 0.21.0：AI 未就绪不再静默 return。
+      // 旧行为是 `if (!AIClient.hasKey()) return;`——浮窗什么都不渲染，
+      // 用户划词后看到的只有「没反应」，完全不知道是没登录/没配 Key。
+      // 现在照常渲染浮窗，只是按钮禁用 + 顶部给出精确指引与一键去设置。
+      const aiReady = AIClient.hasKey();
 
       const item = this._currentItem(event);
       const annotation = (params && params.annotation && params.annotation.id)
@@ -186,6 +200,7 @@ var ReaderPopup = {
       const trBtn = mkBtn(I18n.t("popupTranslate"));
       const aiBtn = mkBtn(I18n.t("popupExplain"));
       const askBtn = mkBtn(I18n.t("popupAsk"));
+      if (!aiReady) for (const b of [trBtn, aiBtn, askBtn]) b.disabled = true;
       const src = mk("span",
         "color:#888;flex:1;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" +
         "font-size:11.5px;",
@@ -243,7 +258,24 @@ var ReaderPopup = {
       if (item) actions.appendChild(paneBtn);
       actions.appendChild(status);
 
+      // AI 未就绪提示行（0.21.0）：说明原因 + 一键去设置（区分未登录 / 缺 Key）
+      let noticeRow = null;
+      if (!aiReady) {
+        noticeRow = mk("div",
+          "display:flex;gap:6px;align-items:center;flex-wrap:wrap;" +
+          "font-size:11.5px;color:#c0392b;line-height:1.5;");
+        noticeRow.appendChild(mk("span", "flex:1;min-width:120px;", I18n.t("popupNoAi")));
+        const goBtn = mkBtn(I18n.t("popupGoLogin"));
+        goBtn.addEventListener("click", () => this._openSettings());
+        noticeRow.appendChild(goBtn);
+        const hint = mk("div",
+          "font-size:11px;color:#888;line-height:1.5;width:100%;",
+          AIClient.guidance());
+        noticeRow.appendChild(hint);
+      }
+
       box.appendChild(row);
+      if (noticeRow) box.appendChild(noticeRow);
       box.appendChild(askRow);
       box.appendChild(result);
       box.appendChild(stopRow);
@@ -487,7 +519,7 @@ var ReaderPopup = {
 
       // 划词即自动翻译：去重 + 800ms 限流 + 长度护栏
       try {
-        if (Prefs.get("readerPopupAutoTranslate", false) &&
+        if (aiReady && Prefs.get("readerPopupAutoTranslate", false) &&
             cleanText.length >= 2 && cleanText.length <= 2000) {
           const now = Date.now();
           const autoKey = "translate|" + cleanText;

@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme */
+/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme, PdfCompare */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -96,6 +96,9 @@ var Menus = {
 
       this._menuItem(doc, popup, "paperpilot-itemmenu-hub", "menuHub",
         () => Zotero.PaperPilot.openHub());
+      // 0.21.0 多篇 PDF 并排对比（需选中 ≥2 篇带 PDF 的文献）
+      this._menuItem(doc, popup, "paperpilot-itemmenu-pdf-compare", "menuPdfCompare",
+        () => PdfCompare.runForSelected());
       popup.appendChild(this._xul(doc, "menuseparator"));
       this._menuItem(doc, popup, "paperpilot-itemmenu-ai-summary", "menuAiSummary",
         () => this.aiTaskForSelected((it) => AIChat.summarize(it), "noteSummaryTitle"));
@@ -295,7 +298,7 @@ var Menus = {
   async testConnection() {
     const win = Zotero.getMainWindow();
     if (!AIClient.hasKey()) {
-      Services.prompt.alert(win, "PaperPilot", I18n.t("chatNoKey"));
+      Services.prompt.alert(win, "PaperPilot", AIClient.guidance() || I18n.t("chatNoKey"));
       return;
     }
     try {
@@ -320,7 +323,8 @@ var Menus = {
       .filter(i => (i.isRegularItem && i.isRegularItem()) || (i.isPDFAttachment && i.isPDFAttachment()));
     if (!items.length) return;
     if (withAI && !AIClient.hasKey()) {
-      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot", I18n.t("chatNoKey"));
+      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot",
+        AIClient.guidance() || I18n.t("chatNoKey"));
       return;
     }
 
@@ -370,7 +374,9 @@ var Menus = {
     }
 
     if (!AIClient.hasKey()) {
-      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot", I18n.t("chatNoKey"));
+      // 0.21.0：精确区分未登录 / 缺 Key
+      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot",
+        AIClient.guidance() || I18n.t("chatNoKey"));
       return;
     }
 

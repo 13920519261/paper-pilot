@@ -57,7 +57,9 @@ var BilingualTranslate = {
       return;
     }
     if (!AIClient.hasKey()) {
-      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot", I18n.t("chatNoKey"));
+      // 0.21.0：区分「未登录官方模型」与「通道缺 Key」，不再用同一条笼统提示
+      Services.prompt.alert(Zotero.getMainWindow(), "PaperPilot",
+        AIClient.guidance() || I18n.t("chatNoKey"));
       return;
     }
 

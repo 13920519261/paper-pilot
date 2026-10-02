@@ -43,6 +43,7 @@
         title: zh ? "批量分析" : "Batch Analysis",
         desc: zh ? "多篇文献横向对比与汇总（需选中 2 篇以上或一个分类）" : "Compare and synthesize multiple papers",
         features: [
+          { t: zh ? "多篇 PDF 并排对比" : "Compare PDFs", d: zh ? "最多 4 篇并排同屏：横向/纵向/网格布局，同步滚动与缩放，只读预览已有高亮（需选中 2 篇以上）" : "Up to 4 PDFs side by side with synced scroll/zoom (select 2+)", run: () => PP.pdfCompare.runForSelected() },
           { t: zh ? "AI 文献矩阵" : "Literature matrix", d: zh ? "按维度抽取生成对比表格笔记" : "Dimension comparison table", run: () => PP.matrix.forSelected() },
           { t: zh ? "AI 文献综述" : "Literature review", d: zh ? "多篇生成带引用编号的综述段落" : "Review with citation numbers", run: () => PP.reviewGen.forSelected() },
           { t: zh ? "引文追溯" : "Citation trace", d: zh ? "参考文献/施引文献分析笔记" : "References & citing papers note", run: () => PP.citationTrace.runForSelected() },

@@ -41,6 +41,27 @@ var AIClient = {
     return !c.notLoggedIn && !c.noKey && !!c.ok;
   },
 
+  /**
+   * 就绪状态的**可读原因**（0.21.0）：调用点据此给出精确指引，避免
+   * 「未登录」与「没填 Key」被同一条笼统提示盖住——这正是历史投诉
+   * 「AI 翻译没反应/只说没 Key」的根因。
+   * @returns {"ok"|"not_logged_in"|"no_key"}
+   */
+  status() {
+    if (this.hasKey()) return "ok";
+    const c = this._config();
+    if (c && c.notLoggedIn) return "not_logged_in";
+    return "no_key";
+  },
+
+  /** 未就绪原因 → 用户可执行的指引文案（I18n 表） */
+  guidance() {
+    const s = this.status();
+    if (s === "not_logged_in") return typeof I18n !== "undefined" ? I18n.t("chatNotLoggedIn") : "";
+    if (s === "no_key") return typeof I18n !== "undefined" ? I18n.t("chatNoKeyConfigured") : "";
+    return "";
+  },
+
   baseUrl() {
     const c = this._config();
     return c.ok ? c.baseUrl : "";

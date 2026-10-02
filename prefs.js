@@ -98,3 +98,16 @@ pref("extensions.zotero.paperpilot.uiWallpaperOpacity", 70);
 // 自定义 PDF 叠色：颜色 + 不透明度（5-60，百分整数；Mozilla pref 无浮点）
 pref("extensions.zotero.paperpilot.pdfThemeCustomColor", "#578f32");
 pref("extensions.zotero.paperpilot.pdfThemeCustomOpacity", 30);
+// 0.21.0 新增：多篇 PDF 并排对比
+// 同时打开的 PDF 上限（2-6，默认 4：2×2 网格在常规屏幕上每页仍可读）
+pref("extensions.zotero.paperpilot.compareMaxPanes", 4);
+// 布局：auto（按篇数自动）/ h（横向并排）/ v（纵向堆叠）/ grid（2×2 网格）
+pref("extensions.zotero.paperpilot.compareLayout", "auto");
+// 同步滚动默认开（按滚动百分比位置联动，页数不同也能大致对齐）
+pref("extensions.zotero.paperpilot.compareSyncScroll", true);
+// 同步缩放默认关（各篇排版/页边距不同，强制统一缩放常导致某篇字过大或过小）
+pref("extensions.zotero.paperpilot.compareSyncZoom", false);
+// 自检开关（默认关）：置 true 后下次启动自动用库里前 4 个 PDF 开一次对比窗口，
+// 12 秒后把每个面板的加载结果（是否挂上 pdf.js 视图/页数/提示语）写进
+// paperpilot-boot.log ——「面板空白」这类静默失败靠它定位，验完请改回 false
+pref("extensions.zotero.paperpilot.compareSelfTest", false);

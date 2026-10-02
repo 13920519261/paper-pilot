@@ -140,6 +140,68 @@ var I18n = (() => {
     themeGroupScenery: zh ? "风景" : "Scenery",
     themeGroupDynamic: zh ? "动态壁纸" : "Animated",
     themeCustom: zh ? "自定义主题" : "Custom theme",
+    // ---- 0.21.0 多篇 PDF 并排对比 ----
+    menuPdfCompare: zh ? "多篇 PDF 并排对比…" : "Compare PDFs Side by Side…",
+    compareWindowTitle: zh ? "PaperPilot 多篇 PDF 对比" : "PaperPilot PDF Comparison",
+    compareNoPdf: zh
+      ? "选中的条目里没有可用的 PDF 附件。\n请选中带 PDF 的文献，或直接选中 PDF 附件。"
+      : "No usable PDF attachments in the selection.",
+    compareNeedTwo: zh
+      ? "对比至少需要两篇带 PDF 的文献。\n请按住 Ctrl/⌘ 多选后再试。"
+      : "Select at least two papers with PDFs (Ctrl/⌘-click).",
+    compareTrimmed: zh
+      ? "已选 %n 篇，超过同时打开的 %m 篇上限，只打开前 %m 篇。\n（上限可在设置 → PaperPilot 中调整）"
+      : "Selected %n; the limit is %m, so the first %m were opened.",
+    compareCount: zh ? "对比面板：%n / %m" : "Panes: %n / %m",
+    compareLayout: zh ? "布局" : "Layout",
+    compareLayoutAuto: zh ? "自动（按篇数）" : "Auto (by count)",
+    compareLayoutH: zh ? "横向并排" : "Side by side",
+    compareLayoutV: zh ? "纵向堆叠" : "Stacked",
+    compareLayoutGrid: zh ? "网格 2×2" : "Grid 2×2",
+    compareSyncScroll: zh ? "同步滚动" : "Sync scroll",
+    compareSyncZoom: zh ? "同步缩放" : "Sync zoom",
+    compareZoomIn: zh ? "放大当前面板（同步缩放开启时作用于全部面板）" : "Zoom in",
+    compareZoomOut: zh ? "缩小当前面板（同步缩放开启时作用于全部面板）" : "Zoom out",
+    compareZoomFit: zh ? "适合宽度" : "Fit width",
+    compareAddSelected: zh ? "添加选中文献" : "Add selected",
+    compareAddSelectedHint: zh
+      ? "把条目列表中当前选中的 PDF 追加到对比窗口"
+      : "Append the PDFs currently selected in the item list",
+    compareReadingSelection: zh ? "正在读取条目列表的选中项…" : "Reading selection…",
+    compareNoSelectionPdf: zh ? "条目列表的当前选中项里没有 PDF" : "No PDF in the current selection",
+    compareAdded: zh ? "已添加 %n 篇" : "Added %n",
+    compareNothingAdded: zh ? "没有新增面板（可能已存在或已达上限）" : "Nothing added",
+    compareEmptyHint: zh
+      ? "没有待对比的 PDF。请先在条目列表中选中 2–4 篇带 PDF 的文献，再用「添加选中文献」。"
+      : "No PDFs yet. Select 2–4 papers in the item list, then use “Add selected”.",
+    compareLoading: zh ? "正在加载 PDF…" : "Loading PDF…",
+    compareLoadFailed: zh ? "PDF 加载失败：" : "Failed to load PDF: ",
+    compareViewUnavailable: zh
+      ? "无法访问该 PDF 视图（Zotero 版本可能已变更内嵌方式）"
+      : "Cannot access the PDF view (Zotero internals may have changed)",
+    compareApiUnavailable: zh
+      ? "当前 Zotero 版本不提供内嵌预览接口（需要 Zotero 7 及以上）"
+      : "This Zotero version provides no embedded preview API (Zotero 7+ required)",
+    compareOpenInReader: zh ? "在阅读器中打开" : "Open in reader",
+    compareOpenInReaderHint: zh
+      ? "跳到正式阅读器：可新增高亮/批注、可划词（对比面板本身是只读预览）"
+      : "Open in the full reader to annotate and select text (panes are read-only previews)",
+    compareRemove: zh ? "移除该面板" : "Remove pane",
+    compareUnnamed: zh ? "（未命名 PDF）" : "(untitled PDF)",
+    compareLimitReached: zh ? "最多同时对比 %n 篇（可在设置中调整上限）" : "Up to %n panes",
+    compareDuplicated: zh ? "该 PDF 已在对比窗口中" : "That PDF is already in the window",
+    compareNoFocus: zh ? "请先点击一个面板再缩放" : "Click a pane first, then zoom",
+    // ---- 0.21.0 划词浮窗：AI 未就绪不再静默（此前连按钮都不出现）----
+    popupNoAi: zh
+      ? "AI 不可用：未登录官方模型且未配置自己的模型通道。"
+      : "AI unavailable: not logged in and no custom channel configured.",
+    popupGoLogin: zh ? "去登录 / 配置" : "Log in / Configure",
+    chatNotLoggedIn: zh
+      ? "官方模型需要登录：请在 设置 → PaperPilot 登录账号（登录后免费使用），或在「AI 模型通道」中配置自己的接口"
+      : "The official model requires login: open Settings → PaperPilot to log in, or configure your own channel",
+    chatNoKeyConfigured: zh
+      ? "当前模型通道缺少 API Key：请在 设置 → PaperPilot → AI 模型通道 中补全"
+      : "The active channel has no API key — fill it in under Settings → PaperPilot → AI Channels",
   };
   return {
     t(key) { return table[key] || key; },
