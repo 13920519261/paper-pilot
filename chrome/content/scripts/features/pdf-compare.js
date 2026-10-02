@@ -134,7 +134,9 @@ var PdfCompare = {
       resolveSelected: () => this.collectSelectedPdfs(),
       maxPanes: this.maxPanes(),
       prefs: {
-        syncScroll: Prefs.get("compareSyncScroll", true) !== false,
+        // 默认「各滚各的」：对比时两篇的页码/进度本来就不同，强制联动反而碍事，
+        // 需要跟读再在工具栏勾上（0.21.1 及以前默认开）
+        syncScroll: Prefs.get("compareSyncScroll", false) === true,
         syncZoom: Prefs.get("compareSyncZoom", false) === true,
         layout: String(Prefs.get("compareLayout", "auto") || "auto"),
       },

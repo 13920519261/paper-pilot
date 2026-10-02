@@ -30,7 +30,9 @@
 
   const panes = [];        // 面板记录
   let layout = (args.prefs && args.prefs.layout) || "auto";
-  let syncScroll = !(args.prefs && args.prefs.syncScroll === false);
+  // 默认「各滚各的」（0.21.2 起）：对比场景下两篇的页码/进度本就不一致，
+  // 强制联动反而碍事；需要跟读时在工具栏勾「同步滚动」。
+  let syncScroll = !!(args.prefs && args.prefs.syncScroll === true);
   let syncZoom = !!(args.prefs && args.prefs.syncZoom);
   let activeIdx = -1;
   let zoomGuard = false;
@@ -756,6 +758,8 @@
       if (!first) { resolve({ facts, sync: null }); return; }
       const sc = first.viewer.container;
       const others = () => panes.filter((p) => p !== first && p.viewer && p.viewer.container);
+      // 先记录窗口打开时的实际默认值（自检要能证明「同步滚动默认关」）
+      const defaults = { syncScroll: syncScroll, syncZoom: syncZoom, layout: layout };
 
       // 滚轮能不能滚，取决于面板中心点上「最顶层」的元素是否把事件交给滚动容器。
       // 用 elementFromPoint 直接看命中谁（比派发 untrusted 事件可靠：合成事件
@@ -799,6 +803,7 @@
               pageEls: first.viewer.win.document.querySelectorAll(".page").length,
             };
             resolve({
+              defaults,
               facts,
               wheelHit: hit,
               syncOn: { srcRatio: 0.5, othersRatios: onRatio },

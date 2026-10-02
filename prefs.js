@@ -103,8 +103,9 @@ pref("extensions.zotero.paperpilot.pdfThemeCustomOpacity", 30);
 pref("extensions.zotero.paperpilot.compareMaxPanes", 4);
 // 布局：auto（按篇数自动）/ h（横向并排）/ v（纵向堆叠）/ grid（2×2 网格）
 pref("extensions.zotero.paperpilot.compareLayout", "auto");
-// 同步滚动默认开（按滚动百分比位置联动，页数不同也能大致对齐）
-pref("extensions.zotero.paperpilot.compareSyncScroll", true);
+// 同步滚动默认关（0.21.2 起）：默认「各面板完全独立滚动」，互不干扰；
+// 需要跟读时在对比窗口工具栏勾上——按滚动百分比位置联动，页数不同也能大致对齐
+pref("extensions.zotero.paperpilot.compareSyncScroll", false);
 // 同步缩放默认关（各篇排版/页边距不同，强制统一缩放常导致某篇字过大或过小）
 pref("extensions.zotero.paperpilot.compareSyncZoom", false);
 // 自检开关（默认关）：置 true 后下次启动自动用库里前 4 个 PDF 开一次对比窗口，
