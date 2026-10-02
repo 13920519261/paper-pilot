@@ -156,6 +156,8 @@
       card.addEventListener("click", () => {
         setPref("uiWallpaperUrl", mod.photoURL(p.pid, 1920));
         setPref("uiWallpaper", "custom");
+        // 照片壁纸要给到能看清的可见度（70% 时玻璃偏厚，浅色照片会被白面板吃掉）
+        setPref("uiWallpaperOpacity", 80);
         renderAll();
       });
       grid.appendChild(card);
