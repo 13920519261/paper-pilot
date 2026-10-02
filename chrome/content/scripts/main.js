@@ -384,10 +384,15 @@ Zotero.PaperPilot = {
       // 开关或密钥变化：清查找缓存并立即重绘（ES 结果按内容缓存，无需清空）
       try { RankColumn._lookupCache.clear(); } catch (e) { /* ignore */ }
       try { Zotero.ItemTreeManager.refreshColumns(); } catch (e) { /* ignore */ }
+      try { Zotero.Notifier.trigger("redraw", "item", []); } catch (e) { /* ignore */ }
     } else if (key === "rankDataSets" || key === "rankMaxBadges" || key === "rankBadgeStyle") {
-      // 分区显示配置变化：清条目级缓存并立即重绘（0.18.0）
+      // 分区显示配置变化：清条目级缓存并立即重绘（0.18.0）；
+      // 0.18.1 补 redraw 兜底——不同 Zotero 版本对行数据缓存处理不一致，
+      // 只 refreshColumns() 在部分版本上不会重取 dataProvider，表现为
+      // 「设置改了没反应」。
       try { RankColumn._lookupCache.clear(); } catch (e) { /* ignore */ }
       try { Zotero.ItemTreeManager.refreshColumns(); } catch (e) { /* ignore */ }
+      try { Zotero.Notifier.trigger("redraw", "item", []); } catch (e) { /* ignore */ }
     } else if (key === "uiTheme" || key === "uiThemeCustom" || key === "uiWallpaper" || key === "uiWallpaperPath" || key === "uiWallpaperUrl" || key === "uiWallpaperOpacity") {
       // 主题/壁纸即时生效：设置面板/菜单任何一处改动，全部窗口立即换肤
       try { UiTheme.apply(); } catch (e) { /* ignore */ }

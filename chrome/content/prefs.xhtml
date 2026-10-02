@@ -210,7 +210,7 @@
       <!-- 5.1 期刊分区 -->
       <html:div class="pp-sub" style="border-top:none;margin-top:2px;padding-top:0;">
         <html:div class="pp-sub-title">期刊分区（easyScholar 在线 + 离线数据兜底）</html:div>
-        <html:div class="pp-sub-desc">优先级：自定义 JSON &gt; 内置数据 &gt; easyScholar 在线查询</html:div>
+        <html:div class="pp-sub-desc">优先级：自定义 JSON &gt; easyScholar 在线查询 &gt; 内置示例数据（仅作兜底）</html:div>
         <html:label class="pp-check">
           <html:input type="checkbox" preference="extensions.zotero.paperpilot.rankColumnEnabled" id="pp-rank-enabled"/>
           <html:span>启用期刊分区列（即时生效）</html:span>
@@ -232,6 +232,7 @@
         </html:div>
         <html:div class="pp-field" style="margin-top:12px;">
           <html:label class="pp-label">显示哪些分区数据（勾选即展示；一篇文章的全部命中分区以徽章完整展示）</html:label>
+          <html:div class="pp-hint" style="margin-bottom:2px;">中文期刊按「中文分级 / 北大核心 / CSCD / 中国科技核心」分类展示；国际期刊按「JCR / 中科院 / CCF / 影响因子」展示；机构/高校分级目录与其余评级始终可见于悬停详情。</html:div>
           <html:div id="pp-rank-datasets" class="pp-datasets"></html:div>
         </html:div>
         <html:div class="pp-row">
@@ -254,9 +255,10 @@
           <html:label class="pp-label">自定义分区数据 JSON 路径</html:label>
           <html:div class="pp-row" style="margin-top:0;">
             <html:input type="text" preference="extensions.zotero.paperpilot.rankDataPath" id="pp-rank-path-input"
-                        class="pp-input pp-grow" placeholder="留空使用内置示例数据，优先级高于在线查询"/>
+                        class="pp-input pp-grow" placeholder="留空则走 easyScholar 在线查询；内置示例数据仅在无在线数据时兜底"/>
             <html:button id="pp-rank-browse" class="pp-btn pp-btn-sm">浏览…</html:button>
           </html:div>
+          <html:div class="pp-hint">格式：{"期刊名小写规范化": "分区文本"}。文本会按语义解析成彩色徽章，例如 "1区 Top" → 中科院1区（TOP 金描边）、"JCR Q2 / IF 5.1"、"CCF-A"、"北大核心"、"T1"；解析不出的文本显示为「其他/自定义文本」徽章，完整原文在悬停详情中。</html:div>
         </html:div>
       </html:div>
 

@@ -120,49 +120,71 @@
     }
   }
 
-  /** 徽章预览：示例数据集按当前配色风格渲染（配色/数量即时可见） */
+  /** 每种数据集/评级的示例徽章（配色图例用） */
+  const RANK_DEMO = {
+    warning: { text: "⚠预警", level: 1 },
+    jcr: { text: "Q1", level: 1 },
+    ssci: { text: "SSCI Q2", level: 2 },
+    cas: { text: "中科院1区", level: 1, top: true },
+    casSmall: { text: "小类2区", level: 2 },
+    ccf: { text: "CCF-A", level: 1 },
+    cnTier: { text: "T1", level: 1 },
+    pku: { text: "北大核心", level: 1 },
+    cscd: { text: "CSCD核心", level: 1 },
+    core: { text: "科技核心", level: 1 },
+    cssci: { text: "CSSCI", level: 1 },
+    if: { text: "IF 9.4", level: 0 },
+    if5: { text: "IF5 8.1", level: 0 },
+    casBase: { text: "基础版2区", level: 2 },
+    esi: { text: "ESI 计算机", level: 0 },
+    ajg: { text: "AJG 4", level: 0 },
+    abdc: { text: "ABDC A", level: 0 },
+    jci: { text: "JCI 1.2", level: 0 },
+    org: { text: "T1中医学", level: 1 },
+    legacy: { text: "自定义", level: 0 },
+  };
+
+  /** 配色图例：遍历全部数据集 kind（按显示优先级），勾选的逐个渲染示例徽章。
+   *  0.18.1 改为「全 kind 图例」——不再按每行上限截断，用户一眼能核对自己
+   *  的配色风格/勾选是否真的生效（旧版截断到 N 个，看起来像没生效）。 */
   function renderRankPreview() {
     const box = $("pp-rank-preview");
     const rc = rankColumn();
     if (!box || !rc) return;
     while (box.firstChild) box.removeChild(box.firstChild);
-    const demo = [
-      { kind: "jcr", text: "Q1", level: 1 },
-      { kind: "ssci", text: "SSCI Q2", level: 2 },
-      { kind: "cas", text: "中科院1区", level: 1, top: true },
-      { kind: "casSmall", text: "小类2区", level: 2 },
-      { kind: "ccf", text: "CCF-A", level: 1 },
-      { kind: "if", text: "IF 9.4", level: 0 },
-      { kind: "warning", text: "⚠预警", level: 1 },
-      { kind: "esi", text: "ESI 计算机", level: 0 },
-    ];
     const kinds = rc.enabledKinds();
-    const max = rc.maxBadges();
-    const all = demo.filter((b) => kinds.has(b.kind));
+    const mono = rc.badgeStyleMode() === "mono";
     const cap = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
     cap.style.cssText = "color:var(--pp-muted);font-size:11px;margin-right:6px;";
-    cap.textContent = "预览：";
+    cap.textContent = "配色图例：";
     box.appendChild(cap);
-    for (const b of all.slice(0, max)) {
+    let n = 0;
+    for (const ds of rc.DATASETS) {
+      if (!kinds.has(ds.kind)) continue;
+      const demo = RANK_DEMO[ds.kind];
+      if (!demo) continue;
+      const b = Object.assign({ kind: ds.kind }, demo); // kind 必须带上，_badgeColor 按 kind 取色
       const el = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
       el.setAttribute("class", "pp-badge-demo");
       el.textContent = b.text;
-      el.style.background = rc.badgeStyleMode() === "mono" ? "var(--pp-accent)" : rc._badgeColor(b);
+      el.title = ds.label;
+      el.style.background = mono ? "var(--pp-accent, #2563eb)" : rc._badgeColor(b);
       if (b.top) el.style.boxShadow = "inset 0 0 0 1.5px #ffd76a";
       box.appendChild(el);
+      n++;
     }
-    if (all.length > max) {
-      const more = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
-      more.style.cssText = "color:var(--pp-muted);font-size:10.5px;";
-      more.textContent = "+" + (all.length - max);
-      box.appendChild(more);
-    }
-    if (!all.length) {
+    if (!n) {
       const empty = document.createElementNS("http://www.w3.org/1999/xhtml", "span");
       empty.style.cssText = "color:var(--pp-muted);font-size:11px;";
-      empty.textContent = "（未勾选任何数据集）";
+      empty.textContent = "（未勾选任何数据集，列表中不会显示任何分区徽章）";
       box.appendChild(empty);
+      return;
     }
+    const note = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    note.style.cssText = "color:var(--pp-muted);font-size:11px;margin-top:6px;";
+    note.textContent = "列表中每行最多显示 " + rc.maxBadges() + " 个徽章（超出显示 +N）；"
+      + "灰蓝 = Q4/4区（低区，不是配色失效）；鼠标悬停单元格可见完整分区明细。";
+    box.appendChild(note);
   }
 
   /* ---------- 分区配置导入导出（0.18.0） ---------- */

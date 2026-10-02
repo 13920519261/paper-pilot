@@ -27,7 +27,10 @@ pref("extensions.zotero.paperpilot.easyScholarEnabled", true);
 pref("extensions.zotero.paperpilot.easyScholarKey", "");
 // 0.18.0 分区列细化：数据集开关（逗号分隔 kind，空=默认集）、badge 数量上限、
 // 配色风格（color=分区色阶 / mono=跟随主题强调色）
+// 0.18.1：新增中文体系 kind（cnTier/pku/cscd/core/cssci）与 legacy，
+// rankDataSetsM181 为一次性迁移标记（旧显式列表补入新 kind）
 pref("extensions.zotero.paperpilot.rankDataSets", "");
+pref("extensions.zotero.paperpilot.rankDataSetsM181", false);
 pref("extensions.zotero.paperpilot.rankMaxBadges", 6);
 pref("extensions.zotero.paperpilot.rankBadgeStyle", "color");
 // 0.5.0 新增：AI 配置快照(0.14.0 起由模型通道体系取代，仅作迁移数据源)

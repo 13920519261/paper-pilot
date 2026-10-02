@@ -1,29 +1,42 @@
-/* PaperPilot 期刊分区列（0.18.0 重构：多分区完整显示 + 精准行刷新 + 可调配色系）
+/* PaperPilot 期刊分区列（0.18.1：中文/机构评级体系解析 + 配色全覆盖 + 离线数据降级兜底）
  * 数据来源（按优先级）：
- *  1. 内置示例数据 + 用户自定义 JSON（离线兜底，设置中可指定）
+ *  1. 用户自定义 JSON（设置中指定，最高优先级——用户自己的数据最可信）
  *  2. easyScholar 开放接口 getPublicationRank（在线主源），结果本地缓存
  *     （DataDirectory/paperpilot-easyscholar.json），查询队列限速 ~3 req/s，
  *     失败 30 分钟负缓存
+ *  3. 内置示例数据（随包分发的演示数据，仅当在线无数据/未启用时兜底）
  *
  * 0.18.0 修复与增强：
- *  - 修复「列表不显示、点击文章才显示」：异步结果到达后仅 refreshColumns()
- *    只重置列配置、不重取行数据（Zotero itemTree.jsx 的 itemtree/refresh 走
- *    _resetColumns + refreshAndMaintainSelection，行数据缓存不动；选中行
- *    invalidate 才会重调 dataProvider——用户所见即此）。现按插件圈标准解法
+ *  - 修复「列表不显示、点击文章才显示」：异步结果到达后按插件圈标准解法
  *    双通道刷新：refreshColumns + Notifier.trigger("redraw","item",ids)
  *    （zotero-AI-Butler 同款），ids 精确到等待中的条目，避免全树闪烁。
- *  - 多分区完整显示：改用 officialRank.all 全量数据集（原 select||all 只取
- *    一个，大类命中即丢小类）；JCR/SSCI/中科院大区/小类/TOP/CCF/IF/预警等
+ *  - 多分区完整显示：改用 officialRank.all 全量数据集 + customRank 全量，
  *    全部 badge 化展示，数量与数据集可在设置中配置。
- *  - 配色：分区等级色阶（Q1 红/Q2 橙/Q3 蓝/Q4 灰、CCF 绿青灰、TOP 金描边），
- *    彩色/单色（跟随主题 accent）两种风格；降级：查询失败负缓存 30 分钟、
- *    空结果不写入条目级缓存（负缓存过期后可自动重查）、tooltip 显示失败原因。
+ *
+ * 0.18.1 修复（用户报「设置细化没生效、只有灰色一种颜色」）：
+ *  - 根因一：非 SCI 体系（中文期刊库主体）此前完全不解析——easyScholar 对
+ *    中文期刊返回的是 cscd/pku（北大核心）/zhongguokejihexin（科技核心）/
+ *    cju 等键，以及 customRank 里的「中医药高质量 T1」「临床医学高质量 T3」
+ *    「NKU 核心」等评级，旧代码只认 sci/ssci/sciUp/sciif/ccf（CCF 之外一律
+ *    塞进 tooltip）→ 中文期刊整行为空，看起来「设置不起作用」。
+ *    现补齐：cnTier（T1-T4 中文分级）/pku/cscd/core/cssci/org（机构目录）
+ *    全部结构化。
+ *  - 根因二：内置示例数据（离线）此前优先级高于在线源，命中即产出
+ *    kind:"legacy" 的灰色徽章；而 legacy 又被硬编码为 #7f8c8d、且被
+ *    `b.kind === "legacy"` 白名单豁免掉数据集过滤 → 无论怎么设置都是灰色，
+ *    且勾选数据集对它无效。现：示例数据降为真兜底 + 离线文本也走结构化解析
+ *    （"1区 Top" → 中科院1区[TOP 金描边]），legacy 不再无条件绕过过滤。
+ *  - 根因三：改变显示配置后只 refreshColumns()；不同 Zotero 版本对行数据
+ *    缓存的处理不一致，现额外发一次 Notifier redraw 兜底。
+ *  - 配色：补齐全部 kind 的颜色，默认分支不再是灰色（灰=低区语义，仅用于
+ *    Q4/4区）；设置面板预览改为「全 kind 图例」，一眼可见设置是否生效。
  */
 /* global Zotero, IOUtils, PathUtils, Prefs, I18n */
 
 var RankColumn = {
   COLUMN_KEY: "paperpilot-journalRank",
-  _data: {},
+  _data: {},        // 内置示例数据（真兜底）
+  _customData: {},  // 用户自定义 JSON（最高优先级）
   _lookupCache: new Map(), // itemID -> {text, badges, detail}（空结果不缓存，见 lookup）
   _registered: false,
   _pendingRefresh: new Set(), // 等待数据的 itemID（数据到达后精准 redraw）
@@ -47,7 +60,7 @@ var RankColumn = {
 
   /* ================= 显示配置（pref 驱动） ================= */
 
-  /** 数据集元信息：kind -> { label, defaultOn, 色阶 }（顺序即显示优先级） */
+  /** 数据集元信息：kind -> { label, on }（数组顺序即显示优先级） */
   DATASETS: [
     { kind: "warning", label: "中科院预警", on: true },
     { kind: "jcr", label: "JCR 分区（SCI）", on: true },
@@ -55,6 +68,11 @@ var RankColumn = {
     { kind: "cas", label: "中科院分区（大类）", on: true },
     { kind: "casSmall", label: "中科院分区（小类）", on: true },
     { kind: "ccf", label: "CCF 评级", on: true },
+    { kind: "cnTier", label: "中文分级（T1-T4）", on: true },
+    { kind: "pku", label: "北大核心", on: true },
+    { kind: "cscd", label: "CSCD 中国科学引文库", on: true },
+    { kind: "core", label: "中国科技核心", on: true },
+    { kind: "cssci", label: "CSSCI 南大核心", on: true },
     { kind: "if", label: "影响因子", on: true },
     { kind: "if5", label: "5 年影响因子", on: false },
     { kind: "casBase", label: "中科院基础版", on: false },
@@ -62,6 +80,29 @@ var RankColumn = {
     { kind: "ajg", label: "AJG/ABS 评级", on: false },
     { kind: "abdc", label: "ABDC 评级", on: false },
     { kind: "jci", label: "JCI 指数", on: false },
+    { kind: "org", label: "机构/高校分级目录", on: false },
+    { kind: "legacy", label: "其他/自定义文本", on: true },
+  ],
+
+  /** easyScholar officialRank 中「中文核心体系」键 → 展示规则 */
+  CN_RANK_KEYS: {
+    cscd: "CSCD",
+    zhongguokejihexin: "科技核心",
+  },
+
+  /** easyScholar officialRank/l select 中「机构/高校期刊分级目录」键 → 中文名 */
+  ORG_NAMES: {
+    xju: "西安交大", zju: "浙江大学", nju: "南京大学", sjtu: "上海交大",
+    fdu: "复旦", swjtu: "西南交大", swufe: "西南财大", cufe: "中央财大",
+    uibe: "对外经贸", sdufe: "山东财大", hhu: "河海大学", cug: "中国地质大学",
+    scu: "四川大学", cju: "CJU 分级", xr: "软科", xrSmall: "软科小类", xrTop: "软科TOP",
+  },
+
+  /** 已被国际体系消费的 officialRank 键（其余键进 tooltip，避免静默丢失） */
+  KNOWN_ES_KEYS: [
+    "sciwarning", "sci", "ssci", "sciif", "sciif5", "sciUp", "sciUpSmall",
+    "sciUpSmallClass", "sciUpTop", "sciUpSmallTop", "sciBase", "esi", "ajg",
+    "abdc", "jci", "cpu", "cscd", "pku", "zhongguokejihexin", "cssci",
   ],
 
   /** 启用的数据集 kind 集合（pref rankDataSets，逗号分隔；空 = 默认 on 的集合） */
@@ -105,8 +146,16 @@ var RankColumn = {
     this._esCacheLoaded = true;
     try {
       const obj = JSON.parse(await IOUtils.readUTF8(this._esCacheFile()));
-      for (const k of Object.keys(obj || {})) this._esCache.set(k, obj[k]);
-      Zotero.debug(`PaperPilot: easyScholar 缓存 ${this._esCache.size} 条`);
+      let dropped = 0;
+      for (const k of Object.keys(obj || {})) {
+        const v = obj[k];
+        // 旧格式（0.18.0 之前无 badges 字段、text 常为空）判定为失效缓存：
+        // 丢弃以便用新解析器重查（否则中文期刊永远只有一个空/灰条目）
+        if (v && !v.neg && !v.badges) { dropped++; continue; }
+        this._esCache.set(k, v);
+      }
+      Zotero.debug(`PaperPilot: easyScholar 缓存 ${this._esCache.size} 条（迁移丢弃旧格式 ${dropped} 条）`);
+      if (dropped) this._esSaveCacheSoon();
     } catch (e) { /* 无缓存文件属正常 */ }
   },
 
@@ -138,11 +187,28 @@ var RankColumn = {
     return this._esCache.size;
   },
 
-  /* ================= 分区数据结构化（0.18.0 核心） ================= */
+  /* ================= 分区数据结构化 ================= */
+
+  /** 评级文本 → 等级（1 最好，0 未知）：T1 / 1区 / Q1 / A / 核心 */
+  _tierLevel(v) {
+    const s = String(v == null ? "" : v).trim();
+    let m = s.match(/^T\s*([1-4])/i);
+    if (m) return parseInt(m[1], 10);
+    m = s.match(/([1-4])\s*区/);
+    if (m) return parseInt(m[1], 10);
+    m = s.match(/^Q\s*([1-4])/i);
+    if (m) return parseInt(m[1], 10);
+    m = s.match(/^([ABCD])\+?$/i);
+    if (m) return "ABCD".indexOf(m[1].toUpperCase()) + 1;
+    if (/top|顶尖|一区|甲等/i.test(s)) return 1;
+    if (/核心|权威|重点/.test(s)) return 1;
+    if (/扩展|一般/i.test(s)) return 3;
+    return 0;
+  },
 
   /** 从 easyScholar 响应提取结构化分区（badges 全量 + text 紧凑串 + detail 详情）
    *  改用 officialRank.all（全量数据集）；officialRank.select 为扩展端用户自选
-   *  子集，only 当 all 缺失时兜底。 */
+   *  子集，仅当 all 缺失时兜底。0.18.1 补齐中文核心体系与机构目录。 */
   _esFormat(resp) {
     const d = resp && resp.data;
     if (!d) return null;
@@ -151,7 +217,7 @@ var RankColumn = {
     const detail = [];
     const push = (kind, text, level, extra) => {
       if (!text) return;
-      badges.push(Object.assign({ kind, text, level: level || 0 }, extra || {}));
+      badges.push(Object.assign({ kind, text: String(text), level: level || 0 }, extra || {}));
     };
 
     // 预警（最高优先级提示）
@@ -177,45 +243,73 @@ var RankColumn = {
     // 中科院升级版（大类）
     const casUp = off.sciUp || "";
     if (casUp) {
-      const m = String(casUp).match(/(\d)\s*区/);
-      const lv = m ? parseInt(m[1], 10) : 0;
+      const m = String(casUp).match(/([1-4])\s*区/);
+      const lv = m ? parseInt(m[1], 10) : this._tierLevel(casUp);
       const top = !!(off.sciUpTop && /TOP/i.test(String(off.sciUpTop)));
       push("cas", "中科院" + (m ? m[1] + "区" : casUp), lv, top ? { top: true } : null);
       detail.push("中科院升级版(大类): " + casUp + (top ? " [TOP]" : ""));
     }
     // 中科院升级版小类（可能与大类不同，全部展示）
     const casSmall = off.sciUpSmall || off.sciUpSmallClass || "";
-    if (casSmall && casSmall !== casUp) {
-      const m = String(casSmall).match(/(\d)\s*区/);
-      const lv = m ? parseInt(m[1], 10) : 0;
+    if (casSmall && this.normalize(casSmall) !== this.normalize(casUp)) {
+      const m = String(casSmall).match(/([1-4])\s*区/);
+      const lv = m ? parseInt(m[1], 10) : this._tierLevel(casSmall);
       const top = !!(off.sciUpSmallTop && /TOP/i.test(String(off.sciUpSmallTop)));
       push("casSmall", "小类" + (m ? m[1] + "区" : casSmall), lv, top ? { top: true } : null);
       detail.push("中科院升级版(小类): " + casSmall + (top ? " [TOP]" : ""));
     }
-    // CCF（customRank 自定义评级集，含 CCF/各机构）
-    const ccfInfo = this._esCustomRank(d, detail);
-    if (ccfInfo) {
-      const lv = /^A/i.test(ccfInfo) ? 1 : /^B/i.test(ccfInfo) ? 2 : /^C/i.test(ccfInfo) ? 3 : 0;
-      push("ccf", "CCF-" + ccfInfo, lv);
-    }
-    // 影响因子
-    if (off.sciif) {
-      push("if", "IF " + off.sciif, 0);
-      detail.push("影响因子: " + off.sciif);
-    }
-    if (off.sciif5) { push("if5", "IF5 " + off.sciif5, 0); detail.push("5年影响因子: " + off.sciif5); }
     // 中科院基础版
-    if (off.sciBase && off.sciBase !== casUp) {
-      const m = String(off.sciBase).match(/(\d)\s*区/);
-      push("casBase", "基础版" + (m ? m[1] + "区" : off.sciBase), m ? parseInt(m[1], 10) : 0);
+    if (off.sciBase && this.normalize(off.sciBase) !== this.normalize(casUp)) {
+      const m = String(off.sciBase).match(/([1-4])\s*区/);
+      push("casBase", "基础版" + (m ? m[1] + "区" : off.sciBase), m ? parseInt(m[1], 10) : this._tierLevel(off.sciBase));
       detail.push("中科院基础版: " + off.sciBase);
     }
-    // 其他评级
+    // 自定义评级集（CCF / CSSCI / 中文分级 T1-T4 / 预警 / 机构核心）
+    this._esCustomRank(d, detail, badges);
+    // 影响因子
+    if (off.sciif) { push("if", "IF " + off.sciif, 0); detail.push("影响因子: " + off.sciif); }
+    if (off.sciif5) { push("if5", "IF5 " + off.sciif5, 0); detail.push("5年影响因子: " + off.sciif5); }
+    // 国际其他评级
     if (off.esi) { push("esi", "ESI " + off.esi, 0); detail.push("ESI 学科: " + off.esi); }
     if (off.ajg) { push("ajg", "AJG " + off.ajg, 0); detail.push("AJG/ABS: " + off.ajg); }
     if (off.abdc) { push("abdc", "ABDC " + off.abdc, 0); detail.push("ABDC: " + off.abdc); }
     if (off.jci) { push("jci", "JCI " + off.jci, 0); detail.push("JCI: " + off.jci); }
     if (off.cpu) detail.push("评价: " + off.cpu);
+    // 中文核心体系（0.18.1 新增）：CSCD / 北大核心 / 中国科技核心 / CSSCI
+    if (off.cscd) {
+      const v = String(off.cscd).trim();
+      const lv = this._tierLevel(v);
+      push("cscd", /扩展/.test(v) ? "CSCD扩展" : "CSCD核心", lv || 1);
+      detail.push("CSCD 中国科学引文数据库: " + v);
+    }
+    if (off.pku && !/^(0|否|无|no|false)$/i.test(String(off.pku).trim())) {
+      push("pku", "北大核心", 1);
+      detail.push("北大核心（中文核心期刊要目总览）: " + off.pku);
+    }
+    if (off.zhongguokejihexin && !/^(0|否|无|no|false)$/i.test(String(off.zhongguokejihexin).trim())) {
+      push("core", "科技核心", 1);
+      detail.push("中国科技核心期刊: " + off.zhongguokejihexin);
+    }
+    if (off.cssci) {
+      const v = String(off.cssci).trim();
+      push("cssci", "CSSCI " + v, this._tierLevel(v));
+      detail.push("CSSCI 南大核心: " + v);
+    }
+    // 机构/高校期刊分级目录（默认不展示，可在设置中勾选；详情始终可见）
+    for (const k in this.ORG_NAMES) {
+      if (!off[k]) continue;
+      const v = String(off[k]).trim();
+      if (!v) continue;
+      push("org", v, this._tierLevel(v));
+      detail.push(this.ORG_NAMES[k] + ": " + v);
+    }
+    // 其余未消费键：一律进 tooltip，避免静默丢数据
+    for (const k in off) {
+      if (this.KNOWN_ES_KEYS.indexOf(k) >= 0 || this.ORG_NAMES[k]) continue;
+      const v = off[k];
+      if (v === null || v === undefined || v === "") continue;
+      detail.push(k + ": " + v);
+    }
 
     if (!badges.length && !detail.length) return null;
     return {
@@ -225,26 +319,40 @@ var RankColumn = {
     };
   },
 
-  /** customRank 提取（CCF 等）；其余机构评级写入 detail */
-  _esCustomRank(d, detail) {
-    let ccf = null;
+  /** customRank 提取（CCF / CSSCI / 中文分级 / 预警 / 机构核心）；其余写入 detail */
+  _esCustomRank(d, detail, badges) {
     try {
       const cr = d.customRank;
-      if (cr && Array.isArray(cr.rank) && Array.isArray(cr.rankInfo)) {
-        for (const r of cr.rank) {
-          const [uuid, idx] = String(r).split("&&&");
-          const info = cr.rankInfo.find((x) => x.uuid === uuid);
-          if (!info || !info.abbName) continue;
-          const val = info[["oneRankText", "twoRankText", "threeRankText", "fourRankText"][idx - 1]];
-          if (!val || !String(val).trim()) continue;
-          const v = String(val).trim();
-          if (/^CCF$/i.test(info.abbName)) ccf = ccf || v;
-          else detail.push(info.abbName + ": " + v);
+      if (!cr || !Array.isArray(cr.rank) || !Array.isArray(cr.rankInfo)) return;
+      for (const r of cr.rank) {
+        const [uuid, idx] = String(r).split("&&&");
+        const info = cr.rankInfo.find((x) => x.uuid === uuid);
+        if (!info || !info.abbName) continue;
+        const val = String(info[["oneRankText", "twoRankText", "threeRankText", "fourRankText"][idx - 1]] || "").trim();
+        if (!val) continue;
+        const abb = String(info.abbName);
+        const lv = this._tierLevel(val);
+        if (/^CCF$/i.test(abb)) {
+          badges.push({ kind: "ccf", text: "CCF-" + val, level: "ABC".indexOf(val.toUpperCase()) + 1 });
+          detail.push("CCF: " + val);
+        } else if (/CSSCI|CHSSACD|南大核心/i.test(abb)) {
+          badges.push({ kind: "cssci", text: "CSSCI " + val, level: lv });
+          detail.push(abb + ": " + val);
+        } else if (/预警/.test(abb)) {
+          badges.push({ kind: "warning", text: "⚠预警" + (lv ? val : ""), level: 1 });
+          detail.push(abb + ": " + val);
+        } else if (/^T[1-4]$/i.test(val)) {
+          // 「中医药高质量 T1」「临床医学高质量 T3」等中文分级：最核心的中文期刊信号
+          badges.push({ kind: "cnTier", text: val.toUpperCase(), level: lv });
+          detail.push(abb + ": " + val);
+        } else if (/^[ABCD]\+?$/i.test(val) || /核心|权威|重点|一级|二级/.test(val)) {
+          badges.push({ kind: "org", text: val, level: lv });
+          detail.push(abb + ": " + val);
+        } else {
+          detail.push(abb + ": " + val);
         }
       }
     } catch (e) { /* ignore */ }
-    if (ccf) detail.push("CCF: " + ccf);
-    return ccf;
   },
 
   async _esFetch(pubName) {
@@ -303,24 +411,20 @@ var RankColumn = {
     }, 800);
   },
 
-  /** 双通道刷新（0.18.0 修复核心）：
+  /** 双通道刷新（0.18.0 修复核心，0.18.1 补 redraw 兜底）：
    *  ① refreshColumns 重置列配置（Zotero 官方通道）
    *  ② Notifier.trigger("redraw","item",ids) 让等待中的条目行 invalidate、
-   *     重调 dataProvider——仅此通道能让新数据显示出来（refreshColumns 的
-   *     itemtree/refresh 只 _resetColumns + refreshAndMaintainSelection，
-   *     不清行数据缓存；这就是"点击文章才显示"的根因——点击触发选中行
-   *     invalidate 才会重取数据）。zotero-AI-Butler 等列插件同款解法。 */
+   *     重调 dataProvider——不同 Zotero 版本对行数据缓存的处理不一致
+   *    （7.0.x 的 refresh() 会清 _rowCache，部分版本不清），双管齐下最稳。 */
   _esRefreshColumns() {
     try { Zotero.ItemTreeManager.refreshColumns(); } catch (e) { /* ignore */ }
     const ids = [...this._pendingRefresh];
     this._pendingRefresh.clear();
-    if (ids.length) {
-      try {
-        Zotero.Notifier.trigger("redraw", "item", ids, {}, true);
-      } catch (e) {
-        // 老版本无 trigger：退化为全量 redraw（ids 空 = 全树 invalidate）
-        try { Zotero.Notifier.trigger("redraw", "item", []); } catch (e2) { /* ignore */ }
-      }
+    try {
+      if (ids.length) Zotero.Notifier.trigger("redraw", "item", ids, {}, true);
+      else Zotero.Notifier.trigger("redraw", "item", []);
+    } catch (e) {
+      try { Zotero.Notifier.trigger("redraw", "item", []); } catch (e2) { /* ignore */ }
     }
   },
 
@@ -338,11 +442,11 @@ var RankColumn = {
         this._esEnqueue(pubName);
         return { pending: true, text: "…", detail: "重试中：" + pubName };
       }
-      return { text: "", detail: hit.failReason || "" };
+      return { text: "", badges: [], detail: hit.failReason || "" };
     }
     // 旧版缓存（无 badges 字段）兼容：包装单色 badge 显示
     if (!hit.badges) {
-      return { text: hit.text, badges: hit.text ? [{ kind: "legacy", text: hit.text, level: 0 }] : [], detail: hit.detail };
+      return { text: hit.text, badges: hit.text ? this._parseOffline(hit.text) : [], detail: hit.detail };
     }
     return hit;
   },
@@ -351,6 +455,46 @@ var RankColumn = {
 
   normalize(name) {
     return (name || "").toLowerCase().replace(/[^a-z0-9一-鿿]/g, "");
+  },
+
+  /** 离线文本（内置示例 / 用户自定义 JSON 的裸字符串）→ 结构化徽章。
+   *  "1区 Top" → 中科院1区 + TOP 金描边；"JCR Q2 / IF 5.1 / CCF-A / 北大核心"
+   *  等写法同样识别；实在解析不出才落入 legacy（靛蓝，不再是灰色） */
+  _parseOffline(text) {
+    const s = String(text == null ? "" : text).trim();
+    if (!s) return [];
+    const badges = [];
+    const top = /\btop\b/i.test(s) || /顶尖/.test(s);
+    const casM = s.match(/([1-4])\s*区/) || s.match(/[一二三四]区/);
+    const qm = s.match(/(?:\bJCR\b\s*)?\bQ\s*([1-4])/i);
+    const ccfM = s.match(/CCF[-\s]*([ABC])\b/i);
+    const tM = s.match(/\bT([1-4])\b/i);
+    const ifM = s.match(/(?:IF|影响因子)\s*([0-9]+(?:\.[0-9]+)?)/i);
+    if (casM) {
+      const zhMap = { 一: 1, 二: 2, 三: 3, 四: 4 };
+      const lv = casM[1].length === 1 && /\d/.test(casM[1]) ? parseInt(casM[1], 10) : zhMap[casM[1][0]] || 0;
+      const kind = /小类/.test(s) ? "casSmall" : /基础版/.test(s) ? "casBase" : "cas";
+      badges.push({ kind, text: (/小类/.test(s) ? "小类" : /基础版/.test(s) ? "基础版" : "中科院") + lv + "区", level: lv, top });
+    }
+    if (qm) badges.push({ kind: "jcr", text: "Q" + qm[1], level: parseInt(qm[1], 10) });
+    if (ccfM) badges.push({ kind: "ccf", text: "CCF-" + ccfM[1].toUpperCase(), level: "ABC".indexOf(ccfM[1].toUpperCase()) + 1 });
+    if (!casM && tM) badges.push({ kind: "cnTier", text: "T" + tM[1], level: parseInt(tM[1], 10) });
+    if (/北大核心|中文核心/.test(s)) badges.push({ kind: "pku", text: "北大核心", level: 1 });
+    if (/科技核心/.test(s)) badges.push({ kind: "core", text: "科技核心", level: 1 });
+    if (/CSCD/i.test(s)) badges.push({ kind: "cscd", text: /扩展/.test(s) ? "CSCD扩展" : "CSCD核心", level: /扩展/.test(s) ? 3 : 1 });
+    if (/CSSCI/i.test(s)) badges.push({ kind: "cssci", text: "CSSCI", level: 1 });
+    if (ifM) badges.push({ kind: "if", text: "IF " + ifM[1], level: 0 });
+    if (!badges.length) badges.push({ kind: "legacy", text: s, level: 0 });
+    return badges;
+  },
+
+  _offlineOut(raw, src) {
+    const badges = this._parseOffline(raw);
+    return {
+      text: badges.map((b) => b.text).join(" · ") || String(raw),
+      badges,
+      detail: src + ": " + raw,
+    };
   },
 
   async _readBundledJSON(url) {
@@ -371,20 +515,47 @@ var RankColumn = {
       Zotero.logError(e);
       this._data = {};
     }
+    delete this._data._comment;
+    // 用户自定义 JSON：最高优先级，与内置示例数据分开存放
+    this._customData = {};
     const customPath = Prefs.get("rankDataPath", "");
     if (customPath) {
       try {
         const custom = await IOUtils.readJSON(customPath);
-        Object.assign(this._data, custom);
+        if (custom && typeof custom === "object") {
+          this._customData = custom;
+          delete this._customData._comment;
+        }
         Zotero.debug(`PaperPilot: 已加载自定义分区数据 ${customPath}`);
       } catch (e) {
         Zotero.logError(new Error("PaperPilot: 自定义分区数据加载失败 " + customPath));
         Zotero.logError(e);
       }
     }
-    delete this._data._comment;
     this._lookupCache.clear();
     await this._esLoadCache();
+    this._migrateDataSets181();
+  },
+
+  /** 0.18.1 数据集迁移：旧版本（≤0.18.0）的 rankDataSets 显式列表里不可能
+   *  包含新增的中文体系 kind（cnTier/pku/cscd/core/cssci）与 legacy——
+   *  用户当时无法表达对这些新分类的意愿，直接补进去（默认开），
+   *  一次性执行，之后用户自己的勾选优先。 */
+  _migrateDataSets181() {
+    try {
+      if (Prefs.get("rankDataSetsM181", false)) return;
+      Prefs.set("rankDataSetsM181", true);
+      const raw = String(Prefs.get("rankDataSets", "") || "").trim();
+      if (!raw) return; // 空 = 走默认集，无需迁移
+      const set = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+      let changed = false;
+      for (const k of ["cnTier", "pku", "cscd", "core", "cssci", "legacy"]) {
+        if (!set.has(k)) { set.add(k); changed = true; }
+      }
+      if (!changed) return;
+      const ordered = this.DATASETS.map((d) => d.kind).filter((k) => set.has(k));
+      Prefs.set("rankDataSets", ordered.join(","));
+    } catch (e) { Zotero.debug("PaperPilot: rankDataSets 迁移失败 " + e); }
   },
 
   async reload() {
@@ -393,51 +564,62 @@ var RankColumn = {
     this._esRefreshColumns();
   },
 
-  _match(name) {
+  _match(name, table) {
+    const data = table || {};
     const key = this.normalize(name);
     if (!key) return "";
-    if (this._data[key] != null) return String(this._data[key]);
-    for (const k in this._data) {
-      if (k.length >= 6 && key.includes(k)) return String(this._data[k]);
+    if (data[key] != null) return String(data[key]);
+    for (const k in data) {
+      if (k.length >= 6 && key.includes(k)) return String(data[k]);
     }
     return "";
   },
 
-  /* ================= 配色（0.18.0：色阶 + 主题自适应 + 可切换风格） ================= */
+  /* ================= 配色（色阶 + 主题自适应 + 可切换风格） ================= */
 
   /** kind+level → 颜色（彩色模式）；TOP 金色描边。
-   *  色块底 + 白字在浅/深主题下对比均达标（0.17.1 仿真验证原则）。 */
+   *  0.18.1：补齐全部 kind，默认分支不再是灰色——灰蓝 #5d6d7e 专用于
+   *  「Q4/4区」这类低区语义（见设置面板图例），避免「只有灰色」的误解。 */
   _badgeColor(badge) {
     const L = badge.level;
+    const scale = (a, b, c, d) => (L === 1 ? a : L === 2 ? b : L === 3 ? c : d);
     switch (badge.kind) {
       case "warning": return "#b03060";
       case "jcr":
       case "ssci":
-        return L === 1 ? "#c0392b" : L === 2 ? "#e67e22" : L === 3 ? "#2980b9" : "#7f8c8d";
+        return scale("#c0392b", "#e67e22", "#2471a3", "#5d6d7e");
       case "cas":
       case "casSmall":
       case "casBase":
-        return L === 1 ? "#a8324a" : L === 2 ? "#d35400" : L === 3 ? "#2471a3" : "#707b7c";
+        return scale("#a8324a", "#cf6a1f", "#2e86c1", "#5d6d7e");
+      case "cnTier":
+        return scale("#b03a2e", "#ca6f1e", "#8a6d1f", "#5d6d7e");
       case "ccf":
-        return L === 1 ? "#0e8a6d" : L === 2 ? "#17a2a8" : L === 3 ? "#707b7c" : "#707b7c";
+        return scale("#0e8a6d", "#17a2a8", "#5d6d7e", "#5d6d7e");
+      case "pku": return "#8e5b2f";     // 北大核心（棕）
+      case "cscd": return "#4a69bd";    // CSCD（靛蓝）
+      case "core": return "#1e8449";    // 中国科技核心（绿）
+      case "cssci": return "#7d3c98";   // CSSCI（紫）
       case "if":
       case "if5":
         return "#6c5ce7";
       case "esi":
-        return "#2980b9";
+        return "#2e86c1";
       case "ajg":
       case "abdc":
-        return "#d35400";
+        return "#c46b1a";
       case "jci":
         return "#5b8fd4";
+      case "org":
+        return "#3f7f8f";               // 机构/高校目录（青灰蓝）
       default:
-        return "#7f8c8d"; // legacy/未知
+        return "#4a6fa5";               // legacy/其他自定义文本（靛蓝，非灰）
     }
   },
 
   _badgeCss(badge) {
     const mono = this.badgeStyleMode() === "mono";
-    const bg = mono ? "var(--color-accent, #7f8c8d)" : this._badgeColor(badge);
+    const bg = mono ? "var(--color-accent, #2563eb)" : this._badgeColor(badge);
     let css = "background:" + bg + ";color:#fff;border-radius:4px;" +
       "padding:0 5px;font-size:11px;line-height:16px;margin-inline-end:4px;" +
       "white-space:nowrap;display:inline-block;";
@@ -448,6 +630,7 @@ var RankColumn = {
   /* ================= 条目查询（dataProvider） ================= */
 
   /** 返回 {text, badges, detail, pending} 或 null（无数据）。
+   *  优先级：用户自定义 JSON > easyScholar 在线 > 内置示例数据。
    *  空结果不写入 _lookupCache——负缓存条目在 easyScholar 负缓存过期后
    *  可自动重查（此前缓存 "" 导致失败后永久空白）。 */
   lookup(item) {
@@ -455,25 +638,34 @@ var RankColumn = {
     if (this._lookupCache.has(item.id)) return this._lookupCache.get(item.id);
     const get = (f) => { try { return item.getField(f) || ""; } catch (e) { return ""; } };
     const pub = get("publicationTitle") || get("journalAbbreviation");
-    // 1. 离线数据（内置 + 自定义 JSON）优先
-    let hit = this._match(pub) || this._match(get("journalAbbreviation"));
+    const abbr = get("journalAbbreviation");
+    const bundled = () => this._match(pub, this._data) || this._match(abbr, this._data);
     let out = null;
-    if (hit) {
-      out = { text: hit, badges: [{ kind: "legacy", text: hit, level: 0 }], detail: "离线数据: " + hit };
+    // 1. 用户自定义 JSON（最高优先级）
+    const custom = this._match(pub, this._customData) || this._match(abbr, this._customData);
+    if (custom) {
+      out = this._offlineOut(custom, "自定义数据");
     } else if (pub && this._esEnabled()) {
-      // 2. easyScholar 在线源
+      // 2. easyScholar 在线源（缓存命中即用；未命中入队并显示占位）
       const r = this._esLookup(pub);
       if (r.pending) {
         this._pendingRefresh.add(item.id); // 数据到达后精准 redraw 此行
         out = { text: r.text, badges: [], detail: r.detail, pending: true };
-      } else if (r.text) {
+      } else if (r.text || (r.badges || []).length) {
         out = { text: r.text, badges: r.badges || [], detail: r.detail };
       } else {
-        out = r.detail ? { text: "", badges: [], detail: r.detail } : null;
+        // 3. 在线无此期刊 → 内置示例数据兜底（0.18.1：示例数据不再压过在线源）
+        const b = bundled();
+        if (b) out = this._offlineOut(b, "内置示例数据");
+        else out = r.detail ? { text: "", badges: [], detail: r.detail } : null;
       }
+    } else {
+      // 未启用在线源 → 内置示例数据兜底
+      const b = bundled();
+      out = b ? this._offlineOut(b, "内置数据") : null;
     }
     // "…" 占位与空结果都不缓存（占位待刷新重查；空结果待负缓存过期重查）
-    if (out && !out.pending && out.text) {
+    if (out && !out.pending && (out.text || (out.badges || []).length)) {
       this._lookupCache.set(item.id, out);
     }
     return out;
@@ -507,7 +699,7 @@ var RankColumn = {
         }
         // badge 渲染（按启用数据集过滤 + 数量上限）
         const kinds = self.enabledKinds();
-        const all = (data.badges || []).filter((b) => b.kind === "legacy" || kinds.has(b.kind));
+        const all = (data.badges || []).filter((b) => kinds.has(b.kind));
         const max = self.maxBadges();
         const shown = all.slice(0, max);
         for (const b of shown) {
