@@ -21,7 +21,7 @@
     <html:div class="pp-card-body">
       <!-- 未登录：登录表单（0.15.0 起不再提供服务器地址入口，固定连接官方服务） -->
       <html:div id="pp-login-view">
-        <html:div class="pp-hint" style="margin-top:10px;">登录账号即可免费使用官方模型；没有账号点「注册账号」（浏览器打开官方注册页）。</html:div>
+        <html:div class="pp-hint" style="margin-top:10px;">登录账号即可免费使用官方模型；没有账号点「注册账号」——直接在下面填表注册，不用跳浏览器。</html:div>
         <html:div class="pp-grid2">
           <html:div class="pp-field">
             <html:label class="pp-label">邮箱</html:label>
@@ -38,6 +38,39 @@
           <html:span id="pp-register-link" class="pp-link">注册账号</html:span>
           <html:span id="pp-forgot-link" class="pp-link">忘记密码？</html:span>
           <html:span id="pp-login-result" class="pp-msg"></html:span>
+        </html:div>
+      </html:div>
+      <!-- 未登录 · 注册表单（0.20.0 内置注册：直接调服务端 /api/auth/register） -->
+      <html:div id="pp-register-view" style="display:none;">
+        <html:div class="pp-hint" style="margin-top:10px;">注册后需到邮箱点验证链接激活（24 小时内有效）；若站点未配置邮件服务，会自动直接激活。</html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">邮箱</html:label>
+            <html:input type="text" id="pp-reg-email" class="pp-input" placeholder="you@example.com"/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">昵称（可选）</html:label>
+            <html:input type="text" id="pp-reg-nickname" class="pp-input" placeholder="怎么称呼你"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-grid2" style="margin-top:10px;">
+          <html:div class="pp-field">
+            <html:label class="pp-label">密码（至少 8 位）</html:label>
+            <html:input type="password" id="pp-reg-password" class="pp-input" placeholder="至少 8 位"/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">确认密码</html:label>
+            <html:input type="password" id="pp-reg-password2" class="pp-input" placeholder="再输一次"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-row">
+          <html:button id="pp-reg-btn" class="pp-btn pp-btn-primary">注册</html:button>
+          <html:span id="pp-reg-back" class="pp-link">返回登录</html:span>
+          <html:span id="pp-reg-result" class="pp-msg"></html:span>
+        </html:div>
+        <html:div id="pp-reg-verify-row" class="pp-row" style="display:none;">
+          <html:button id="pp-reg-resend" class="pp-btn pp-btn-sm">重发验证邮件</html:button>
+          <html:span id="pp-reg-resend-result" class="pp-msg"></html:span>
         </html:div>
       </html:div>
       <!-- 已登录：账号卡片 -->

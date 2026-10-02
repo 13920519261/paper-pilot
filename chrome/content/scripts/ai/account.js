@@ -65,52 +65,98 @@ var Account = {
     return !!(this._session && this._session.expiresAt && Date.now() > this._session.expiresAt);
   },
 
-  /* ---------- 会话文件（数据目录，0600，原子写） ---------- */
+  /* ---------- 会话文件（数据目录 + profile 双写，0600，原子写） ---------- */
 
-  _sessionFile() {
-    const dir = Zotero.DataDirectory && Zotero.DataDirectory.dir;
-    if (!dir) return null;
-    try { return PathUtils.join(dir, "paperpilot-account.json"); } catch (e) { return null; }
+  /**
+   * 会话文件候选路径（0.20.0 双写）。
+   * 只认数据目录一个落点时，该路径一旦写失败（权限/被同步工具搬走/目录变更）
+   * 用户就表现为「更新后掉登录」且无从恢复；profile 目录作第二落点互为兜底。
+   */
+  _sessionFiles() {
+    const out = [];
+    try {
+      const d = Zotero.DataDirectory && Zotero.DataDirectory.dir;
+      if (d) out.push(PathUtils.join(d, "paperpilot-account.json"));
+    } catch (e) { /* 数据目录未就绪：仅用 profile 落点 */ }
+    try {
+      const prof = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+      const p = PathUtils.join(prof.path, "paperpilot-account.json");
+      if (out.indexOf(p) < 0) out.push(p);
+    } catch (e) { /* ignore */ }
+    return out;
+  },
+
+  /** 账号生命周期诊断：Zotero.debug + 落盘 account.log（下次掉登录可回溯） */
+  _diag(msg) {
+    try { Zotero.debug("PaperPilot account: " + msg); } catch (e) { /* ignore */ }
+    try {
+      const files = this._sessionFiles();
+      if (!files.length) return;
+      const logPath = files[0].replace(/paperpilot-account\.json$/, "paperpilot-account.log");
+      const line = new Date().toISOString() + " " + msg + "\n";
+      IOUtils.readUTF8(logPath)
+        .then((old) => IOUtils.writeUTF8(logPath, String(old || "") + line))
+        .catch(() => IOUtils.writeUTF8(logPath, line))
+        .catch(() => { /* 诊断失败不影响主流程 */ });
+    } catch (e) { /* ignore */ }
   },
 
   async _save() {
-    const file = this._sessionFile();
-    if (!file) return;
-    try {
-      const body = JSON.stringify({
-        token: this._session.token,
-        expiresAt: this._session.expiresAt || 0,
-        savedAt: Date.now(),
-        user: this._session.user || {},
-      });
-      // tmpPath 原子替换：写一半崩溃/断电不会留下半截会话文件
-      await IOUtils.writeUTF8(file, body, { mode: 0o600, tmpPath: file + ".tmp" });
-    } catch (e) {
-      try { Zotero.debug("PaperPilot: account session save failed: " + (e && e.message)); } catch (_) { /* ignore */ }
+    if (!this._session) return;
+    const files = this._sessionFiles();
+    if (!files.length) {
+      this._diag("save SKIPPED: no writable path resolved");
+      return;
     }
+    const body = JSON.stringify({
+      token: this._session.token,
+      expiresAt: this._session.expiresAt || 0,
+      savedAt: Date.now(),
+      user: this._session.user || {},
+    });
+    let ok = 0;
+    for (const file of files) {
+      try {
+        // tmpPath 原子替换：写一半崩溃/断电不会留下半截会话文件
+        await IOUtils.writeUTF8(file, body, { mode: 0o600, tmpPath: file + ".tmp" });
+        ok++;
+      } catch (e) {
+        this._diag("save FAILED @ " + file + " :: " + (e && e.message));
+      }
+    }
+    this._diag("session saved to " + ok + "/" + files.length + " path(s)");
   },
 
   async _clearFile() {
-    const file = this._sessionFile();
-    if (!file) return;
-    try { await IOUtils.remove(file, { ignoreAbsent: true }); } catch (e) { /* ignore */ }
+    for (const file of this._sessionFiles()) {
+      try { await IOUtils.remove(file, { ignoreAbsent: true }); } catch (e) { /* ignore */ }
+    }
+    this._diag("session files cleared");
   },
 
-  /* ---------- 启动恢复：读盘 → 过期即弃 → 尽力刷新用户信息 ---------- */
+  /* ---------- 启动恢复：读盘（多落点）→ 过期交服务端定论 → 尽力刷新 ---------- */
 
   async restore() {
     if (this._restoring) return;
     this._restoring = true;
     try {
-      const file = this._sessionFile();
-      if (!file) return;
       let doc = null;
-      try {
-        doc = JSON.parse(await IOUtils.readUTF8(file));
-      } catch (e) { return; /* 无文件/损坏：视为未登录 */ }
-      if (!doc || !doc.token) return;
+      let from = "";
+      for (const file of this._sessionFiles()) {
+        try {
+          const parsed = JSON.parse(await IOUtils.readUTF8(file));
+          if (parsed && parsed.token) { doc = parsed; from = file; break; }
+        } catch (e) { /* 该落点无文件/损坏：试下一个 */ }
+      }
+      if (!doc) {
+        this._diag("restore: no session file at any path");
+        return;
+      }
       if (doc.expiresAt && Date.now() > doc.expiresAt) {
-        await this._clearFile(); // 本地判过期：直接清理，不打扰
+        // 0.20.0：本地判过期不再删文件。服务端可能已滑动续期而本地落盘落后一步
+        // （时钟偏差/上次未落盘），直接删就是"莫名其妙的掉登录"——交 refreshUser 的
+        // 401 定论；若真失效，下一轮 401 会走 handleAuthFailure 正常清理。
+        this._diag("restore: local expiry passed, file kept for server verdict");
         return;
       }
       this._session = {
@@ -118,10 +164,11 @@ var Account = {
         expiresAt: Number(doc.expiresAt) || 0,
         user: doc.user || {},
       };
+      this._diag("restore: loaded from " + from);
       // 尽力校验 + 刷新（服务端可能已吊销 token）：失败不阻塞启动
       await this.refreshUser({ silent: true });
     } catch (e) {
-      try { Zotero.debug("PaperPilot: account restore failed: " + (e && e.message)); } catch (_) { /* ignore */ }
+      this._diag("restore failed: " + (e && e.message));
     } finally {
       this._restoring = false;
       this._notify(); // 恢复结束（无论刷新成败）通知 UI 对齐登录态
@@ -162,6 +209,35 @@ var Account = {
     return this._session.user;
   },
 
+  /**
+   * 自助注册（0.20.0 内置注册界面）：成功后按服务端返回决定是否需邮箱验证。
+   * 返回 {user, notice}；失败抛可读中文错误。密码只进请求体，不落盘不进日志。
+   */
+  async register(email, password, nickname) {
+    email = String(email || "").trim();
+    password = String(password || "");
+    nickname = String(nickname || "").trim();
+    if (!email || !password) throw new Error("请填写邮箱和密码");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("邮箱格式不正确");
+    if (password.length < 8) throw new Error("密码至少 8 位");
+    const resp = await this._request("POST", "/api/auth/register",
+      { email, password, nickname: nickname || undefined }, null, 25000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "注册失败：服务端应答异常");
+    const status = (j.user && j.user.status) || "active";
+    this._diag("register ok: " + email + " status=" + status);
+    return { user: j.user || {}, notice: j.notice || "", needVerify: status === "pending" };
+  },
+
+  /** 重发验证邮件（内置注册界面用） */
+  async resendVerify(email) {
+    const resp = await this._request("POST", "/api/auth/resend",
+      { email: String(email || "").trim() }, null, 20000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "发送失败");
+    return j.message || "验证邮件已重新发送，请查收（含垃圾邮件箱）";
+  },
+
   /** 登出：通知服务端（尽力而为，2s 超时不阻塞）+ 清本地会话 */
   async logout({ silent } = {}) {
     const token = this._session && this._session.token;
@@ -184,16 +260,38 @@ var Account = {
    */
   async refreshUser({ silent } = {}) {
     if (!this._session) return null;
-    let resp;
+    let resp = null;
+    let fail = null;
     try {
       resp = await this._request("GET", "/api/auth/me", null, this._session.token, 10000);
     } catch (e) {
+      fail = e;
       if (e && e.auth) {
-        await this.handleAuthFailure(e.message, { silent });
+        // 0.20.0：401 先复核一次再定论。服务端重启/落盘延迟/边缘节点瞬时误判
+        // 都可能让首答是 401，直接清会话正是用户看到的「更新后掉登录」。
+        try {
+          await new Promise((r) => setTimeout(r, 900));
+          resp = await this._request("GET", "/api/auth/me", null, this._session.token, 10000);
+          fail = null;
+          this._diag("refreshUser: first 401, retry OK — session kept");
+        } catch (e2) {
+          if (!(e2 && e2.auth)) {
+            // 复核遇到网络层错误（非 401）：无法判定令牌失效，保留会话
+            this._diag("refreshUser: 401 then network error — session kept");
+            return this._session.user;
+          }
+          fail = e2;
+        }
       }
-      throw e;
     }
-    const j = resp.json || {};
+    if (fail) {
+      if (fail.auth) {
+        this._diag("refreshUser: 401 confirmed twice — clearing session");
+        await this.handleAuthFailure(fail.message, { silent });
+      }
+      throw fail;
+    }
+    const j = (resp && resp.json) || {};
     if (!j.ok || !j.user) throw new Error(j.error || "刷新失败：服务端应答异常");
     this._session.user = j.user;
     if (j.expiresAt) {
@@ -280,8 +378,17 @@ var Account = {
       try { json = JSON.parse(req.responseText); } catch (e) { /* 非_json 应答按无 body 处理 */ }
     }
     if (req.status >= 400) {
-      const err = new Error((json && json.error) || ("HTTP " + req.status));
-      if (req.status === 401 || req.status === 403) err.auth = true;
+      // 0.20.0 关键修复：仅 401 视为会话失效。
+      // 此前这里是 `401 || 403`，而 Zotero.HTTP 对 4xx 不抛异常、实际都会走本分支
+      // （_translateError 那条路只兜网络异常）——0.15.1 只改了 _translateError，
+      // 漏了这里。于是 Cloudflare/WAF 拦一次 403 就被当成"令牌失效"清掉本地会话，
+      // 表现就是用户反馈的「动不动就要重新登录」。
+      const msg = (json && json.error) || (req.status === 403
+        ? "请求被拦截（HTTP 403）——可能是网络策略/防火墙，令牌未必失效"
+        : "HTTP " + req.status);
+      const err = new Error(msg);
+      if (req.status === 401) err.auth = true;
+      if (req.status === 403) err.blocked = true; // 供上层区分，不触发会话清理
       throw err;
     }
     return { status: req.status, json: json || {} };

@@ -71,7 +71,11 @@ var Menus = {
       pdfSubPopup.addEventListener("popupshowing", () => this._fillPdfThemesMenu(doc, pdfSubPopup));
       themePopup.appendChild(uiSub);
       themePopup.appendChild(pdfSub);
-      toolsPopup.appendChild(themeMenu);
+      // 0.20.0：外观主题从「工具」菜单挪到「视图」菜单——主题属于界面外观，
+      // 与 Zotero 原生的布局/界面密度/字体大小同类语义（zotero-night、zoterostyle
+      // 等开源插件也把外观入口放在视图侧）；视图菜单缺失时回退到工具菜单。
+      const viewPopup = doc.getElementById("menu_ViewPopup");
+      (viewPopup || toolsPopup).appendChild(themeMenu);
       this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu);
     }
 

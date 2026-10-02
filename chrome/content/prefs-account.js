@@ -61,6 +61,11 @@
     if (!A || !$("pp-login-view")) return;
     const loggedIn = A.isLoggedIn();
     $("pp-login-view").style.display = loggedIn ? "none" : "";
+    // 登录成功时收起注册表单（会话变化回调也会走到这里）
+    if (loggedIn) {
+      const rv = $("pp-register-view");
+      if (rv) rv.style.display = "none";
+    }
     $("pp-account-view").style.display = loggedIn ? "" : "none";
     if (!loggedIn) {
       $("pp-login-password").value = "";
@@ -165,9 +170,89 @@
     renderAccount();
   }
 
-  function onRegisterLink() {
+  /* ---------- 注册（0.20.0 内置界面：直接调服务端 /api/auth/register，不跳浏览器） ---------- */
+
+  function showRegister(on) {
+    const lv = $("pp-login-view");
+    const rv = $("pp-register-view");
+    if (!lv || !rv) return;
+    lv.style.display = on ? "none" : "";
+    rv.style.display = on ? "" : "none";
+    if (!on) return;
+    const res = $("pp-reg-result");
+    if (res) res.textContent = "";
+    const vr = $("pp-reg-verify-row");
+    if (vr) vr.style.display = "none";
+    // 已登录邮箱带过来，省一次输入
+    const src = $("pp-login-email");
+    const dst = $("pp-reg-email");
+    if (src && dst && !dst.value) dst.value = src.value || "";
+  }
+
+  async function onRegister() {
     const A = account();
-    try { Zotero.launchURL(A.serverUrl() + "/register"); } catch (e) { /* ignore */ }
+    const btn = $("pp-reg-btn");
+    const result = $("pp-reg-result");
+    if (!A || !btn || !result) return;
+    const email = $("pp-reg-email").value.trim();
+    const nickname = $("pp-reg-nickname").value.trim();
+    const pw = $("pp-reg-password").value;
+    const pw2 = $("pp-reg-password2").value;
+    const setMsg = (t, ok) => {
+      result.textContent = t;
+      result.style.color = ok ? "var(--pp-success)" : "var(--pp-danger)";
+    };
+    if (!email || !pw) return setMsg("请填写邮箱和密码");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setMsg("邮箱格式不正确");
+    if (pw.length < 8) return setMsg("密码至少 8 位");
+    if (pw !== pw2) return setMsg("两次输入的密码不一致");
+    btn.disabled = true;
+    result.textContent = "注册中…";
+    result.style.color = "var(--pp-muted)";
+    try {
+      const r = await A.register(email, pw, nickname);
+      $("pp-reg-password").value = "";
+      $("pp-reg-password2").value = "";
+      const vr = $("pp-reg-verify-row");
+      if (r.needVerify) {
+        setMsg("✓ " + (r.notice || "验证邮件已发送，请到邮箱点链接激活"), true);
+        if (vr) vr.style.display = "";
+      } else {
+        setMsg("✓ " + (r.notice || "注册成功，可直接登录"), true);
+        if (vr) vr.style.display = "none";
+        try { $("pp-login-email").value = email; } catch (e) { /* ignore */ }
+      }
+    } catch (e) {
+      setMsg("✗ " + ((e && e.message) || "注册失败"));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function onResendVerify() {
+    const A = account();
+    const btn = $("pp-reg-resend");
+    const out = $("pp-reg-resend-result");
+    if (!A || !btn || !out) return;
+    const email = $("pp-reg-email").value.trim();
+    if (!email) {
+      out.textContent = "请先填邮箱";
+      out.style.color = "var(--pp-danger)";
+      return;
+    }
+    btn.disabled = true;
+    out.textContent = "发送中…";
+    out.style.color = "var(--pp-muted)";
+    try {
+      const msg = await A.resendVerify(email);
+      out.textContent = "✓ " + msg;
+      out.style.color = "var(--pp-success)";
+    } catch (e) {
+      out.textContent = "✗ " + ((e && e.message) || "发送失败");
+      out.style.color = "var(--pp-danger)";
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function onForgotLink() {
@@ -626,7 +711,11 @@
     // 账号
     bind("pp-login-btn", "click", onLogin);
     bind("pp-login-password", "keydown", (e) => { if (e.key === "Enter") onLogin(); });
-    bind("pp-register-link", "click", onRegisterLink);
+    bind("pp-register-link", "click", () => showRegister(true));
+    bind("pp-reg-back", "click", () => showRegister(false));
+    bind("pp-reg-btn", "click", onRegister);
+    bind("pp-reg-password2", "keydown", (e) => { if (e.key === "Enter") onRegister(); });
+    bind("pp-reg-resend", "click", onResendVerify);
     bind("pp-forgot-link", "click", onForgotLink);
     bind("pp-logout-btn", "click", onLogout);
     bind("pp-account-refresh", "click", onRefreshAccount);
