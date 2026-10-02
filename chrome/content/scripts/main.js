@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, Automation, AutoRead, NoteGraph, ReadingStats, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -59,6 +59,12 @@ Zotero.PaperPilot = {
       "features/lib-search.js",
       "features/tag-curator.js",
       "features/attach-doctor.js",
+      // 0.23.0 自动化引擎 + 入库自动精读（阶段 2）
+      "features/automation.js",
+      "features/auto-read.js",
+      // 0.24.0 笔记关系图谱 + 阅读行为统计（阶段 2 第二批）
+      "features/note-graph.js",
+      "features/reading-stats.js",
       "features/ui-theme.js",
       "features/pdf-theme.js",
       "columns/rank-column.js",
@@ -121,6 +127,12 @@ Zotero.PaperPilot = {
     this.libSearch = LibSearch;
     this.tagCurator = TagCurator;
     this.attachDoctor = AttachDoctor;
+    // 0.23.0 自动化（对话框与菜单经此访问）
+    this.automation = Automation;
+    this.autoRead = AutoRead;
+    // 0.24.0 笔记关系图谱 + 阅读统计
+    this.noteGraph = NoteGraph;
+    this.readingStats = ReadingStats;
     // 0.13.0 工作台 2.0 需要：Prompt 技能库
     this.prompts = Prompts;
     // 0.16.0 主题系统：设置面板脚本经此访问主题库与切换接口
@@ -164,7 +176,13 @@ Zotero.PaperPilot = {
       await this._diag("account server migration FAILED: " + (e && (e.stack || e.message) || e));
     }
     try {
-      Account.restore().catch((e) => this._diag("account restore failed: " + (e && e.message)));
+      // 0.23.0：restore 完成后做一次会话仓库自检，把「几份副本 / 最新一份来自哪里 /
+      // 是否已登录 / 落盘结果」写进启动日志。下次再出现「更新后掉登录」，
+      // boot.log 第一段就能给出结论，不必靠 account.log 逐行倒推。
+      Account.restore()
+        .then(() => Account.selfCheck())
+        .then((snap) => this._diag(snap))
+        .catch((e) => this._diag("account restore/selfCheck failed: " + (e && e.message)));
       await this._diag("account restore scheduled");
     } catch (e) {
       await this._diag("account restore schedule FAILED: " + (e && (e.stack || e.message) || e));
@@ -284,6 +302,29 @@ Zotero.PaperPilot = {
       await this._diag("rule tag notifier registered");
     } catch (e) {
       await this._diag("rule tag FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.23.0 自动化引擎 + 入库自动精读：各自注册 item/tab Notifier
+    // （两者内部都有「是否开启」的 pref 闸门，未开启时事件进来直接返回）
+    try {
+      Automation.register();
+      await this._diag("automation notifier registered");
+    } catch (e) {
+      await this._diag("automation FAILED: " + (e && (e.stack || e.message) || e));
+    }
+    try {
+      AutoRead.register();
+      await this._diag("auto read notifier registered");
+    } catch (e) {
+      await this._diag("auto read FAILED: " + (e && (e.stack || e.message) || e));
+    }
+
+    // 0.24.0 阅读行为统计：心跳采集（每 60s 结算一次「阅读器处于焦点」的时长）
+    try {
+      ReadingStats.start();
+      await this._diag("reading stats heartbeat started");
+    } catch (e) {
+      await this._diag("reading stats FAILED: " + (e && (e.stack || e.message) || e));
     }
 
     // 监听配置变更：分区开关 / 数据路径 即时生效（非关键功能，失败不得拖死 startup）
@@ -435,6 +476,9 @@ Zotero.PaperPilot = {
     try { UiTheme.unregister(); } catch (e) { Zotero.logError(e); }
     try { PdfTheme.unregister(); } catch (e) { Zotero.logError(e); }
     try { RuleTag.unregister(); } catch (e) { Zotero.logError(e); }
+    try { Automation.unregister(); } catch (e) { Zotero.logError(e); }
+    try { AutoRead.unregister(); } catch (e) { Zotero.logError(e); }
+    try { ReadingStats.stop(); } catch (e) { Zotero.logError(e); }
     try { ReadingState.unregister(); } catch (e) { Zotero.logError(e); }
     try { ReaderPopup.unregister(); } catch (e) { Zotero.logError(e); }
     try { AIChatPane.unregister(); } catch (e) { Zotero.logError(e); }

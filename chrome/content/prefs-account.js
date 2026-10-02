@@ -132,6 +132,13 @@
       result.textContent = "✓ 登录成功";
       result.style.color = "var(--pp-success)";
       $("pp-login-password").value = "";
+      // 换账号 → 会员缓存与订单状态全部作废重来
+      stopMbPolling();
+      mbPlans = null;
+      mbSel = null;
+      mbOrder = null;
+      const payBox = $("pp-mb-pay");
+      if (payBox) payBox.style.display = "none";
       renderAll(); // 通道状态（官方通道可用性）联动刷新
     } catch (e) {
       result.textContent = "✗ " + (e && e.message || "登录失败");
@@ -148,6 +155,14 @@
     result.textContent = "退出中…";
     result.style.color = "var(--pp-muted)";
     try { await A.logout(); } catch (e) { /* 本地登出不失败 */ }
+    // 会员区随登录态清空：停轮询、丢订单、收下面板
+    stopMbPolling();
+    mbOrder = null;
+    mbSel = null;
+    const payBox = $("pp-mb-pay");
+    if (payBox) payBox.style.display = "none";
+    const orderBox = $("pp-mb-order");
+    if (orderBox) orderBox.style.display = "none";
     result.textContent = "";
     renderAll();
   }
@@ -264,6 +279,304 @@
     const C = channels();
     const v = $("pp-account-official-model").value;
     try { C.upsert({ id: C.OFFICIAL_ID, model: v }); } catch (e) { /* ignore */ }
+  }
+
+  /* ==================== 会员（0.23.0） ====================
+   * 等级 Free / Pro，权益、价格档位、收款信息全部由服务端下发（后台可改）。
+   * 两条开通路径：
+   *   A 订单：生成订单 → 展示订单号/金额/收款码 → 用户付款后点「我已完成支付」
+   *           → 轮询订单状态 → 管理员核销后自动开通（无需手输码）
+   *   B 激活码：线下购买/赠送/补偿，直接输码激活（绑定账号 + 叠加续期）
+   */
+
+  let mbPlans = null;       // {plans, priceOptions, pay}（服务端下发，缓存）
+  let mbSel = null;         // 当前选中的价格档位
+  let mbOrder = null;       // 当前订单
+  let mbTimer = null;       // 订单轮询定时器
+  let mbPollDeadline = 0;   // 轮询截止（避免永久轮询）
+
+  const MB_STATUS = { pending: "待支付", claimed: "待核销", fulfilled: "已开通",
+    cancelled: "已取消", expired: "已过期" };
+
+  function mbSetMsg(id, text, color) {
+    const n = $(id);
+    if (!n) return;
+    n.textContent = text;
+    n.style.color = color || "var(--pp-muted)";
+  }
+
+  /** 套餐目录按需拉取（首次进入或强制刷新） */
+  async function ensurePlans(force) {
+    const A = account();
+    if (!A || !A.isLoggedIn()) return null;
+    if (mbPlans && !force) return mbPlans;
+    try {
+      mbPlans = await A.plans();
+      const cheap = (mbPlans.priceOptions || [])[0];
+      if (!mbSel && cheap) mbSel = cheap;
+    } catch (e) {
+      if (force) throw e;
+      mbPlans = null;
+    }
+    return mbPlans;
+  }
+
+  function renderMembership() {
+    const A = account();
+    const block = $("pp-mb-block");
+    if (!A || !block) return;
+    if (!A.isLoggedIn()) { block.style.display = "none"; return; }
+    block.style.display = "";
+
+    const m = A.membership() || { plan: "Free", name: "免费版", expiresAt: 0 };
+    const isPro = A.isPro();
+    const badge = $("pp-mb-badge");
+    badge.textContent = isPro ? "PRO" : "FREE";
+    badge.className = isPro ? "pp-mb-badge pp-mb-badge-pro" : "pp-mb-badge";
+    $("pp-mb-title").textContent = m.name || (isPro ? "专业版" : "免费版");
+
+    /* 到期与剩余天数：≤7 天转警示色，已到期转危险色 */
+    const exp = $("pp-mb-expiry");
+    const days = A.membershipDaysLeft();
+    let cls = "pp-mb-expiry";
+    let txt = "长期有效";
+    if (m.expiresAt) {
+      if (days <= 0) { txt = "已到期（" + fmtDate(m.expiresAt) + "）"; cls += " pp-mb-expiry-expired"; }
+      else if (days <= 7) { txt = "仅剩 " + days + " 天 · " + fmtDate(m.expiresAt) + " 到期"; cls += " pp-mb-expiry-warn"; }
+      else { txt = "剩 " + days + " 天 · " + fmtDate(m.expiresAt) + " 到期"; }
+    }
+    exp.textContent = txt;
+    exp.className = cls;
+
+    /* 权益清单（来自服务端套餐配置；未取到时给占位） */
+    const fbox = $("pp-mb-features");
+    fbox.innerHTML = "";
+    const def = mbPlans && (mbPlans.plans || []).find((p) => p.id === m.plan);
+    const feats = (def && def.features) || [];
+    if (feats.length) {
+      for (const f of feats.slice(0, 6)) fbox.appendChild(el("div", { class: "pp-mb-feat" }, "· " + f));
+    } else {
+      fbox.appendChild(el("div", { class: "pp-mb-feat" },
+        isPro ? "专业版权益加载中…" : "免费版：官方模型每日 100 次 · 全部核心功能"));
+      ensurePlans(false).catch(() => { /* 拉不到就保持占位 */ });
+    }
+
+    const up = $("pp-mb-upgrade");
+    if (up) up.textContent = isPro ? "续费专业版" : "升级专业版";
+    renderPersistWarn();
+  }
+
+  /** 0.23.0：会话写盘失败不再静默——面板直接给出原因与后果 */
+  function renderPersistWarn() {
+    const A = account();
+    const w = $("pp-mb-persist-warn");
+    if (!A || !w) return;
+    const ps = A.persistStatus || {};
+    if (A.isLoggedIn() && ps.attempted && !ps.ok) {
+      w.style.display = "";
+      w.textContent = "⚠ 登录状态未能写入磁盘（" + ((ps.errors && ps.errors[0]) || "未知原因")
+        + "）。本次运行内可用，但重启 Zotero 后需要重新登录；"
+        + "请检查 Zotero 数据目录与配置目录是否可写。";
+    } else {
+      w.style.display = "none";
+    }
+  }
+
+  /* ---------- 下单 ---------- */
+
+  function renderMbOptions() {
+    const opts = $("pp-mb-options");
+    if (!opts) return;
+    opts.innerHTML = "";
+    const list = (mbPlans && mbPlans.priceOptions) || [];
+    for (const o of list) {
+      const on = mbSel && mbSel.plan === o.plan && Number(mbSel.months) === Number(o.months);
+      const chip = el("span", { class: on ? "pp-mb-opt pp-mb-opt-on" : "pp-mb-opt" });
+      chip.textContent = (o.label || o.months + " 个月") + " · ¥" + o.price;
+      chip.addEventListener("click", () => { mbSel = o; renderMbOptions(); });
+      opts.appendChild(chip);
+    }
+    const note = $("pp-mb-price-note");
+    if (note) {
+      const pay = (mbPlans && mbPlans.pay) || {};
+      note.textContent = "支持 " + (pay.channel || "收款码") + (pay.note ? "；" + pay.note : "");
+    }
+  }
+
+  async function onMbUpgrade() {
+    const A = account();
+    const box = $("pp-mb-order");
+    if (!A || !box || !A.isLoggedIn()) return;
+    box.style.display = "";
+    mbSetMsg("pp-mb-order-msg", "正在获取套餐…", "var(--pp-muted)");
+    try {
+      await ensurePlans(true);
+      mbSetMsg("pp-mb-order-msg", "", "var(--pp-muted)");
+      renderMbOptions();
+    } catch (e) {
+      mbSetMsg("pp-mb-order-msg", "✗ " + ((e && e.message) || "获取套餐失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onMbCreate() {
+    const A = account();
+    const btn = $("pp-mb-create");
+    if (!A || !mbSel) return;
+    btn.disabled = true;
+    mbSetMsg("pp-mb-order-msg", "正在生成订单…", "var(--pp-muted)");
+    try {
+      mbOrder = await A.createOrder(mbSel.plan, mbSel.months);
+      mbSetMsg("pp-mb-order-msg", "", "var(--pp-muted)");
+      renderMbPay();
+      startMbPolling();
+    } catch (e) {
+      mbSetMsg("pp-mb-order-msg", "✗ " + ((e && e.message) || "下单失败"), "var(--pp-danger)");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderMbPay() {
+    const pay = $("pp-mb-pay");
+    const info = $("pp-mb-pay-info");
+    const qr = $("pp-mb-qr");
+    if (!pay || !info) return;
+    if (!mbOrder) { pay.style.display = "none"; return; }
+    pay.style.display = "";
+    const o = mbOrder;
+    const lines = [
+      "订单号：" + o.id,
+      (o.planName || o.plan) + " · " + o.months + " 个月 · ¥" + o.amount,
+      "状态：" + (MB_STATUS[o.status] || o.status),
+    ];
+    const p = o.pay || {};
+    if (p.channel) lines.push("收款方式：" + p.channel);
+    if (p.qrText) lines.push(p.qrText);
+    if (p.note) lines.push(p.note);
+    info.textContent = lines.join("\n");
+    if (qr) {
+      if (p.qrImage) { qr.setAttribute("src", p.qrImage); qr.style.display = ""; }
+      else { qr.removeAttribute("src"); qr.style.display = "none"; }
+    }
+    const done = o.status === "fulfilled";
+    const claim = $("pp-mb-claim");
+    if (claim) {
+      claim.disabled = done || o.status === "claimed" || o.status === "cancelled" || o.status === "expired";
+      claim.textContent = o.status === "claimed" ? "已提交，等待核销" : "我已完成支付";
+    }
+    const cancel = $("pp-mb-cancel");
+    if (cancel) cancel.disabled = done || o.status === "cancelled";
+    if (done) mbSetMsg("pp-mb-pay-result", "✓ 已开通，会员状态已更新", "var(--pp-success)");
+  }
+
+  function startMbPolling() {
+    stopMbPolling();
+    mbPollDeadline = Date.now() + 10 * 60e3; // 最多轮询 10 分钟
+    mbTimer = window.setInterval(() => { onMbPoll(true); }, 6000);
+  }
+
+  function stopMbPolling() {
+    if (mbTimer) { try { window.clearInterval(mbTimer); } catch (e) { /* ignore */ } mbTimer = null; }
+  }
+
+  /** 轮询订单状态；核销完成即刷新会员并重绘 */
+  async function onMbPoll(silent) {
+    const A = account();
+    if (!A || !mbOrder) return;
+    if (Date.now() > mbPollDeadline) { stopMbPolling(); return; }
+    try {
+      const o = await A.orderStatus(mbOrder.id);
+      mbOrder = o;
+      if (o.status === "fulfilled") {
+        stopMbPolling();
+        try { await A.refreshMembership(); } catch (e) { /* 失败也有本地兜底 */ }
+        renderAll();
+        renderMbPay();
+        return;
+      }
+      if (o.status === "expired" || o.status === "cancelled") stopMbPolling();
+      renderMbPay();
+      if (!silent) mbSetMsg("pp-mb-pay-result", "状态：" + (MB_STATUS[o.status] || o.status), "var(--pp-muted)");
+    } catch (e) {
+      if (!silent) mbSetMsg("pp-mb-pay-result", "✗ " + ((e && e.message) || "查询失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onMbClaim() {
+    const A = account();
+    if (!A || !mbOrder) return;
+    mbSetMsg("pp-mb-pay-result", "正在提交…", "var(--pp-muted)");
+    try {
+      mbOrder = await A.claimOrder(mbOrder.id);
+      renderMbPay();
+      mbSetMsg("pp-mb-pay-result",
+        "✓ 已提交，等待管理员核销（一般几分钟内）。可点「刷新订单状态」查看。", "var(--pp-success)");
+      startMbPolling();
+    } catch (e) {
+      mbSetMsg("pp-mb-pay-result", "✗ " + ((e && e.message) || "提交失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onMbCancel() {
+    const A = account();
+    if (!A || !mbOrder) return;
+    try {
+      await A.cancelOrder(mbOrder.id);
+      stopMbPolling();
+      mbOrder = null;
+      $("pp-mb-pay").style.display = "none";
+      mbSetMsg("pp-mb-order-msg", "订单已取消，可重新生成", "var(--pp-muted)");
+    } catch (e) {
+      mbSetMsg("pp-mb-pay-result", "✗ " + ((e && e.message) || "取消失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onMbRefresh() {
+    const A = account();
+    if (!A || !A.isLoggedIn()) return;
+    mbSetMsg("pp-mb-result", "刷新中…", "var(--pp-muted)");
+    try {
+      await A.refreshMembership();
+      renderAll();
+      mbSetMsg("pp-mb-result", "✓ 会员状态已刷新", "var(--pp-success)");
+    } catch (e) {
+      mbSetMsg("pp-mb-result", "✗ " + ((e && e.message) || "刷新失败"), "var(--pp-danger)");
+    }
+  }
+
+  /* ---------- 激活码 ---------- */
+
+  function onMbCodeToggle() {
+    const row = $("pp-mb-code-row");
+    if (!row) return;
+    const show = row.style.display === "none";
+    row.style.display = show ? "" : "none";
+    if (show) { try { $("pp-mb-code-input").focus(); } catch (e) { /* ignore */ } }
+  }
+
+  async function onMbRedeem() {
+    const A = account();
+    const input = $("pp-mb-code-input");
+    const btn = $("pp-mb-code-btn");
+    if (!A || !input || !A.isLoggedIn()) return;
+    const code = input.value.trim();
+    if (!code) return mbSetMsg("pp-mb-result", "请输入激活码", "var(--pp-danger)");
+    btn.disabled = true;
+    mbSetMsg("pp-mb-result", "激活中…", "var(--pp-muted)");
+    try {
+      const r = await A.redeem(code);
+      input.value = "";
+      const m = (r && r.membership) || A.membership() || {};
+      const expMs = m.expiresAt ? (Number(m.expiresAt) || Date.parse(m.expiresAt) || 0) : 0;
+      mbSetMsg("pp-mb-result",
+        "✓ 激活成功：" + (m.name || "专业版") + (expMs ? "，到期 " + fmtDate(expMs) : ""),
+        "var(--pp-success)");
+      renderAll();
+    } catch (e) {
+      mbSetMsg("pp-mb-result", "✗ " + ((e && e.message) || "激活失败"), "var(--pp-danger)");
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   /* ==================== 模型通道区块（移植通道面板） ==================== */
@@ -690,6 +1003,7 @@
 
   function renderAll() {
     try { renderAccount(); } catch (e) { /* ignore */ }
+    try { renderMembership(); } catch (e) { /* ignore */ }
     try { renderChannels(); } catch (e) { /* ignore */ }
   }
 
@@ -720,6 +1034,17 @@
     bind("pp-logout-btn", "click", onLogout);
     bind("pp-account-refresh", "click", onRefreshAccount);
     bind("pp-account-official-model", "change", onOfficialModelChange);
+    // 会员（0.23.0）
+    bind("pp-mb-upgrade", "click", onMbUpgrade);
+    bind("pp-mb-create", "click", onMbCreate);
+    bind("pp-mb-close-order", "click", () => { const b = $("pp-mb-order"); if (b) b.style.display = "none"; });
+    bind("pp-mb-claim", "click", onMbClaim);
+    bind("pp-mb-poll", "click", () => onMbPoll(false));
+    bind("pp-mb-cancel", "click", onMbCancel);
+    bind("pp-mb-refresh", "click", onMbRefresh);
+    bind("pp-mb-code-toggle", "click", onMbCodeToggle);
+    bind("pp-mb-code-btn", "click", onMbRedeem);
+    bind("pp-mb-code-input", "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); onMbRedeem(); } });
     // 通道
     bind("pp-ch-add", "click", () => openForm(null));
     bind("pp-mf-provider", "change", onProviderChange);
@@ -737,6 +1062,7 @@
     _offSession = account().onSessionChanged(renderAll);
     window.addEventListener("unload", () => {
       if (_offSession) { try { _offSession(); } catch (e) { /* ignore */ } _offSession = null; }
+      stopMbPolling(); // 面板关闭必须停掉订单轮询，否则定时器泄漏
     });
   }
 

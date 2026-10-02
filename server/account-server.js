@@ -10,6 +10,24 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
+ * 会员域（服务端 1.4.0，插件 0.23.0；Free / Pro 两档，全部配置化）：
+ *   GET  /api/plans                 公开 → {plans, priceOptions, pay}
+ *   GET  /api/membership            Bearer → 当前会员（等级/到期/剩余天数/额度/历史）
+ *   POST /api/orders                Bearer {plan,months} → 下单（订单号+金额+收款信息）
+ *   GET  /api/orders/:id            Bearer → 订单状态
+ *   POST /api/orders/:id/claim      Bearer → 标记「我已完成支付」，等管理员核销
+ *   POST /api/orders/:id/cancel     Bearer → 取消未支付订单
+ *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
+ * 会员管理（仅本机直连）：
+ *   GET  /api/admin/membership      订单 + 激活码 + 套餐配置一览
+ *   PUT  /api/admin/membership      改套餐额度 / 价格档位 / 收款信息（局部更新）
+ *   GET  /api/admin/orders          订单列表
+ *   POST /api/admin/orders/:id/fulfill | /cancel   核销（自动开通）/ 取消
+ *   GET|POST /api/admin/codes       激活码列表 / 批量生成
+ *   DELETE /api/admin/codes/:id     作废未使用的激活码
+ *   POST /api/admin/users/:id/membership           直接给用户开通/续期（叠加式）
+ * 数据：server/data/membership.json（套餐 / 价格 / 收款 / 订单 / 激活码）
+ *
  * 令牌生命周期（0.15.1 / 服务端 1.3.1，修「更新后被迫重新登录」）：
  *   TTL 30 天（PP_TOKEN_TTL_MS 可覆盖，测试用）；/api/auth/me 与 /v1/* 网关调用
  *   均滑动续期——用户只要在用（含仅用 AI 而不重启 Zotero 的场景）令牌就一直有效，
@@ -49,6 +67,7 @@ const path = require('path');
 
 const { JsonStore } = require('./lib/store');
 const { PROVIDERS, providerOf, providersForClient } = require('./lib/presets');
+const membership = require('./lib/membership');
 const mail = require('./lib/mail');
 
 /* ---------------- 配置 ---------------- */
@@ -90,8 +109,10 @@ const RESET_HTML = path.join(__dirname, 'public', 'reset.html');
 // PP_TOKEN_TTL_MS 可覆盖（毫秒），E2E 测试用短 TTL 实测续期行为。
 const TOKEN_TTL_MS = Number(process.env.PP_TOKEN_TTL_MS) > 0
   ? Number(process.env.PP_TOKEN_TTL_MS) : 30 * 86400e3;
-const DEFAULT_DAILY_LIMIT = 100;
 const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
+const REDEEM_MAX = 10;                   // 激活码兑换限速（每 IP 每分钟，防撞码）
+// 每日额度不再写死在这里：0.23.0 起由 membership.json 的套餐配置驱动
+// （membership.dailyLimitFor），管理员在用户级的 dailyLimit 覆盖优先级最高。
 const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
 const MAIL_MAX = 3;                      // 验证/重置邮件请求限速（每 IP 每分钟）
 const GATEWAY_MAX = 20;                  // 网关全局限速（每 IP 每分钟，防高频薅上游 Key）
@@ -104,6 +125,11 @@ const GATEWAY_TIMEOUT_MS = 120e3;        // 网关转发上限（流式应答可
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const usersStore = new JsonStore(path.join(DATA_DIR, 'users.json'), { users: [], tokens: {} });
 const channelsStore = new JsonStore(path.join(DATA_DIR, 'channels.json'), { channels: [], active: null });
+// 0.23.0 会员域：套餐/价格/收款信息/订单/激活码。
+// 首次启动自动落默认配置；v1（无 schemaVersion）文档自动升级，幂等。
+const membershipStore = new JsonStore(path.join(DATA_DIR, 'membership.json'), membership.newDoc());
+membershipStore.data = membership.normalize(membershipStore.data);
+membershipStore.save();
 
 /* ---------------- 工具 ---------------- */
 
@@ -241,16 +267,21 @@ function planEffective(user) {
   return user.plan || 'Free';
 }
 
+/**
+ * 每日额度（0.23.0 起由套餐配置驱动）：
+ *   管理员在用户级显式设置的 dailyLimit 优先 → 否则取该等级在 membership.json
+ *   里配置的 dailyLimit。等级/额度调整只需改后台配置，无需动代码。
+ */
 function dailyLimitOf(user) {
-  return Number(user.dailyLimit) > 0 ? Number(user.dailyLimit)
-    : (planEffective(user) === 'Free' ? DEFAULT_DAILY_LIMIT : 1000);
+  if (Number(user.dailyLimit) > 0) return Number(user.dailyLimit);
+  return membership.dailyLimitFor(membershipStore.data, planEffective(user));
 }
 
 function dailyUsedOf(user) {
   return user.usage && user.usage.date === today() ? Number(user.usage.count) || 0 : 0;
 }
 
-/** 客户端可见的用户对象（docs 契约字段） */
+/** 客户端可见的用户对象（docs 契约字段 + 0.23.0 会员视图） */
 function userForClient(user) {
   const out = {
     email: user.email,
@@ -259,6 +290,7 @@ function userForClient(user) {
     dailyUsed: dailyUsedOf(user),
     dailyLimit: dailyLimitOf(user),
     status: user.status === 'pending' ? 'pending' : 'active',
+    membership: membership.membershipOf(membershipStore.data, user),
   };
   if (user.expiresAt) out.expiresAt = user.expiresAt; // 套餐有效期（可缺省）
   return out;
@@ -665,11 +697,33 @@ function gatewayChat(req, res, user) {
 
 /* ---------------- 管理域（用户） ---------------- */
 
+/**
+ * 管理端直接改 plan / expiresAt 时同步会员对象（0.23.0）。
+ * 注意语义差别：这里是**覆盖式**设置（以管理员填写的到期日为准），
+ * 与「激活码/订单自动开通」的**叠加式续期**不同——后台手改就是最终裁决。
+ */
+function syncMembershipFromLegacy(user) {
+  const plan = user.plan || 'Free';
+  if (plan === 'Free') { user.membership = null; return; }
+  const prev = user.membership || {};
+  user.membership = {
+    plan,
+    name: membership.planOf(membershipStore.data, plan).name,
+    months: prev.months || 0,
+    activatedAt: prev.activatedAt || new Date().toISOString(),
+    expiresAt: user.expiresAt || null,
+    source: 'admin',
+    refId: prev.refId || '',
+    history: Array.isArray(prev.history) ? prev.history : [],
+  };
+}
+
 function userAdminOut(u) {
   return {
     id: u.id, email: u.email, nickname: u.nickname || '', plan: planEffective(u),
     planRaw: u.plan || 'Free', expiresAt: u.expiresAt || null,
     dailyLimit: dailyLimitOf(u), dailyUsed: dailyUsedOf(u),
+    membership: membership.membershipOf(membershipStore.data, u),
     status: u.status === 'pending' ? 'pending' : 'active',
     createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null,
   };
@@ -679,7 +733,7 @@ async function adminCreateUser(input) {
   const email = String(input.email || '').trim();
   const password = String(input.password || '');
   const nickname = String(input.nickname || '').trim().slice(0, 40);
-  const plan = ['Free', 'Pro', 'Team'].includes(input.plan) ? input.plan : 'Free';
+  const plan = ['Free', 'Pro'].includes(input.plan) ? input.plan : 'Free';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: '邮箱格式不正确' };
   if (password.length < 8) return { error: '密码至少 8 位' };
   if (findUserByEmail(email)) return { error: '该邮箱已注册' };
@@ -696,6 +750,7 @@ async function adminCreateUser(input) {
     createdAt: new Date().toISOString(), lastLoginAt: null, usage: { date: today(), count: 0 },
   };
   usersStore.data.users.push(user);
+  syncMembershipFromLegacy(user);
   pruneTokens();
   usersStore.save();
   log('user created:', email, plan);
@@ -706,7 +761,7 @@ function adminUpdateUser(id, input) {
   const user = findUserById(id);
   if (!user) return { error: '用户不存在' };
   if (input.nickname !== undefined) user.nickname = String(input.nickname || '').trim().slice(0, 40);
-  if (input.plan !== undefined && ['Free', 'Pro', 'Team'].includes(input.plan)) user.plan = input.plan;
+  if (input.plan !== undefined && ['Free', 'Pro'].includes(input.plan)) user.plan = input.plan;
   if (input.expiresAt !== undefined) {
     const t = new Date(input.expiresAt).getTime();
     user.expiresAt = (input.expiresAt && !Number.isNaN(t)) ? input.expiresAt : null;
@@ -714,6 +769,8 @@ function adminUpdateUser(id, input) {
   if (input.dailyLimit !== undefined) {
     user.dailyLimit = Number(input.dailyLimit) > 0 ? Number(input.dailyLimit) : null;
   }
+  // 等级或到期日被改动 → 同步会员对象（覆盖式，不做叠加）
+  if (input.plan !== undefined || input.expiresAt !== undefined) syncMembershipFromLegacy(user);
   usersStore.save();
   return { user: userAdminOut(user) };
 }
@@ -753,13 +810,18 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.3.1',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.0',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
         channels: channelsStore.data.channels.length,
         active: channelsStore.data.active || null,
         publishedModels: publishedModels().length, // 0 = 全部上线
+        // 0.23.0 会员域
+        plans: Object.keys(membershipStore.data.plans || {}),
+        orders: membershipStore.data.orders.length,
+        ordersAwaitingReview: membershipStore.data.orders.filter((o) => o.status === 'claimed').length,
+        codesUnused: membershipStore.data.codes.filter((c) => !c.usedAt).length,
       });
     }
 
@@ -925,6 +987,74 @@ const server = http.createServer(async (req, res) => {
         ok: true, user: userForClient(user),
         expiresAt: new Date(Date.now() + TOKEN_TTL_MS).toISOString(),
       });
+    }
+
+    /* --- 插件契约：会员（0.23.0） --- */
+
+    // 套餐目录：公开接口（未登录也能看价格，便于登录前决策）
+    if (method === 'GET' && url === '/api/plans') {
+      return json(res, 200, Object.assign({ ok: true }, membership.plansForClient(membershipStore.data)));
+    }
+
+    if (url === '/api/membership' || url === '/api/orders' || url === '/api/redeem'
+        || url.startsWith('/api/orders/')) {
+      const user = userByToken(req);
+      if (!user) return json(res, 401, { ok: false, error: '登录已过期' });
+      touchTokenSoon(req);
+
+      if (method === 'GET' && url === '/api/membership') {
+        return json(res, 200, { ok: true, membership: membership.membershipOf(membershipStore.data, user) });
+      }
+
+      // 激活码兑换：绑定当前账号 + 叠加续期，一步到位
+      if (method === 'POST' && url === '/api/redeem') {
+        if (rateThrottled('redeem:' + clientIp(req), REDEEM_MAX, LOGIN_WINDOW_MS)) {
+          return json(res, 429, { ok: false, error: '尝试过于频繁，请稍后再试' });
+        }
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const r = membership.redeem(membershipStore.data, input.code, user);
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        usersStore.save();
+        log('membership redeemed:', user.email, r.code.plan, r.code.months + 'm');
+        return json(res, 200, { ok: true, membership: r.membership, user: userForClient(user), code: r.code });
+      }
+
+      // 下单：返回订单号 + 金额 + 收款信息；支付与核销在线下完成
+      if (method === 'POST' && url === '/api/orders') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        if (membership.reapOrders(membershipStore.data)) membershipStore.save();
+        const r = membership.createOrder(membershipStore.data, { user, plan: input.plan, months: input.months });
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('order created:', user.email, r.order.plan, r.order.months + 'm', '¥' + r.order.amount);
+        return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, r.order) });
+      }
+
+      const om = url.match(/^\/api\/orders\/([a-zA-Z0-9-]+)(\/claim|\/cancel)?$/);
+      if (om) {
+        const order = membership.findOrder(membershipStore.data, om[1]);
+        if (!order || order.userId !== user.id) return json(res, 404, { ok: false, error: '订单不存在' });
+        if (method === 'GET' && !om[2]) {
+          return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, order) });
+        }
+        if (method === 'POST' && om[2] === '/claim') {
+          const r = membership.claimOrder(membershipStore.data, order, user);
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          membershipStore.save();
+          log('order claimed (awaiting review):', user.email, order.id);
+          return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, order) });
+        }
+        if (method === 'POST' && om[2] === '/cancel') {
+          const r = membership.cancelOrder(membershipStore.data, order, user);
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          membershipStore.save();
+          return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, order) });
+        }
+      }
+      return json(res, 405, { ok: false, error: '该方法不支持：' + method + ' ' + url });
     }
 
     /* --- 插件契约：官方模型网关 --- */
@@ -1098,6 +1228,155 @@ const server = http.createServer(async (req, res) => {
           log('channel models refreshed:', c.id, models.length);
         }
         return json(res, 200, { ok: true, models: r.models, latencyMs: r.latencyMs });
+      }
+
+      /* ---- 会员管理（0.23.0，仅本机） ---- */
+
+      /** 订单 + 激活码 + 套餐配置一览 */
+      if (url === '/api/admin/membership' && method === 'GET') {
+        if (membership.reapOrders(membershipStore.data)) membershipStore.save();
+        const orders = membershipStore.data.orders.slice().reverse()
+          .map((o) => Object.assign(membership.orderOut(membershipStore.data, o),
+            { userId: o.userId, email: o.email }));
+        const codes = membershipStore.data.codes.slice().reverse().map(membership.codeOut);
+        return json(res, 200, {
+          ok: true, orders, codes,
+          plans: membership.plansForClient(membershipStore.data),
+          counts: {
+            orders: orders.length,
+            awaitingReview: orders.filter((o) => o.status === 'claimed').length,
+            fulfilled: orders.filter((o) => o.status === 'fulfilled').length,
+            codesUnused: codes.filter((c) => c.status === 'unused').length,
+            codesUsed: codes.filter((c) => c.status === 'used').length,
+          },
+        });
+      }
+
+      /** 改套餐配置 / 价格档位 / 收款信息（局部更新，未提交的字段保持原值） */
+      if (url === '/api/admin/membership' && method === 'PUT') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const doc = membershipStore.data;
+        if (input.plans && typeof input.plans === 'object') {
+          for (const [pid, p] of Object.entries(input.plans)) {
+            if (!doc.plans[pid] || !p || typeof p !== 'object') continue;
+            if (p.dailyLimit !== undefined) doc.plans[pid].dailyLimit = Math.max(0, Number(p.dailyLimit) || 0);
+            if (p.price !== undefined) doc.plans[pid].price = Math.max(0, Number(p.price) || 0);
+            if (p.name !== undefined) doc.plans[pid].name = String(p.name).slice(0, 20);
+            if (p.tagline !== undefined) doc.plans[pid].tagline = String(p.tagline).slice(0, 60);
+            if (Array.isArray(p.features)) {
+              doc.plans[pid].features = p.features.slice(0, 12).map((s) => String(s).slice(0, 80));
+            }
+          }
+        }
+        if (input.priceOptions && typeof input.priceOptions === 'object') {
+          for (const [pid, list] of Object.entries(input.priceOptions)) {
+            if (!Array.isArray(list)) continue;
+            doc.priceOptions[pid] = list.slice(0, 10).map((o) => ({
+              months: membership.clampMonths(o && o.months),
+              price: Math.max(0, Number(o && o.price) || 0),
+              label: String((o && o.label) || '').slice(0, 40),
+            }));
+          }
+        }
+        if (input.pay && typeof input.pay === 'object') {
+          if (input.pay.channel !== undefined) doc.pay.channel = String(input.pay.channel).slice(0, 20);
+          if (input.pay.qrImage !== undefined) doc.pay.qrImage = String(input.pay.qrImage).slice(0, 500);
+          if (input.pay.qrText !== undefined) doc.pay.qrText = String(input.pay.qrText).slice(0, 500);
+          if (input.pay.note !== undefined) doc.pay.note = String(input.pay.note).slice(0, 200);
+        }
+        membershipStore.save();
+        log('membership config updated');
+        return json(res, 200, { ok: true, plans: membership.plansForClient(membershipStore.data) });
+      }
+
+      if (url === '/api/admin/orders' && method === 'GET') {
+        if (membership.reapOrders(membershipStore.data)) membershipStore.save();
+        return json(res, 200, {
+          ok: true,
+          orders: membershipStore.data.orders.slice().reverse()
+            .map((o) => Object.assign(membership.orderOut(membershipStore.data, o),
+              { userId: o.userId, email: o.email })),
+        });
+      }
+
+      /** 核销（fulfill）/ 取消（cancel）订单 */
+      m = url.match(/^\/api\/admin\/orders\/([a-zA-Z0-9-]+)\/(fulfill|cancel)$/);
+      if (m && method === 'POST') {
+        const order = membership.findOrder(membershipStore.data, m[1]);
+        if (!order) return json(res, 404, { ok: false, error: '订单不存在' });
+        let input = {};
+        try { input = await readBody(req); } catch (e) { /* 允许空请求体 */ }
+        if (m[2] === 'fulfill') {
+          const user = findUserById(order.userId);
+          if (!user) return json(res, 400, { ok: false, error: '下单账号已不存在（无法开通）' });
+          const r = membership.fulfillOrder(membershipStore.data, order, { by: 'admin' });
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          // 核销即开通：直接给下单账号叠加续期（同时留档一枚已用兑换码）
+          membership.grantMembership(membershipStore.data, user, {
+            plan: order.plan, months: order.months, source: 'order', refId: order.id,
+          });
+          membershipStore.save();
+          usersStore.save();
+          log('order fulfilled:', order.id, user.email, order.plan, order.months + 'm');
+          return json(res, 200, {
+            ok: true, order: membership.orderOut(membershipStore.data, order),
+            archiveCode: membership.codeOut(r.code), user: userAdminOut(user),
+          });
+        }
+        const r = membership.cancelOrder(membershipStore.data, order, { id: order.userId }, input.reason || '管理员取消');
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, order) });
+      }
+
+      /** 激活码：批量生成 / 列表 / 作废（已使用的不可删，保留对账） */
+      if (url === '/api/admin/codes') {
+        if (method === 'GET') {
+          return json(res, 200, { ok: true,
+            codes: membershipStore.data.codes.slice().reverse().map(membership.codeOut) });
+        }
+        if (method === 'POST') {
+          let input;
+          try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+          const r = membership.createCodes(membershipStore.data, {
+            plan: input.plan, months: input.months, count: input.count,
+            note: input.note, by: 'admin',
+            expiresAt: input.expiresAt || null, boundTo: input.boundTo || null,
+          });
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          membershipStore.save();
+          log('activation codes created:', r.codes.length, input.plan, input.months + 'm');
+          return json(res, 200, { ok: true, codes: r.codes });
+        }
+      }
+      m = url.match(/^\/api\/admin\/codes\/([a-zA-Z0-9-]+)$/);
+      if (m && method === 'DELETE') {
+        const idx = membershipStore.data.codes.findIndex((c) => c && c.id === m[1]);
+        if (idx < 0) return json(res, 404, { ok: false, error: '激活码不存在' });
+        if (membershipStore.data.codes[idx].usedAt) {
+          return json(res, 400, { ok: false, error: '已使用的激活码不能删除（保留对账记录）' });
+        }
+        membershipStore.data.codes.splice(idx, 1);
+        membershipStore.save();
+        log('activation code revoked:', m[1]);
+        return json(res, 200, { ok: true });
+      }
+
+      /** 直接给指定用户开通/续期会员（叠加式，与激活码同语义） */
+      m = url.match(/^\/api\/admin\/users\/([a-zA-Z0-9-]+)\/membership$/);
+      if (m && method === 'POST') {
+        const user = findUserById(m[1]);
+        if (!user) return json(res, 404, { ok: false, error: '用户不存在' });
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const mp = membership.grantMembership(membershipStore.data, user, {
+          plan: input.plan || 'Pro', months: input.months || 1,
+          source: 'admin', note: input.note || '',
+        });
+        usersStore.save();
+        log('membership granted by admin:', user.email, mp.plan, mp.expiresAt);
+        return json(res, 200, { ok: true, membership: mp, user: userAdminOut(user) });
       }
     }
 

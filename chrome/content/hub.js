@@ -25,6 +25,7 @@
           { t: zh ? "AI 问答侧栏" : "Chat sidebar", d: zh ? "选中条目后在右侧栏「AI 问答」直接提问" : "Auto: ask in the sidebar", info: true },
           { t: zh ? "划词浮窗" : "Selection popup", d: zh ? "阅读器内划词即翻译/解读/追问（设置中可配置）" : "Auto: translate/explain/ask in reader", info: true },
           { t: zh ? "PDF 速览" : "PDF glance", d: zh ? "侧栏显示摘要与全文开篇，无需打开 PDF" : "Auto: abstract + opening in sidebar", info: true },
+          { t: zh ? "入库自动精读" : "Auto-read on import", d: zh ? "新条目入库自动生成总结笔记（需在「自动化规则」窗口开启，受每日额度与分类白名单限制）" : "Automatically summarize new items (opt-in, quota-limited)", run: () => PP.autoRead.runForSelected() },
         ],
       },
       {
@@ -45,6 +46,7 @@
           { t: zh ? "AI 解读批注" : "Interpret annotations", d: zh ? "解读划出的重点反映了什么主线与关注点" : "AI insights on your highlights", run: () => PP.menus.annotationTask(true) },
           { t: zh ? "按模板新建笔记" : "Note from template", d: zh ? "阅读笔记/精读卡片/速读记录等模板一键生成" : "Structured note from templates", run: () => PP.noteTemplates.runForSelected() },
           { t: zh ? "AI 制卡导出 Anki" : "Cards to Anki", d: zh ? "基于全文生成问答卡，导出 Anki 导入格式" : "Q/A cards export (.txt)", run: () => PP.ankiExport.runForSelected() },
+          { t: zh ? "笔记关系图谱" : "Note graph", d: zh ? "把条目与笔记的链接关系画成可交互图谱（支持 zotero:// 链接与 [[标题]]），点节点可在主窗口定位" : "Interactive graph of notes and their links", run: () => PP.noteGraph.openDialog() },
         ],
       },
       {
@@ -59,6 +61,7 @@
           { t: zh ? "参考文献一键入库" : "Import references", d: zh ? "把当前文献的参考文献批量添加进库" : "Batch import references", run: () => PP.citationTrace.importForSelected() },
           { t: zh ? "分类条目统计" : "Collection stats", d: zh ? "当前分类的条目/附件/标签统计" : "Stats for current collection", run: () => PP.collectionStats.showForSelectedCollection() },
           { t: zh ? "文献统计图谱" : "Library report", d: zh ? "年份/期刊/作者/标签分布 HTML 报告" : "HTML report with charts", run: () => PP.libGraph.run() },
+          { t: zh ? "阅读报告（日历热力图）" : "Reading report", d: zh ? "近 30 天阅读时长、日历热力图与时长最多的文献（打开 PDF 时自动每分钟累计）" : "Reading time with calendar heatmap", run: () => PP.readingStats.run() },
         ],
       },
       {
@@ -90,6 +93,7 @@
           { t: zh ? "规则打标" : "Rule tag", d: zh ? "按自定义条件规则批量打标签" : "Conditional rule tagging", run: () => PP.ruleTag.runForSelected() },
           { t: zh ? "标签治理（扫描变体）" : "Tag curator (scan)", d: zh ? "找出同一含义的多种写法（大小写/全半角/空格连字符）、罕见标签与层级缺失，只出报告不改数据" : "Find variant/rare/missing-parent tags (read-only)", run: () => PP.tagCurator.run(false) },
           { t: zh ? "标签归一（执行合并）" : "Normalize tags", d: zh ? "按扫描结果把变体合并到主体写法，执行前弹确认框，不可自动撤销" : "Merge tag variants into the main spelling (confirm required)", run: () => PP.tagCurator.run(true) },
+          { t: zh ? "自动化规则（触发→条件→动作）" : "Automation rules", d: zh ? "可视化配置：新条目入库/打开 PDF/手动 → 条件匹配 → 打标签/写字段/设状态/加分类/AI 总结；含试跑预览与入库自动精读开关" : "Visual trigger-condition-action rules with dry-run and auto-read switches", run: () => PP.automation.openDialog() },
           { t: zh ? "标记为「未读」" : "Mark unread", d: zh ? "阅读状态三态互斥（未读/在读/已读）" : "Mutually exclusive states", run: () => PP.readingState.markForSelected("未读") },
           { t: zh ? "标记为「在读」" : "Mark reading", d: zh ? "打开 PDF 也会自动从「未读」转为「在读」" : "Auto-updated when opening PDF", run: () => PP.readingState.markForSelected("在读") },
           { t: zh ? "标记为「已读」" : "Mark done", d: zh ? "读完后归档状态" : "Finished state", run: () => PP.readingState.markForSelected("已读") },

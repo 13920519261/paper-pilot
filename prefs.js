@@ -116,3 +116,23 @@ pref("extensions.zotero.paperpilot.compareSelfTest", false);
 pref("extensions.zotero.paperpilot.libSearchContextChars", 12000);
 // 0.22.0 新增：库内问答默认候选上限（可被对话框内输入覆盖）
 pref("extensions.zotero.paperpilot.libSearchTopN", 8);
+// 0.23.0 新增：自动化引擎（规则 JSON 数组 / 自动触发开关 / 批量上限 / AI 每日额度）
+pref("extensions.zotero.paperpilot.automationRules", "");
+pref("extensions.zotero.paperpilot.automationOnNewItem", false);
+pref("extensions.zotero.paperpilot.automationOnReaderOpen", false);
+pref("extensions.zotero.paperpilot.automationMaxPerFlush", 20);
+pref("extensions.zotero.paperpilot.automationDailyAiCap", 20);
+// 每日 AI 次数（格式：YYYY-MM-DD:次数），与浮窗计数同样的日切做法
+pref("extensions.zotero.paperpilot.automationDailyAiCount", "");
+// 0.23.0 新增：入库自动精读（默认关闭；仅限分类为空=全库；每日上限；成功标记标签）
+pref("extensions.zotero.paperpilot.autoReadEnabled", false);
+pref("extensions.zotero.paperpilot.autoReadCollection", "");
+pref("extensions.zotero.paperpilot.autoReadDailyCap", 10);
+pref("extensions.zotero.paperpilot.autoReadDailyCount", "");
+pref("extensions.zotero.paperpilot.autoReadTag", "#AI精读");
+pref("extensions.zotero.paperpilot.autoReadMaxPerFlush", 5);
+// 0.24.0 新增：阅读行为统计（心跳采集开关 + 数据 JSON，仅存最近 60 天）
+pref("extensions.zotero.paperpilot.readingStatsEnabled", true);
+pref("extensions.zotero.paperpilot.readingStats", "");
+// 0.24.0 新增：笔记关系图谱节点上限（超出按连接度截断）
+pref("extensions.zotero.paperpilot.noteGraphMaxNodes", 400);

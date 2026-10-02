@@ -234,6 +234,13 @@ var I18n = (() => {
     menuAttachDoctor: zh ? "附件体检（断链/重复/扫描件/孤儿文件）" : "Attachment Doctor (broken/dup/scanned)",
     menuTagCurator: zh ? "标签治理（扫描变体，只读）" : "Tag Curator (scan, read-only)",
     menuTagNormalize: zh ? "标签归一（执行合并，需确认）" : "Normalize Tags (merge, confirm)",
+    // ---- 0.23.0 自动化引擎 / 入库自动精读 ----
+    menuAutomation: zh ? "自动化规则（触发→条件→动作）…" : "Automation Rules…",
+    menuAutomationRun: zh ? "按自动化规则处理所选（先预览）" : "Run Automation Rules on Selection (preview)",
+    menuAutoReadNow: zh ? "立即 AI 精读所选文献" : "AI Deep-read Selected Now",
+    // ---- 0.24.0 笔记关系图谱 / 阅读报告 ----
+    menuNoteGraph: zh ? "笔记关系图谱…" : "Note Graph…",
+    menuReadingReport: zh ? "阅读报告（生成笔记）" : "Reading Report (note)",
   };
   return {
     t(key) { return table[key] || key; },

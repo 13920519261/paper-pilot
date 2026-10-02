@@ -58,6 +58,22 @@ var RuleTag = {
     }
   },
 
+  /**
+   * 编译正则。JS 的 RegExp 不支持 `(?i)` 内联标志（Java/Python 语法），
+   * 而本文档给出的示例就是 `(?i)heart|cardio` —— 直接 new RegExp 会抛异常
+   * 并被 catch 吞掉，规则静默永不命中（0.23.0 发现）。统一剥离前缀 + 默认 i。
+   */
+  compileRegex(pattern) {
+    let p = String(pattern == null ? "" : pattern);
+    let flags = "i";
+    const m = p.match(/^\(\?([a-z-]*)\)/);
+    if (m) {
+      if (m[1].includes("-i")) flags = "";
+      p = p.slice(m[0].length);
+    }
+    return new RegExp(p, flags);
+  },
+
   match(rule, item) {
     const v = this._fieldValue(item, rule.field);
     const { op, value } = rule;
@@ -76,7 +92,7 @@ var RuleTag = {
       case "=": return sv === vv;
       case "!=": return sv !== vv;
       case "regex":
-        try { return new RegExp(value).test(s); } catch (e) { return false; }
+        try { return this.compileRegex(value).test(s); } catch (e) { return false; }
     }
     return false;
   },

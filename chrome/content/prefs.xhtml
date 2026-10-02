@@ -83,6 +83,54 @@
           </html:div>
         </html:div>
         <html:div id="pp-account-meta" class="pp-account-meta"></html:div>
+
+        <!-- ===== 0.23.0 会员（等级 / 到期 / 购买 / 激活码） ===== -->
+        <html:div id="pp-mb-block" class="pp-mb">
+          <html:div class="pp-mb-head">
+            <html:span id="pp-mb-badge" class="pp-mb-badge">FREE</html:span>
+            <html:span id="pp-mb-title" class="pp-mb-title">免费版</html:span>
+            <html:span id="pp-mb-expiry" class="pp-mb-expiry"></html:span>
+          </html:div>
+          <html:div id="pp-mb-features" class="pp-mb-features"></html:div>
+          <html:div class="pp-row pp-row-tight">
+            <html:button id="pp-mb-upgrade" class="pp-btn pp-btn-primary pp-btn-sm">升级专业版</html:button>
+            <html:button id="pp-mb-refresh" class="pp-btn pp-btn-sm">刷新会员</html:button>
+            <html:span id="pp-mb-code-toggle" class="pp-link">有激活码？</html:span>
+            <html:span id="pp-mb-result" class="pp-msg"></html:span>
+          </html:div>
+          <!-- 激活码兑换（线下购买 / 赠送 / 补偿） -->
+          <html:div id="pp-mb-code-row" class="pp-row" style="display:none;">
+            <html:input type="text" id="pp-mb-code-input" class="pp-input"
+                        style="min-width:210px;" placeholder="PP-XXXX-XXXX-XXXX"/>
+            <html:button id="pp-mb-code-btn" class="pp-btn pp-btn-sm">激活</html:button>
+            <html:span class="pp-hint">大小写与连字符都不敏感</html:span>
+          </html:div>
+          <!-- 下单面板 -->
+          <html:div id="pp-mb-order" class="pp-mb-order" style="display:none;">
+            <html:div class="pp-mb-order-head">
+              <html:b>升级到专业版</html:b>
+              <html:span id="pp-mb-price-note" class="pp-mb-price-note"></html:span>
+            </html:div>
+            <html:div id="pp-mb-options" class="pp-row pp-row-tight"></html:div>
+            <html:div class="pp-row pp-row-tight">
+              <html:button id="pp-mb-create" class="pp-btn pp-btn-primary pp-btn-sm">生成订单</html:button>
+              <html:button id="pp-mb-close-order" class="pp-btn pp-btn-sm">收起</html:button>
+              <html:span id="pp-mb-order-msg" class="pp-msg"></html:span>
+            </html:div>
+            <html:div id="pp-mb-pay" class="pp-mb-pay" style="display:none;">
+              <html:div id="pp-mb-pay-info" class="pp-mb-pay-info"></html:div>
+              <html:img id="pp-mb-qr" class="pp-mb-qr" style="display:none;"/>
+              <html:div class="pp-row pp-row-tight">
+                <html:button id="pp-mb-claim" class="pp-btn pp-btn-primary pp-btn-sm">我已完成支付</html:button>
+                <html:button id="pp-mb-poll" class="pp-btn pp-btn-sm">刷新订单状态</html:button>
+                <html:button id="pp-mb-cancel" class="pp-btn pp-btn-sm">取消订单</html:button>
+              </html:div>
+              <html:div id="pp-mb-pay-result" class="pp-msg"></html:div>
+            </html:div>
+          </html:div>
+          <!-- 会话持久化异常提示（0.23.0：写盘失败不再静默） -->
+          <html:div id="pp-mb-persist-warn" class="pp-mb-warn" style="display:none;"></html:div>
+        </html:div>
         <html:div class="pp-row">
           <html:span class="pp-label">官方模型</html:span>
           <html:select id="pp-account-official-model" class="pp-select" style="min-width:180px;"></html:select>
