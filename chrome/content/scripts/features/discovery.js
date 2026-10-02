@@ -421,15 +421,28 @@ var Discovery = {
     const item = await this.createItem(entry);
     if (!item) return null;
     const name = String(Prefs.get("discoveryCollectionName", "arXiv 推荐") || "arXiv 推荐");
+    const libID = Zotero.Libraries.userLibraryID;
+    // ⚠️ `Zotero.Library` 没有 `getCollections()`（真机验证抓到的 bug：调用抛 TypeError
+    // 被外层 catch 吞掉 → 条目建好了却**永远加不进分类**，用户视角「收藏了但没进分类」）。
+    // 正确 API = `Zotero.Collections.getByLibrary(libraryID, recursive, includeTrashed)`。
+    let col = null;
     try {
-      const lib = Zotero.Libraries.userLibrary;
-      let col = null;
-      for (const c of (lib.getCollections() || [])) if (c.name === name) { col = c; break; }
-      if (!col) { col = new Zotero.Collection(); col.libraryID = lib.libraryID; col.name = name; await col.saveTx(); }
+      const cols = Zotero.Collections.getByLibrary(libID, true, false) || [];
+      col = cols.find((c) => c.name === name) || null;
+    } catch (e) {
+      return { item, collection: null, colError: String((e && e.message) || e) };
+    }
+    try {
+      if (!col) {
+        col = new Zotero.Collection();
+        col.libraryID = libID;
+        col.name = name;
+        await col.saveTx();
+      }
       await col.addItem(item.id);
       return { item, collection: col };
     } catch (e) {
-      return { item, collection: null };
+      return { item, collection: null, colError: String((e && e.message) || e) };
     }
   },
 

@@ -596,17 +596,26 @@ var MCP = {
   },
 
   async _toolListCollections() {
-    let cols = [];
-    try { cols = Zotero.Libraries.userLibrary.getCollections() || []; } catch (e) { cols = []; }
-    if (!cols.length) return this._text("库中还没有任何分类。");
+    // ⚠️ 真机验证抓到的 bug：`Zotero.Library` 上**没有** `getCollections()`，
+    // 之前调用它抛 TypeError 又被 try/catch 吞掉 → 回落到空数组 →
+    // 对外报告「库中还没有任何分类」这个**看起来合理的错答案**。
+    // 正确 API = `Zotero.Collections.getByLibrary(libraryID, recursive, includeTrashed)`。
+    // 纪律：拿不到就明确报错，绝不把「接口失败」伪装成「没有数据」。
+    let cols;
+    try {
+      cols = Zotero.Collections.getByLibrary(Zotero.Libraries.userLibraryID, true, false) || [];
+    } catch (e) {
+      return this._text("读取分类失败（Zotero API 不可用）：" + String((e && e.message) || e), true);
+    }
+    if (!cols.length) return this._text("库中确实还没有任何分类（已成功查询，返回 0 条）。");
     const byID = new Map(cols.map((c) => [c.id, c]));
     const lines = ["共 " + cols.length + " 个分类：", ""];
     for (const c of cols) {
       let parent = "";
       try { parent = c.parentID && byID.get(c.parentID) ? byID.get(c.parentID).name + " / " : ""; } catch (e) { /* ignore */ }
       let n = 0;
-      try { n = (c.getChildItems() || []).length; } catch (e) { n = 0; }
-      lines.push("- [" + c.id + "] " + parent + c.name + "（" + n + " 条）");
+      try { n = (c.getChildItems(true) || []).length; } catch (e) { n = -1; }
+      lines.push("- [" + c.id + "] " + parent + c.name + "（" + (n < 0 ? "条数未知" : n + " 条") + "）");
     }
     return this._text(lines.join("\n"));
   },
@@ -660,7 +669,7 @@ var MCP = {
       if (it) items.push(it);
     }
     items.sort((x, y) => String(y.dateAdded || "").localeCompare(String(x.dateAdded || "")));
-    const lines = ["最近加入（" + Math.min(limit, items.length) + " / " + items.length + "）：", ""];
+    const lines = ["最近加入（显示 " + Math.min(limit, items.length) + " 条，共检索到 " + ids.length + " 条常规条目）：", ""];
     items.slice(0, limit).forEach((it, i) => {
       const b = this.brief(it);
       lines.push((i + 1) + ". [" + b.key + "] " + (b.title || "(无标题)") + " — " + (b.creators || "-") + " (" + (b.year || "-") + ") ｜ 加入：" + String(it.dateAdded || "").slice(0, 10));

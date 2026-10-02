@@ -105,8 +105,13 @@
       try {
         const r = await D.collect(e);
         bAdd.textContent = zh ? "✓ 已收藏" : "✓ done";
-        setStatus((zh ? "已收藏：" : "Collected: ") + (e.title || "").slice(0, 50) +
-          (r && r.collection ? (zh ? "（已加入分类「" : " (added to \"") + r.collection.name + (zh ? "」）" : "\")") : ""));
+        if (r && r.collection) {
+          setStatus((zh ? "已收藏并加入分类「" : "Collected into \"") + r.collection.name + (zh ? "」：" : "\": ") + (e.title || "").slice(0, 50));
+        } else if (r && r.colError) {
+          setStatus((zh ? "条目已建，但加入分类失败：" : "Item created but adding to collection failed: ") + r.colError, true);
+        } else {
+          setStatus((zh ? "已收藏：" : "Collected: ") + (e.title || "").slice(0, 50));
+        }
       } catch (err) {
         bAdd.disabled = false;
         bAdd.textContent = zh ? "收藏到库" : "Collect";
