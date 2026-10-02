@@ -3,6 +3,8 @@
  * 0.14.0：配置改由「AI 模型通道」体系提供（Channels.getActiveConfig），
  * 官方通道需登录账号（未登录给出明确指引）；通道 extraBody 并入请求；
  * 官方通道 401 自动失效会话并提醒重新登录。Channels 缺位时兜底旧 pref。
+ * 0.15.1：官方通道调用成功 → Account.touchSession() 本地滑动续期（30 天，
+ * 与服务端网关续期对齐）；仅 401 清会话，403（WAF/反代拦截）不清。
  */
 /* global Zotero, Prefs, Channels, Account, fetch, AbortController, TextDecoder, setTimeout, clearTimeout */
 
@@ -54,13 +56,22 @@ var AIClient = {
     return new Error("官方模型需要登录：请在 设置 → PaperPilot 登录账号（登录后免费使用），或在「AI 模型通道」中配置自己的接口");
   },
 
-  /** 官方通道鉴权失败：异步失效会话 + 弹窗，不阻塞当前错误返回 */
+  /** 官方通道鉴权失败：异步失效会话 + 弹窗，不阻塞当前错误返回。
+   *  0.15.1：仅 401（令牌确实无效）触发；403 多为 WAF/反代拦截，不清会话 */
   _maybeAuthFailure(status) {
-    if (status !== 401 && status !== 403) return;
+    if (status !== 401) return;
     if (typeof Account === "undefined" || !Account) return;
     try {
       Account.handleAuthFailure("官方模型请求被拒绝（HTTP " + status + "）").catch(() => {});
     } catch (e) { /* ignore */ }
+  },
+
+  /** 官方通道调用成功（0.15.1）：本地会话滑动续期，与服务端网关续期对齐 */
+  _touchOfficialSession(cfg) {
+    if (!cfg || cfg.channelId !== "official") return;
+    try {
+      if (typeof Account !== "undefined" && Account && Account.touchSession) Account.touchSession();
+    } catch (e) { /* 续期失败不影响 AI 调用 */ }
   },
 
   _endpoint(cfg) {
@@ -107,6 +118,7 @@ var AIClient = {
       ? data.choices[0].message.content
       : "";
     if (!content) throw new Error("AI 返回内容为空");
+    this._touchOfficialSession(cfg);
     return content;
   },
 
@@ -233,6 +245,7 @@ var AIClient = {
         }
       }
       if (!full) throw new Error("AI 返回内容为空");
+      this._touchOfficialSession(cfg);
       return full;
     } catch (e) {
       clearTimers();

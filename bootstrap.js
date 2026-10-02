@@ -111,13 +111,10 @@ function install(data, reason) {
 }
 
 function uninstall(data, reason) {
-  _ppDiag("uninstall reason=" + reason);
-  // 0.14.0：彻底卸载时清除账号会话文件（含登录令牌，数据目录下 paperpilot-account.json）
-  try {
-    var d = Zotero.DataDirectory && Zotero.DataDirectory.dir;
-    if (d) {
-      var f = PathUtils.join(d, "paperpilot-account.json");
-      IOUtils.remove(f, { ignoreAbsent: true }).catch(function () { /* ignore */ });
-    }
-  } catch (e) { /* ignore */ }
+  // 0.15.1：不再删除账号会话文件（数据目录 paperpilot-account.json）。
+  // 此前版本在卸载钩子里删文件，而更新/重装路径可能触发 uninstall（平台实现差异，
+  // 手工重装 xpi 测试亦必经）——用户登录态被直接物理清除，表现为「每次更新都要重新登录」。
+  // 留置风险可忽略：文件 0600、令牌服务端仅存散列、30 天滑动过期、改密即吊销；
+  // 令牌真正失效时，插件会在下次校验（401）自动清理本地会话并提示重新登录。
+  _ppDiag("uninstall reason=" + reason + " (account session file kept by design)");
 }

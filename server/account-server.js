@@ -5,10 +5,15 @@
  *   POST /api/auth/register  {email,password,nickname} → {ok,user}（公开自助注册，固定 Free）
  *   POST /api/auth/login     {email,password} → {ok,token,expiresAt,user} | 401
  *   POST /api/auth/logout    Bearer → {ok:true}
- *   GET  /api/auth/me        Bearer → {ok,user,expiresAt}（滑动续期 7 天）
+ *   GET  /api/auth/me        Bearer → {ok,user,expiresAt}（滑动续期）
  *   GET  /v1/models          Bearer → OpenAI 格式
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
+ *
+ * 令牌生命周期（0.15.1 / 服务端 1.3.1，修「更新后被迫重新登录」）：
+ *   TTL 30 天（PP_TOKEN_TTL_MS 可覆盖，测试用）；/api/auth/me 与 /v1/* 网关调用
+ *   均滑动续期——用户只要在用（含仅用 AI 而不重启 Zotero 的场景）令牌就一直有效，
+ *   不再出现「距上次重启 >7 天，更新后首次校验 401 → 被登出」。
  *
  * 公网部署（Cloudflare Tunnel）：
  *   cloudflared 回源 http://localhost:8000，socket 恒为回环但带 CF-Connecting-IP 头。
@@ -79,7 +84,12 @@ const RESET_HTML = path.join(__dirname, 'public', 'reset.html');
   } catch (e) { log('pp.env load failed:', e.message); }
 })();
 
-const TOKEN_TTL_MS = 7 * 86400e3;       // 令牌 7 天，/me 滑动续期
+// 令牌 TTL：默认 30 天，滑动续期（/me 与 /v1/* 网关调用均续期）。
+// 0.14.x 的 7 天 + 仅 /me 续期曾导致：用户不重启 Zotero 超过 7 天后令牌悄然过期，
+// 下次启动（往往正是插件更新触发的重启）首次校验 401 → 客户端清会话 →「每次更新都要重新登录」。
+// PP_TOKEN_TTL_MS 可覆盖（毫秒），E2E 测试用短 TTL 实测续期行为。
+const TOKEN_TTL_MS = Number(process.env.PP_TOKEN_TTL_MS) > 0
+  ? Number(process.env.PP_TOKEN_TTL_MS) : 30 * 86400e3;
 const DEFAULT_DAILY_LIMIT = 100;
 const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
 const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
@@ -315,6 +325,24 @@ function touchToken(req) {
   const auth = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
   const rec = auth && (usersStore.data.tokens || {})[tokenKey(auth)];
   if (rec) rec.expiresAt = Date.now() + TOKEN_TTL_MS; // 滑动续期
+}
+
+/** 滑动续期（网关高频路径用）：内存即时续期，磁盘落盘按 30s 节流——
+ *  避免每次 AI 调用都重写 users.json（含密码散列，文件不小）。停机/崩溃兜底：
+ *  shutdown 时强制落盘；即便丢最后一次续期也只是提前一天过期，无安全影响。 */
+let _tokenSaveTimer = null;
+function touchTokenSoon(req) {
+  const auth = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  const rec = auth && (usersStore.data.tokens || {})[tokenKey(auth)];
+  if (!rec) return;
+  rec.expiresAt = Date.now() + TOKEN_TTL_MS;
+  if (!_tokenSaveTimer) {
+    _tokenSaveTimer = setTimeout(() => {
+      _tokenSaveTimer = null;
+      try { usersStore.save(); } catch (e) { log('token touch save failed:', e.message); }
+    }, 30e3);
+    if (typeof _tokenSaveTimer.unref === 'function') _tokenSaveTimer.unref();
+  }
 }
 
 const rateAttempts = new Map(); // key → [ts]
@@ -725,7 +753,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.3.0',
+        ok: true, service: 'paperpilot-account-server', version: '1.3.1',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -903,6 +931,9 @@ const server = http.createServer(async (req, res) => {
     if ((url === '/v1/models' || url === '/v1/chat/completions')) {
       const user = userByToken(req);
       if (!user) return json(res, 401, { ok: false, error: '登录已过期' });
+      // 0.15.1：网关调用滑动续期（节流落盘）——用户持续使用 AI 即保持登录有效，
+      // 不再依赖「重启 Zotero 触发 /me」这一个续期点
+      touchTokenSoon(req);
       if (method === 'GET' && url === '/v1/models') {
         return json(res, 200, { object: 'list', data: gatewayModels().map((id) => ({ id, object: 'model' })) });
       }
@@ -1083,9 +1114,13 @@ if (require.main === module) {
     log('PaperPilot account server listening on http://' + HOST + ':' + PORT);
     log('admin page: http://' + HOST + ':' + PORT + '/admin  (loopback only)');
     log('data dir :', DATA_DIR);
+    log('token ttl:', Math.round(TOKEN_TTL_MS / 3600e3) + 'h (sliding renewal on /me and /v1/*)');
   });
   const shutdown = (sig) => {
     log('shutdown (' + sig + ')');
+    // 兜底：把网关调用节流续期中尚未落盘的令牌有效期刷盘
+    if (_tokenSaveTimer) { clearTimeout(_tokenSaveTimer); _tokenSaveTimer = null; }
+    try { usersStore.save(); } catch (e) { log('shutdown save failed:', e.message); }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   };

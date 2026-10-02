@@ -28,6 +28,11 @@ var Account = {
   // 官方账号服务器（0.15.0 起内置固定，设置界面不提供服务器入口，不开放自建后台）
   SERVER_DEFAULT: "https://pp.xinglintools.top",
 
+  // 本地会话有效期（0.15.1）：与服务端 TOKEN_TTL 对齐（30 天滑动）。
+  // 登录/刷新以服务端 expiresAt 为准；官方网关调用成功后由 AIClient 调
+  // touchSession() 同步滑动，避免「服务端已续期、本地仍判过期」的错位登出。
+  SESSION_TTL_MS: 30 * 86400e3,
+
   /** 账号服务器根地址（无末尾斜杠）。网关 = server + /v1 */
   serverUrl() {
     return String(Prefs.get("accountServerUrl", this.SERVER_DEFAULT) || this.SERVER_DEFAULT)
@@ -203,6 +208,8 @@ var Account = {
   /**
    * 会话失效统一出口（AIClient 官方通道 401 / refreshUser 401 都走这里）：
    * 清会话 + 弹窗提醒 + 通知 UI。silent 时只清不弹（启动恢复阶段）。
+   * 0.15.1：仅 401 触发；403（Cloudflare/WAF 拦截等）不再视为会话失效——
+   * 令牌仍有效时被 403 误清曾导致"网络层拦一道就掉登录"。
    */
   async handleAuthFailure(reason, { silent } = {}) {
     if (!this._session) return;
@@ -218,6 +225,19 @@ var Account = {
         );
       } catch (e) { /* ignore */ }
     }
+  },
+
+  /**
+   * 本地会话滑动续期（0.15.1）：官方网关调用成功后由 AIClient 调用，
+   * 与服务端 touchTokenSoon 对齐（now + 30 天），并异步落盘。
+   * 防御：未登录 / 新有效期不比现存值更晚时不动。
+   */
+  touchSession() {
+    if (!this._session) return;
+    const exp = Date.now() + this.SESSION_TTL_MS;
+    if (exp <= (this._session.expiresAt || 0)) return;
+    this._session.expiresAt = exp;
+    this._save();
   },
 
   /* ---------- UI 刷新回调（设置面板注册；窗口关闭必须注销） ---------- */
@@ -283,7 +303,9 @@ var Account = {
       return err;
     }
     if (status === 401 || status === 403) {
-      // 优先透传服务端文案（邮箱未验证 / 登录已过期等），无 body 再用本地兜底
+      // 优先透传服务端文案（邮箱未验证 / 登录已过期等），无 body 再用本地兜底。
+      // 0.15.1：仅 401 标记 auth（触发会话清理）；403 多来自 WAF/反代拦截，
+      // 令牌未必失效，清会话会造成"被网络层误伤就掉登录"
       let serverMsg = "";
       try {
         const xhr = e.xmlhttp;
@@ -291,7 +313,7 @@ var Account = {
         if (rj && rj.error) serverMsg = rj.error;
       } catch (_) { /* ignore */ }
       const err = new Error(serverMsg || (status === 401 ? "邮箱或密码错误" : "无权限（HTTP 403）"));
-      err.auth = true;
+      err.auth = (status === 401);
       return err;
     }
     if (status === 429) {
