@@ -10,23 +10,31 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.0，插件 0.23.0；Free / Pro 两档，全部配置化）：
- *   GET  /api/plans                 公开 → {plans, priceOptions, pay}
- *   GET  /api/membership            Bearer → 当前会员（等级/到期/剩余天数/额度/历史）
+ * 会员域（服务端 1.4.3，插件 0.24.4；Free / Pro 两档 + 价格表，全部配置化）：
+ *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
+ *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
+ *   GET  /api/auth/me               Bearer → user 内附带 usage:{today,limit,last7,days[30]}
  *   POST /api/orders                Bearer {plan,months} → 下单（订单号+金额+收款信息）
  *   GET  /api/orders/:id            Bearer → 订单状态
  *   POST /api/orders/:id/claim      Bearer → 标记「我已完成支付」，等管理员核销
  *   POST /api/orders/:id/cancel     Bearer → 取消未支付订单
  *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
  * 会员管理（仅本机直连）：
- *   GET  /api/admin/membership      订单 + 激活码 + 套餐配置一览
- *   PUT  /api/admin/membership      改套餐额度 / 价格档位 / 收款信息（局部更新）
+ *   GET  /api/admin/membership      订单 + 激活码 + 套餐/价格表/收款配置一览
+ *   PUT  /api/admin/membership      改套餐额度 / 收款信息（局部更新；仍兼容旧的 priceOptions 写法）
+ *   GET  /api/admin/prices          价格表全量（含未生效/已过期/已停用）+ 计费周期预设
+ *   POST /api/admin/prices          新增价格条目 {plan, cycle, months, price, label,
+ *                                   effectiveFrom, effectiveTo, enabled, note}
+ *   PUT  /api/admin/prices/:id      改价格条目（局部更新，用于改价 / 定时生效 / 启停）
+ *   DELETE /api/admin/prices/:id    删除价格条目
  *   GET  /api/admin/orders          订单列表
  *   POST /api/admin/orders/:id/fulfill | /cancel   核销（自动开通）/ 取消
  *   GET|POST /api/admin/codes       激活码列表 / 批量生成
  *   DELETE /api/admin/codes/:id     作废未使用的激活码
  *   POST /api/admin/users/:id/membership           直接给用户开通/续期（叠加式）
- * 数据：server/data/membership.json（套餐 / 价格 / 收款 / 订单 / 激活码）
+ * 数据：server/data/membership.json（套餐 / 价格表 priceItems / 收款 / 订单 / 激活码）
+ * ★ 价格表 = 等级 × 计费周期 × 生效时段；同等级同月数的生效时段不允许重叠（写入校验），
+ *   因此「下单价」永远唯一。促销 = 给旧价填 effectiveTo，再新增一条同周期的促销价。
  *
  * 令牌生命周期（0.15.1 / 服务端 1.3.1，修「更新后被迫重新登录」）：
  *   TTL 30 天（PP_TOKEN_TTL_MS 可覆盖，测试用）；/api/auth/me 与 /v1/* 网关调用
@@ -68,6 +76,9 @@ const path = require('path');
 const { JsonStore } = require('./lib/store');
 const { PROVIDERS, providerOf, providersForClient } = require('./lib/presets');
 const membership = require('./lib/membership');
+const backup = require('./lib/backup');
+const alerts = require('./lib/alerts');
+const lockout = require('./lib/lockout');
 const mail = require('./lib/mail');
 
 /* ---------------- 配置 ---------------- */
@@ -109,8 +120,15 @@ const RESET_HTML = path.join(__dirname, 'public', 'reset.html');
 // PP_TOKEN_TTL_MS 可覆盖（毫秒），E2E 测试用短 TTL 实测续期行为。
 const TOKEN_TTL_MS = Number(process.env.PP_TOKEN_TTL_MS) > 0
   ? Number(process.env.PP_TOKEN_TTL_MS) : 30 * 86400e3;
-const LOGIN_WINDOW_MS = 60e3, LOGIN_MAX = 10;   // 登录限速（每 IP 每分钟）
-const REDEEM_MAX = 10;                   // 激活码兑换限速（每 IP 每分钟，防撞码）
+// 限速阈值均可通过环境变量覆盖（PP_*_MAX），既方便按需收紧，也让自动化测试
+// 不必为了绕开限速而拉长用例。账号级的锁定策略见 lib/lockout.js（与 IP 限速互补）。
+const LOGIN_WINDOW_MS = 60e3;            // 限速窗口
+function limitOf(envKey, dft) {
+  const n = Number(process.env[envKey]);
+  return Number.isFinite(n) && n > 0 ? n : dft;
+}
+const LOGIN_MAX = limitOf('PP_LOGIN_MAX', 10);     // 登录限速（每 IP 每分钟）
+const REDEEM_MAX = limitOf('PP_REDEEM_MAX', 10);   // 激活码兑换限速（每 IP 每分钟，防撞码）
 // 每日额度不再写死在这里：0.23.0 起由 membership.json 的套餐配置驱动
 // （membership.dailyLimitFor），管理员在用户级的 dailyLimit 覆盖优先级最高。
 const REG_MAX = 5;                       // 公开注册限速（每 IP 每分钟）
@@ -130,6 +148,8 @@ const channelsStore = new JsonStore(path.join(DATA_DIR, 'channels.json'), { chan
 const membershipStore = new JsonStore(path.join(DATA_DIR, 'membership.json'), membership.newDoc());
 membershipStore.data = membership.normalize(membershipStore.data);
 membershipStore.save();
+// 1.4.2 订单积压告警状态（重启不丢，避免重复轰炸）
+const alertStore = new JsonStore(path.join(DATA_DIR, 'alerts.json'), {});
 
 /* ---------------- 工具 ---------------- */
 
@@ -149,6 +169,70 @@ function uid(prefix) { return prefix + '-' + crypto.randomBytes(6).toString('hex
 function today() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+/* ---------------- 用量（近 30 天按日趋势，1.4.3） ----------------
+ * 旧结构只有 { date, count }（当日计数，跨天即清零），用户看不到趋势、
+ * 也无法判断"这个月用了多少"。这里**在不破坏旧字段的前提下**增加
+ * usage.daily = { 'YYYY-MM-DD': count }，只留最近 30 天。
+ * 旧数据（只有 date/count）由 usageDays() 现场兼容，无需迁移。
+ */
+
+/** 本地时区的 YYYY-MM-DD（与 today() 同口径，避免 UTC 偏移导致跨天错位） */
+function isoDay(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+const USAGE_KEEP_DAYS = 30;
+
+/** 丢弃 keepDays 之前的按日记录（字符串比较即可，YYYY-MM-DD 天然有序） */
+function pruneUsageDaily(daily, refDay, keepDays) {
+  if (!daily || typeof daily !== 'object') return daily;
+  const n = Number(keepDays) > 0 ? Number(keepDays) : USAGE_KEEP_DAYS;
+  const refMs = Date.parse((refDay || today()) + 'T00:00:00');
+  if (Number.isNaN(refMs)) return daily;
+  const cutoff = isoDay(refMs - (n - 1) * 86400e3);
+  for (const k of Object.keys(daily)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || k < cutoff) delete daily[k];
+  }
+  return daily;
+}
+
+/**
+ * 记一次用量。dayKey 可注入（单测用），默认今天。
+ * 同时维护 { date, count }（旧契约）与 { daily }（新趋势）。
+ */
+function bumpUsage(user, dayKey) {
+  const d = dayKey || today();
+  if (!user.usage || typeof user.usage !== 'object') user.usage = {};
+  if (!user.usage.daily || typeof user.usage.daily !== 'object') user.usage.daily = {};
+  if (user.usage.date !== d) { user.usage.date = d; user.usage.count = 0; }
+  user.usage.count = (Number(user.usage.count) || 0) + 1;
+  user.usage.daily[d] = (Number(user.usage.daily[d]) || 0) + 1;
+  pruneUsageDaily(user.usage.daily, d);
+  return user.usage;
+}
+
+/**
+ * 取最近 n 天（含当天）的按日用量，缺日补 0 —— 前端画图直接可用。
+ * 无 daily 的旧账号：把 { date, count } 当作那一天的值，其余为 0。
+ */
+function usageDays(user, days, endDay) {
+  const n = Math.max(1, Math.min(90, Number(days) || USAGE_KEEP_DAYS));
+  const u = (user && user.usage) || {};
+  const daily = (u.daily && typeof u.daily === 'object') ? u.daily : {};
+  const end = endDay || today();
+  const endMs = Date.parse(end + 'T00:00:00');
+  const base = Number.isNaN(endMs) ? Date.now() : endMs;
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const key = isoDay(base - i * 86400e3);
+    let c = Number(daily[key]) || 0;
+    if (!c && u.date === key) c = Number(u.count) || 0;   // 旧数据兜底
+    out.push({ date: key, count: c });
+  }
+  return out;
 }
 
 function hashPassword(password, salt) {
@@ -291,6 +375,13 @@ function userForClient(user) {
     dailyLimit: dailyLimitOf(user),
     status: user.status === 'pending' ? 'pending' : 'active',
     membership: membership.membershipOf(membershipStore.data, user),
+    // 1.4.3 用量趋势（近 30 天按日；days 供前端画图，last7 为近 7 天合计）
+    usage: {
+      today: dailyUsedOf(user),
+      limit: dailyLimitOf(user),
+      last7: usageDays(user, 7).reduce((s, d) => s + d.count, 0),
+      days: usageDays(user, USAGE_KEEP_DAYS),
+    },
   };
   if (user.expiresAt) out.expiresAt = user.expiresAt; // 套餐有效期（可缺省）
   return out;
@@ -388,7 +479,7 @@ function rateThrottled(key, max, windowMs) {
 }
 
 function countUsage(user) {
-  user.usage = { date: today(), count: dailyUsedOf(user) + 1 };
+  bumpUsage(user);
   usersStore.save();
 }
 
@@ -695,7 +786,156 @@ function gatewayChat(req, res, user) {
   });
 }
 
-/* ---------------- 管理域（用户） ---------------- */
+/* ---------------- 快照 / 告警 / 风控（1.4.2 运维三件套） ---------------- */
+
+const PUBLIC_URL_FALLBACK = 'https://pp.xinglintools.top';
+
+function publicUrl() {
+  return String(process.env.PP_PUBLIC_URL || PUBLIC_URL_FALLBACK).replace(/\/+$/, '');
+}
+
+/**
+ * 告警收件人：PP_ALERT_EMAIL（逗号分隔可多个）。
+ * 不配置也能跑——只是退化为「只写 alerts.log」，后台会明确提示怎么开。
+ * 刻意不默认取 PP_MAIL_FROM（那通常是 noreply，发过去没人看）。
+ */
+function alertRecipients() {
+  return String(process.env.PP_ALERT_EMAIL || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function alertLogPath() { return path.join(DATA_DIR, 'alerts.log'); }
+
+/** alerts.log 追加（保留最后 2000 行，防止无限增长） */
+function appendAlertLog(line) {
+  const p = alertLogPath();
+  let text = '';
+  try { text = fs.readFileSync(p, 'utf8'); } catch (e) { /* 首次写 */ }
+  let lines = (text + line + '\n').split('\n');
+  if (lines.length > 2000) lines = lines.slice(lines.length - 2000);
+  fs.writeFileSync(p, lines.join('\n'), 'utf8');
+}
+
+/** alerts.log 尾部若干行（后台直接展示，不用去翻文件） */
+function readAlertLogTail(n) {
+  try {
+    const lines = fs.readFileSync(alertLogPath(), 'utf8').split('\n').filter(Boolean);
+    return lines.slice(-(n || 20));
+  } catch (e) { return []; }
+}
+
+/**
+ * 改动前打快照。**失败绝不影响主流程**——它是保险，不是前置条件。
+ * 同 reason 在节流窗口内只留第一份（保住「这一串改动开始前」的状态）。
+ */
+function snapshot(reason, opts) {
+  try {
+    const r = backup.snapshot(DATA_DIR, reason, opts);
+    if (!r.skipped) log('snapshot:', r.snapshot.id, '(' + r.snapshot.files.length + ' files)');
+    return r;
+  } catch (e) {
+    log('snapshot FAILED (' + reason + '):', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+/** 回滚后把内存 store 换成磁盘内容（否则会继续用回滚前的旧数据对外服务） */
+function reloadStores() {
+  const before = { users: usersStore.data.users.length, orders: membershipStore.data.orders.length };
+  usersStore.reload();
+  channelsStore.reload();
+  membershipStore.reload();
+  membershipStore.data = membership.normalize(membershipStore.data);
+  return {
+    before,
+    after: { users: usersStore.data.users.length, orders: membershipStore.data.orders.length },
+  };
+}
+
+/** 当前积压视图 */
+function backlogNow(now) {
+  return alerts.backlogOf(membershipStore.data, { now });
+}
+
+/**
+ * 巡检一次积压，必要时告警（写 alerts.log + 发邮件）。
+ * force=true 忽略去重直接告警（后台「立即测试」用）；dryRun=true 只算不发。
+ */
+async function runAlertCheck({ now, force, dryRun } = {}) {
+  const t = now || Date.now();
+  const bl = backlogNow(t);
+  const state = (alertStore.data && typeof alertStore.data === 'object') ? alertStore.data : {};
+  const need = force ? (bl.count > 0 && bl.over) : alerts.shouldAlert(state, bl, { now: t });
+  const view = alerts.view(state, bl);
+  if (!need) return { backlog: view, alerted: false, mailed: false };
+
+  const line = alerts.logLine(bl) + ' at=' + new Date(t).toISOString();
+  try { appendAlertLog(line); } catch (e) { log('alert log failed:', e.message); }
+  log('ALERT', line);
+
+  let mailed = false;
+  let mailError = '';
+  const to = alertRecipients();
+  if (!dryRun && to.length && mail.configured()) {
+    try {
+      const m = alerts.buildMail(bl, { serverUrl: publicUrl() });
+      const r = await mail.send({ subject: m.subject, text: m.text, to: to.join(',') });
+      mailed = !!r.ok;
+      if (!r.ok) mailError = r.error || '发送失败';
+    } catch (e) { mailError = e.message; }
+  } else if (to.length && !mail.configured()) {
+    mailError = '邮件服务未配置（PP_RESEND_KEY）';
+  } else if (!to.length) {
+    mailError = '未配置收件人（PP_ALERT_EMAIL）';
+  }
+
+  alertStore.data = alerts.record(state, bl, { mailed, now: t });
+  try { alertStore.save(); } catch (e) { log('alert state save failed:', e.message); }
+  return {
+    backlog: alerts.view(alertStore.data, bl), alerted: true, mailed, mailError,
+    logPath: alertLogPath(),
+  };
+}
+
+/** 后台展示用的告警配置与状态 */
+function alertStatus() {
+  const bl = backlogNow();
+  return Object.assign(alerts.view(alertStore.data, bl), {
+    mailConfigured: mail.configured(),
+    recipients: alertRecipients(),
+    logPath: 'server/data/alerts.log',
+    hint: alertRecipients().length
+      ? ''
+      : '邮件告警未启用：在 server/data/pp.env 里加一行 PP_ALERT_EMAIL=你的邮箱 即可（支持逗号分隔多个）；不配则只写 alerts.log。',
+  });
+}
+
+/* ---------------- 后台任务（订单积压巡检） ---------------- */
+
+let _alertTimer = null;
+const ALERT_INTERVAL_MS = Number(process.env.PP_ALERT_INTERVAL_MS) > 0
+  ? Number(process.env.PP_ALERT_INTERVAL_MS) : 5 * 60e3;
+
+/**
+ * 启动周期任务：每 ALERT_INTERVAL_MS（默认 5 分钟）巡检一次待核销积压。
+ * 放在函数里而不是模块顶层 —— 测试 require 本模块时不该凭空多出定时器。
+ */
+function startBackgroundJobs({ intervalMs } = {}) {
+  if (_alertTimer) return _alertTimer;
+  const ms = Number(intervalMs) > 0 ? Number(intervalMs) : ALERT_INTERVAL_MS;
+  _alertTimer = setInterval(() => {
+    runAlertCheck().catch((e) => log('alert check failed:', e.message));
+  }, ms);
+  if (_alertTimer.unref) _alertTimer.unref();
+  log('background jobs started: 订单积压巡检每 ' + Math.round(ms / 60000) + ' 分钟一次');
+  return _alertTimer;
+}
+
+function stopBackgroundJobs() {
+  if (_alertTimer) { clearInterval(_alertTimer); _alertTimer = null; }
+}
+
+/* ---------------- 用户管理（管理域） ---------------- */
 
 /**
  * 管理端直接改 plan / expiresAt 时同步会员对象（0.23.0）。
@@ -719,14 +959,42 @@ function syncMembershipFromLegacy(user) {
 }
 
 function userAdminOut(u) {
+  const lock = lockout.status(u);
   return {
     id: u.id, email: u.email, nickname: u.nickname || '', plan: planEffective(u),
     planRaw: u.plan || 'Free', expiresAt: u.expiresAt || null,
     dailyLimit: dailyLimitOf(u), dailyUsed: dailyUsedOf(u),
     membership: membership.membershipOf(membershipStore.data, u),
+    // 1.4.3 用量趋势（后台用户列表 / CSV 导出用）
+    usage7: usageDays(u, 7).reduce((s, d) => s + d.count, 0),
+    usage30: usageDays(u, USAGE_KEEP_DAYS).reduce((s, d) => s + d.count, 0),
+    usageDaily: usageDays(u, USAGE_KEEP_DAYS),
     status: u.status === 'pending' ? 'pending' : 'active',
     createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null,
+    // 1.4.2 风控状态：后台用户列表据此显示「已锁定 / 近失败 N 次」
+    locked: lock.locked,
+    lockUntil: lock.lockUntil,
+    lockRemainMinutes: lock.remainMinutes,
+    failCount: lock.failCount,
+    lastFailAt: lock.lastFailAt,
+    lastFailIp: lock.lastFailIp,
   };
+}
+
+/**
+ * 管理端激活码展示：把 userId 回查成邮箱。
+ * 只给后台用的接口加，客户端契约（codeOut）保持不含任何用户标识。
+ */
+function adminCodeOut(c) {
+  const out = membership.codeOut(c);
+  const mail = (id) => {
+    if (!id) return null;
+    const u = findUserById(id);
+    return u ? u.email : String(id);
+  };
+  out.usedByEmail = mail(c.usedBy);
+  out.boundToEmail = mail(c.boundTo);
+  return out;
 }
 
 async function adminCreateUser(input) {
@@ -790,6 +1058,11 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
+    // 浏览器自动请求的站点图标：回 204，避免各公开页控制台出现无意义的 404
+    if (method === 'GET' && (url === '/favicon.ico' || url === '/favicon.png')) {
+      res.writeHead(204, { 'Cache-Control': 'public, max-age=86400' });
+      return res.end();
+    }
     // 公开自助注册页（插件「注册账号」链接指向这里；本机/公网均可访问）
     if (method === 'GET' && url === '/register') {
       let html;
@@ -810,7 +1083,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.0',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.3',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -822,6 +1095,15 @@ const server = http.createServer(async (req, res) => {
         orders: membershipStore.data.orders.length,
         ordersAwaitingReview: membershipStore.data.orders.filter((o) => o.status === 'claimed').length,
         codesUnused: membershipStore.data.codes.filter((c) => !c.usedAt).length,
+        // 1.4.1 价格表
+        priceActive: membershipStore.data.priceItems.filter((i) => membership.priceState(i) === 'active').length,
+        priceScheduled: membershipStore.data.priceItems.filter((i) => membership.priceState(i) === 'scheduled').length,
+        // 1.4.2 运维观测：订单积压 + 快照
+        backlogCount: backlogNow().count,
+        backlogOldestMinutes: backlogNow().oldestMinutes,
+        backlogOverdue: backlogNow().over,
+        snapshots: backup.list(DATA_DIR).length,
+        lastSnapshotAt: (backup.latest(DATA_DIR) || {}).at || null,
       });
     }
 
@@ -950,13 +1232,37 @@ const server = http.createServer(async (req, res) => {
       let input;
       try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
       const user = findUserByEmail(input.email || '');
-      if (!user || !verifyPassword(user, String(input.password || ''))) {
-        return json(res, 401, { ok: false, error: '邮箱或密码错误' });
+
+      // 账号级风控（1.4.2）：锁定期内**即使密码正确也拒绝**，否则锁定形同虚设
+      if (user) {
+        const st = lockout.status(user);
+        if (st.locked) {
+          log('login blocked (locked):', user.email, 'remain=' + st.remainMinutes + 'min', 'ip=' + ip);
+          return json(res, 403, { ok: false, code: 'account_locked',
+            lockUntil: st.lockUntil, remainMinutes: st.remainMinutes,
+            error: lockout.lockedMessage(st) });
+        }
+      }
+
+      const passOk = !!user && verifyPassword(user, String(input.password || ''));
+      if (!passOk) {
+        // 邮箱不存在时没有对象可写 —— 由 IP 限速兜底；应答文案与密码错误完全一致，不泄漏账号是否存在
+        if (user) {
+          const st = lockout.registerFailure(user, { ip });
+          usersStore.save();
+          if (st.locked) {
+            log('account locked:', user.email, 'failCount=' + st.failCount, 'ip=' + ip);
+          } else {
+            log('login failed:', user.email, 'failCount=' + st.failCount, 'ip=' + ip);
+          }
+        }
+        return json(res, 401, { ok: false, error: lockout.GENERIC_FAIL });
       }
       if (user.status === 'pending') {
         return json(res, 403, { ok: false, code: 'email_unverified',
           error: '邮箱未验证：请查收验证邮件并点击激活链接；未收到可在注册页点「重新发送」' });
       }
+      lockout.reset(user);            // 登录成功清零失败计数与锁定
       const token = issueToken(user.id);
       user.lastLoginAt = new Date().toISOString();
       pruneTokens();
@@ -1003,7 +1309,9 @@ const server = http.createServer(async (req, res) => {
       touchTokenSoon(req);
 
       if (method === 'GET' && url === '/api/membership') {
-        return json(res, 200, { ok: true, membership: membership.membershipOf(membershipStore.data, user) });
+        return json(res, 200, { ok: true,
+          membership: membership.membershipOf(membershipStore.data, user),
+          user: userForClient(user) });
       }
 
       // 激活码兑换：绑定当前账号 + 叠加续期，一步到位
@@ -1013,6 +1321,7 @@ const server = http.createServer(async (req, res) => {
         }
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        snapshot('membership-change', { note: '激活码兑换：' + user.email });
         const r = membership.redeem(membershipStore.data, input.code, user);
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
@@ -1088,6 +1397,7 @@ const server = http.createServer(async (req, res) => {
         if (method === 'POST') {
           let input;
           try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+          snapshot('users-change', { note: '新建用户：' + String(input && input.email || '') });
           const r = await adminCreateUser(input);
           return r.error ? json(res, 400, { ok: false, error: r.error }) : json(res, 200, { ok: true, user: r.user });
         }
@@ -1098,12 +1408,14 @@ const server = http.createServer(async (req, res) => {
         if (method === 'PUT') {
           let input;
           try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+          snapshot('users-change', { note: '修改用户：' + id });
           const r = adminUpdateUser(id, input);
           return r.error ? json(res, 404, { ok: false, error: r.error }) : json(res, 200, { ok: true, user: r.user });
         }
         if (method === 'DELETE') {
           const idx = usersStore.data.users.findIndex((u) => u.id === id);
           if (idx < 0) return json(res, 404, { ok: false, error: '用户不存在' });
+          snapshot('users-change', { note: '删除用户：' + usersStore.data.users[idx].email });
           log('user deleted:', usersStore.data.users[idx].email);
           usersStore.data.users.splice(idx, 1);
           for (const [tok, rec] of Object.entries(usersStore.data.tokens || {})) {
@@ -1120,15 +1432,29 @@ const server = http.createServer(async (req, res) => {
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
         if (String(input.password || '').length < 8) return json(res, 400, { ok: false, error: '密码至少 8 位' });
+        snapshot('users-change', { note: '重置密码：' + user.email });
         user.salt = crypto.randomBytes(16).toString('hex');
         user.hash = hashPassword(input.password, user.salt);
-        // 重置密码 = 吊销该用户全部既有令牌
+        // 重置密码 = 吊销该用户全部既有令牌 + 顺带解除登录锁定（管理员介入即视为人工放行）
         for (const [tok, rec] of Object.entries(usersStore.data.tokens || {})) {
           if (rec && rec.userId === user.id) delete usersStore.data.tokens[tok];
         }
+        lockout.reset(user);
         usersStore.save();
         log('password reset:', user.email);
         return json(res, 200, { ok: true });
+      }
+      // 1.4.2：一键解锁（连续失败被临时锁定的账号）
+      m = url.match(/^\/api\/admin\/users\/([a-zA-Z0-9-]+)\/unlock$/);
+      if (m && method === 'POST') {
+        const user = findUserById(m[1]);
+        if (!user) return json(res, 404, { ok: false, error: '用户不存在' });
+        const st = lockout.status(user);
+        lockout.unlock(user);
+        usersStore.save();
+        log('account unlocked:', user.email, '(was failCount=' + st.failCount + ')');
+        return json(res, 200, { ok: true, user: userAdminOut(user),
+          note: st.locked ? '已解除锁定' : '该账号当前未被锁定（已顺带清零失败计数）' });
       }
 
       /* 通道管理 */
@@ -1238,24 +1564,104 @@ const server = http.createServer(async (req, res) => {
         const orders = membershipStore.data.orders.slice().reverse()
           .map((o) => Object.assign(membership.orderOut(membershipStore.data, o),
             { userId: o.userId, email: o.email }));
-        const codes = membershipStore.data.codes.slice().reverse().map(membership.codeOut);
+        const codes = membershipStore.data.codes.slice().reverse().map((c) => adminCodeOut(c));
         return json(res, 200, {
           ok: true, orders, codes,
           plans: membership.plansForClient(membershipStore.data),
+          priceItems: membershipStore.data.priceItems.map((i) => membership.priceItemOut(membershipStore.data, i)),
+          cycles: membership.CYCLE_PRESETS,
           counts: {
             orders: orders.length,
             awaitingReview: orders.filter((o) => o.status === 'claimed').length,
             fulfilled: orders.filter((o) => o.status === 'fulfilled').length,
             codesUnused: codes.filter((c) => c.status === 'unused').length,
             codesUsed: codes.filter((c) => c.status === 'used').length,
+            priceActive: membershipStore.data.priceItems
+              .filter((i) => membership.priceState(i) === 'active').length,
+            priceScheduled: membershipStore.data.priceItems
+              .filter((i) => membership.priceState(i) === 'scheduled').length,
           },
         });
       }
 
-      /** 改套餐配置 / 价格档位 / 收款信息（局部更新，未提交的字段保持原值） */
+      /* ---- 价格表 CRUD（1.4.1：等级 × 计费周期 × 生效时段） ---- */
+
+      /** 全部价格条目（含未生效 / 已过期 / 已停用），供后台列表 */
+      if (url === '/api/admin/prices' && method === 'GET') {
+        const doc = membershipStore.data;
+        return json(res, 200, {
+          ok: true,
+          items: doc.priceItems
+            .slice()
+            .sort((a, b) => (a.plan === b.plan ? a.months - b.months : a.plan < b.plan ? -1 : 1))
+            .map((i) => membership.priceItemOut(doc, i)),
+          cycles: membership.CYCLE_PRESETS,
+          plans: Object.values(doc.plans)
+            .filter((p) => p.id !== 'Free')
+            .map((p) => ({ id: p.id, name: p.name })),
+          states: membership.PRICE_STATE_TEXT,
+        });
+      }
+
+      /** 新增价格条目 */
+      if (url === '/api/admin/prices' && method === 'POST') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        snapshot('membership-change', { note: '新增价格条目' });
+        const r = membership.upsertPriceItem(membershipStore.data, input);
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('price item created:', r.item.plan, r.item.months + 'm', '¥' + r.item.price);
+        return json(res, 200, { ok: true, warn: r.warn || '',
+          item: membership.priceItemOut(membershipStore.data, r.item),
+          plans: membership.plansForClient(membershipStore.data) });
+      }
+
+      /** 修改 / 启停价格条目（局部更新：未提交字段保持原值） */
+      let pm = url.match(/^\/api\/admin\/prices\/([a-zA-Z0-9-]+)$/);
+      if (pm && (method === 'PUT' || method === 'DELETE')) {
+        const doc = membershipStore.data;
+        const cur = doc.priceItems.find((i) => i && i.id === pm[1]);
+        if (!cur) return json(res, 404, { ok: false, error: '价格条目不存在' });
+        snapshot('membership-change', { note: (method === 'DELETE' ? '删除价格条目 ' : '修改价格条目 ') + pm[1] });
+        if (method === 'DELETE') {
+          const r = membership.removePriceItem(doc, pm[1]);
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          membershipStore.save();
+          log('price item deleted:', pm[1], r.item.plan, r.item.months + 'm');
+          return json(res, 200, { ok: true, plans: membership.plansForClient(doc) });
+        }
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        // 局部更新：只覆盖显式提交的字段，其余沿用现值
+        // ⚠️ 新增字段必须同步加进这里，否则「只改 enabled」之类的局部更新会把该字段抹掉
+        const merged = {
+          id: cur.id, plan: input.plan !== undefined ? input.plan : cur.plan,
+          months: input.months !== undefined ? input.months : cur.months,
+          price: input.price !== undefined ? input.price : cur.price,
+          label: input.label !== undefined ? input.label : cur.label,
+          cycle: input.cycle !== undefined ? input.cycle : cur.cycle,
+          effectiveFrom: input.effectiveFrom !== undefined ? input.effectiveFrom : cur.effectiveFrom,
+          effectiveTo: input.effectiveTo !== undefined ? input.effectiveTo : cur.effectiveTo,
+          enabled: input.enabled !== undefined ? input.enabled : cur.enabled,
+          priority: input.priority !== undefined ? input.priority : cur.priority,
+          note: input.note !== undefined ? input.note : cur.note,
+          createdAt: cur.createdAt,
+        };
+        const r = membership.upsertPriceItem(doc, merged);
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('price item updated:', r.item.id, r.item.plan, r.item.months + 'm', '¥' + r.item.price);
+        return json(res, 200, { ok: true, warn: r.warn || '',
+          item: membership.priceItemOut(doc, r.item),
+          plans: membership.plansForClient(doc) });
+      }
+
+      /** 改套餐配置 / 收款信息（局部更新，未提交的字段保持原值） */
       if (url === '/api/admin/membership' && method === 'PUT') {
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        snapshot('membership-change', { note: '改套餐额度/收款配置' });
         const doc = membershipStore.data;
         if (input.plans && typeof input.plans === 'object') {
           for (const [pid, p] of Object.entries(input.plans)) {
@@ -1269,21 +1675,32 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-        if (input.priceOptions && typeof input.priceOptions === 'object') {
-          for (const [pid, list] of Object.entries(input.priceOptions)) {
-            if (!Array.isArray(list)) continue;
-            doc.priceOptions[pid] = list.slice(0, 10).map((o) => ({
-              months: membership.clampMonths(o && o.months),
-              price: Math.max(0, Number(o && o.price) || 0),
-              label: String((o && o.label) || '').slice(0, 40),
-            }));
-          }
-        }
         if (input.pay && typeof input.pay === 'object') {
           if (input.pay.channel !== undefined) doc.pay.channel = String(input.pay.channel).slice(0, 20);
           if (input.pay.qrImage !== undefined) doc.pay.qrImage = String(input.pay.qrImage).slice(0, 500);
           if (input.pay.qrText !== undefined) doc.pay.qrText = String(input.pay.qrText).slice(0, 500);
           if (input.pay.note !== undefined) doc.pay.note = String(input.pay.note).slice(0, 200);
+        }
+        // 兼容旧后台：提交 priceOptions（平铺档位）时，同步到对应价格条目
+        // —— 命中「同等级 + 同月数」的现有条目就改价，没有就新建一条立即生效的价格。
+        if (input.priceOptions && typeof input.priceOptions === 'object') {
+          for (const [pid, list] of Object.entries(input.priceOptions)) {
+            if (!Array.isArray(list)) continue;
+            for (const o of list) {
+              if (!o) continue;
+              const months = membership.clampMonths(o.months);
+              const price = Math.max(0, Number(o.price) || 0);
+              const exist = doc.priceItems.find((i) => i.plan === pid && i.months === months);
+              const r = membership.upsertPriceItem(doc, {
+                id: exist ? exist.id : null, plan: pid, months, price,
+                label: String(o.label || '').slice(0, 40),
+                effectiveFrom: exist ? exist.effectiveFrom : null,
+                effectiveTo: exist ? exist.effectiveTo : null,
+                enabled: true,
+              });
+              if (r.error) log('priceOptions 兼容写入失败:', pid, months, r.error);
+            }
+          }
         }
         membershipStore.save();
         log('membership config updated');
@@ -1310,6 +1727,7 @@ const server = http.createServer(async (req, res) => {
         if (m[2] === 'fulfill') {
           const user = findUserById(order.userId);
           if (!user) return json(res, 400, { ok: false, error: '下单账号已不存在（无法开通）' });
+          snapshot('orders-change', { note: '核销订单 ' + order.id });
           const r = membership.fulfillOrder(membershipStore.data, order, { by: 'admin' });
           if (r.error) return json(res, 400, { ok: false, error: r.error });
           // 核销即开通：直接给下单账号叠加续期（同时留档一枚已用兑换码）
@@ -1324,6 +1742,7 @@ const server = http.createServer(async (req, res) => {
             archiveCode: membership.codeOut(r.code), user: userAdminOut(user),
           });
         }
+        snapshot('orders-change', { note: '取消订单 ' + order.id });
         const r = membership.cancelOrder(membershipStore.data, order, { id: order.userId }, input.reason || '管理员取消');
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
@@ -1334,11 +1753,12 @@ const server = http.createServer(async (req, res) => {
       if (url === '/api/admin/codes') {
         if (method === 'GET') {
           return json(res, 200, { ok: true,
-            codes: membershipStore.data.codes.slice().reverse().map(membership.codeOut) });
+            codes: membershipStore.data.codes.slice().reverse().map((c) => adminCodeOut(c)) });
         }
         if (method === 'POST') {
           let input;
           try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+          snapshot('membership-change', { note: '生成激活码' });
           const r = membership.createCodes(membershipStore.data, {
             plan: input.plan, months: input.months, count: input.count,
             note: input.note, by: 'admin',
@@ -1370,6 +1790,7 @@ const server = http.createServer(async (req, res) => {
         if (!user) return json(res, 404, { ok: false, error: '用户不存在' });
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        snapshot('membership-change', { note: '管理员开通/续期：' + user.email });
         const mp = membership.grantMembership(membershipStore.data, user, {
           plan: input.plan || 'Pro', months: input.months || 1,
           source: 'admin', note: input.note || '',
@@ -1377,6 +1798,62 @@ const server = http.createServer(async (req, res) => {
         usersStore.save();
         log('membership granted by admin:', user.email, mp.plan, mp.expiresAt);
         return json(res, 200, { ok: true, membership: mp, user: userAdminOut(user) });
+      }
+
+      /* ---- 数据快照与一键回滚（1.4.2） ---- */
+
+      if (url === '/api/admin/backups' && method === 'GET') {
+        const items = backup.list(DATA_DIR);
+        return json(res, 200, { ok: true, items, policy: backup.policy(),
+          latest: items.length ? items[0].id : null });
+      }
+      if (url === '/api/admin/backups' && method === 'POST') {
+        let input = {};
+        try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
+        const r = backup.snapshot(DATA_DIR, 'manual', { note: input && input.note, force: true });
+        const pr = backup.prune(DATA_DIR);
+        log('manual snapshot:', r.snapshot && r.snapshot.id, 'pruned=' + pr.removed.length);
+        return json(res, 200, { ok: true, snapshot: r.snapshot, pruned: pr.removed });
+      }
+      let bm = url.match(/^\/api\/admin\/backups\/([A-Za-z0-9_-]+)(\/restore)?$/);
+      if (bm && method === 'DELETE' && !bm[2]) {
+        const snap = backup.find(DATA_DIR, bm[1]);
+        if (!snap) return json(res, 404, { ok: false, error: '快照不存在' });
+        fs.rmSync(path.join(backup.backupRoot(DATA_DIR), bm[1]), { recursive: true, force: true });
+        log('snapshot deleted:', bm[1]);
+        return json(res, 200, { ok: true });
+      }
+      if (bm && method === 'POST' && bm[2]) {
+        let input = {};
+        try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
+        // 二次确认：回滚会把全站数据退回旧状态，必须显式回填 RESTORE，杜绝误点
+        if (String((input && input.confirm) || '') !== 'RESTORE') {
+          return json(res, 400, { ok: false,
+            error: '回滚是不可逆操作：请在请求体里带上 {"confirm":"RESTORE"} 以确认' });
+        }
+        const r = backup.restore(DATA_DIR, bm[1], { note: input && input.note });
+        if (r.error) return json(res, 404, { ok: false, error: r.error });
+        if (r.mismatched && r.mismatched.length) {
+          log('RESTORE HASH MISMATCH:', r.mismatched.join(','));
+          return json(res, 500, { ok: false,
+            error: '回滚后校验失败：' + r.mismatched.join('、')
+              + '（已保留现场快照 ' + r.safety + '，请勿继续操作）', result: r });
+        }
+        const counts = reloadStores();
+        log('restored from:', bm[1], 'safety=' + r.safety, JSON.stringify(counts));
+        return json(res, 200, { ok: true, result: r, counts });
+      }
+
+      /* ---- 订单积压告警（1.4.2） ---- */
+
+      if (url === '/api/admin/alerts' && method === 'GET') {
+        return json(res, 200, { ok: true, alerts: alertStatus(), log: readAlertLogTail(40) });
+      }
+      if (url === '/api/admin/alerts/check' && method === 'POST') {
+        let input = {};
+        try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
+        const r = await runAlertCheck({ force: true, dryRun: !!(input && input.dryRun) });
+        return json(res, 200, { ok: true, result: r, alerts: alertStatus() });
       }
     }
 
@@ -1389,6 +1866,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  // 启动即打一份每日快照并清退过期快照（服务端原本是一份孤本，没有退路）
+  try {
+    const r = backup.snapshot(DATA_DIR, 'daily', { note: '服务启动快照' });
+    const pr = backup.prune(DATA_DIR);
+    log('startup snapshot:', (r.snapshot && r.snapshot.id) || ('skipped(' + r.skipped + ')'),
+      '| snapshots kept=' + pr.kept, 'pruned=' + pr.removed.length);
+  } catch (e) {
+    log('startup snapshot failed:', e.message);
+  }
+  startBackgroundJobs();
   server.listen(PORT, HOST, () => {
     log('PaperPilot account server listening on http://' + HOST + ':' + PORT);
     log('admin page: http://' + HOST + ':' + PORT + '/admin  (loopback only)');
@@ -1397,6 +1884,7 @@ if (require.main === module) {
   });
   const shutdown = (sig) => {
     log('shutdown (' + sig + ')');
+    stopBackgroundJobs();
     // 兜底：把网关调用节流续期中尚未落盘的令牌有效期刷盘
     if (_tokenSaveTimer) { clearTimeout(_tokenSaveTimer); _tokenSaveTimer = null; }
     try { usersStore.save(); } catch (e) { log('shutdown save failed:', e.message); }
@@ -1407,4 +1895,9 @@ if (require.main === module) {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-module.exports = { server, PORT };
+module.exports = {
+  server, PORT, DATA_DIR,
+  startBackgroundJobs, stopBackgroundJobs, runAlertCheck, alertStatus,
+  backlogNow, reloadStores, snapshot,
+  usageDays, bumpUsage, isoDay, pruneUsageDaily, USAGE_KEEP_DAYS, today,
+};

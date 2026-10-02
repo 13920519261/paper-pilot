@@ -578,16 +578,36 @@ var Account = {
       return {
         plan: m.plan,
         name: m.name || m.plan,
+        rawPlan: m.rawPlan || m.plan,
+        expired: !!m.expired,
         expiresAt: m.expiresAt ? (Number(m.expiresAt) || Date.parse(m.expiresAt) || 0) : 0,
         dailyLimit: Number(m.dailyLimit) > 0 ? Number(m.dailyLimit) : 0,
         source: m.source || "",
         activatedAt: m.activatedAt || "",
+        // 0.24.4：购买历史（续费默认周期取最近一次；到期提醒也用它判"曾经是付费用户"）
+        history: Array.isArray(m.history) ? m.history : [],
       };
     }
     // 兼容旧服务端：只有 plan/expiresAt 字段
     const exp = typeof u.expiresAt === "number" ? u.expiresAt : (u.expiresAt ? Date.parse(u.expiresAt) || 0 : 0);
-    return { plan: u.plan || "Free", name: u.plan || "Free", expiresAt: exp,
-      dailyLimit: Number(u.dailyLimit) > 0 ? Number(u.dailyLimit) : 0, source: "", activatedAt: "" };
+    return { plan: u.plan || "Free", name: u.plan || "Free", rawPlan: u.plan || "Free", expired: false,
+      expiresAt: exp, dailyLimit: Number(u.dailyLimit) > 0 ? Number(u.dailyLimit) : 0, source: "", activatedAt: "",
+      history: [] };
+  },
+
+  /** 用量（近 30 天按日 + 近 7 天合计）；离线时回落本地缓存字段 */
+  usage() {
+    const u = this.user();
+    const us = (u && u.usage) || null;
+    if (us && Array.isArray(us.days) && us.days.length) {
+      return {
+        today: Number(us.today) || 0,
+        limit: Number(us.limit) || 0,
+        last7: Number(us.last7) || us.days.slice(-7).reduce((s, d) => s + (Number(d && d.count) || 0), 0),
+        days: us.days,
+      };
+    }
+    return { today: Number(u && u.dailyUsed) || 0, limit: Number(u && u.dailyLimit) || 0, last7: 0, days: [] };
   },
 
   /** 是否 Pro（含到期判断：过期的 Pro 视为 Free） */
@@ -607,12 +627,44 @@ var Account = {
     return ms <= 0 ? 0 : Math.ceil(ms / 86400e3);
   },
 
+  /**
+   * 到期提醒判定（面板横幅与启动提示共用）。
+   * 返回 null（无需提醒）或 { daysLeft, expired, expiresAt, key }。
+   * `key` = expiresAt 字符串，用于「同一个到期周期只提醒一次」，避免反复打扰。
+   */
+  renewalReminder() {
+    const m = this.membership();
+    if (!m || !m.expiresAt) return null;      // 免费 / 长期有效 → 无到期概念
+    const days = this.membershipDaysLeft();
+    if (days > 7) return null;
+    return { daysLeft: days, expired: days <= 0, expiresAt: m.expiresAt, key: String(m.expiresAt) };
+  },
+
+  /** 上次购买/开通的时长（月）；无历史返回 null —— 用作续费默认周期 */
+  lastPurchasedMonths() {
+    const m = this.membership();
+    const h = (m && m.history) || [];
+    for (let i = h.length - 1; i >= 0; i--) {
+      const n = Number(h[i] && h[i].months);
+      if (n > 0) return n;
+    }
+    return null;
+  },
+
   /** 套餐目录 + 价格档位 + 收款信息（无需登录即可查看价格） */
   async plans() {
     const resp = await this._request("GET", "/api/plans", null, this.token() || null, 10000);
     const j = resp.json || {};
     if (!j.ok) throw new Error(j.error || "获取套餐失败");
-    return { plans: j.plans || [], priceOptions: j.priceOptions || [], pay: j.pay || {} };
+    return {
+      plans: j.plans || [],
+      priceOptions: j.priceOptions || [],
+      // 0.24.4：价格表形态（生效中含周期名与折合月单价；upcoming 为尚未生效的预告）
+      priceItems: j.priceItems || [],
+      upcoming: j.upcoming || [],
+      cycles: j.cycles || [],
+      pay: j.pay || {},
+    };
   },
 
   /** 下单：返回 {order}（含订单号、金额、收款信息与状态） */
@@ -674,6 +726,10 @@ var Account = {
     if (this._session.user) {
       this._session.user.membership = j.membership || null;
       if (j.membership && j.membership.plan) this._session.user.plan = j.membership.plan;
+      // 0.24.4：服务端同时回传最新 user（含用量趋势 usage），合并进来以便离线画图
+      if (j.user && typeof j.user === "object") {
+        this._session.user = Object.assign({}, this._session.user, j.user);
+      }
       await this._save("membership-refresh");
       this._notify();
     }

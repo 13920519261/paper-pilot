@@ -3,13 +3,30 @@
  * 职责：套餐目录 / 价格档位 / 订单生命周期 / 激活码（兑换码）/ 有效期管理。
  * 数据：{DATA_DIR}/membership.json（JsonStore 原子写）
  *   {
- *     schemaVersion: 2,
+ *     schemaVersion: 3,
  *     plans:        { Free:{...}, Pro:{...} },          // 等级与权益（后台可改）
- *     priceOptions: { Pro:[{months,price,label}, ...] },// 价格档位（后台可改）
+ *     priceItems:   [ 价格条目 ... ],                    // ★ v3 价格表（权威源，见下）
+ *     priceOptions: { Pro:[{months,price,label}] },      // 派生视图（兼容旧客户端/旧后台）
  *     pay:          { channel, qrImage, qrText, note },  // 收款信息（后台可改）
  *     orders:       [ ... ],                             // 订单
  *     codes:        [ ... ]                              // 激活码
  *   }
+ *
+ * ★ v3 价格表（0.23.1 新增）：价格条目 = 「等级 × 计费周期 × 生效时段」
+ *   { id, plan, cycle, months, price, label, effectiveFrom, effectiveTo, enabled, priority, note, createdAt }
+ *   - 等级：Free / Pro…（Free 不可购买，只需给可购等级配价）
+ *   - 计费周期 cycle：monthly / quarterly / halfyear / yearly / custom，与 months 一一对应
+ *     （周期只描述「一次付费买多久」，本轮不做自动续费订阅——那属于支付网关能力）
+ *   - 生效时段：effectiveFrom/To 为 ISO 或 null（null = 立即生效 / 长期有效）
+ *       · 生效中 → 客户端可下单
+ *       · 未生效（from 在未来）→ 客户端仅展示「即将生效」，不可下单
+ *       · 已过期（to 已过）→ 客户端完全不下发，只留在后台存档
+ *   - **允许时段重叠，用优先级决出唯一胜者**：priority 高者胜 → 起期晚者胜 → 创建晚者胜。
+ *     这样「长期基础价 + 限时促销价」可以共存：给促销价 priority=1，促销窗口内自动覆盖基础价，
+ *     窗口一过自动回到基础价，**不需要**把基础价切成段（那种做法很容易留下空档、
+ *     让某个周期突然不可购买）。同一价位若有多条并列，客户端只下发胜者，后台列表标注「生效中·胜出」。
+ *   - 空档预警：若某条价格设了 effectiveTo 而之后没有任何启用的价格接续，
+ *     写入时返回 warn（不拦，但后台会提示），避免悄悄把某周期卖死。
  *
  * 会员等级的权威落点仍是 user 对象（users.json）：
  *   user.membership = { plan, months, activatedAt, expiresAt, source, refId, history[] }
@@ -68,6 +85,27 @@ const DEFAULT_PRICE_OPTIONS = {
   ],
 };
 
+/**
+ * 计费周期预设（v3）。months 是「一次付费覆盖多少个月」，
+ * 与价格条目的 months 一一对应；custom 表示后台自填的月数。
+ * 注意：本轮不做自动续费订阅——周期只用于描述与展示，以及为后续订阅能力留位。
+ */
+const CYCLE_PRESETS = [
+  { id: 'monthly', name: '按月', months: 1, short: '月' },
+  { id: 'quarterly', name: '按季', months: 3, short: '季' },
+  { id: 'halfyear', name: '半年', months: 6, short: '半年' },
+  { id: 'yearly', name: '按年', months: 12, short: '年' },
+  { id: 'custom', name: '自定义', months: 0, short: '自定义' },
+];
+
+/** 价格条目状态文案（后台列表与 API 共用） */
+const PRICE_STATE_TEXT = {
+  active: '生效中',
+  scheduled: '未生效',
+  expired: '已过期',
+  disabled: '已停用',
+};
+
 const DEFAULT_PAY = {
   channel: '收款码',
   qrImage: '',   // 收款码图片地址（后台填写；为空时展示 qrText）
@@ -82,11 +120,34 @@ const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 
+/** 默认价格表：由 DEFAULT_PRICE_OPTIONS 生成，避免两处默认值漂移 */
+function defaultPriceItems() {
+  const out = [];
+  for (const [planId, list] of Object.entries(DEFAULT_PRICE_OPTIONS)) {
+    for (const o of list) {
+      const months = clampMonths(o.months);
+      out.push({
+        id: 'pr-default-' + planId.toLowerCase() + '-' + months,
+        plan: planId,
+        cycle: cycleOfMonths(months),
+        months,
+        price: Math.max(0, Number(o.price) || 0),
+        label: o.label || (months + ' 个月'),
+        effectiveFrom: null, effectiveTo: null, enabled: true,
+        note: '默认价格表',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+  }
+  return out;
+}
+
 function newDoc() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     plans: clone(DEFAULT_PLANS),
-    priceOptions: clone(DEFAULT_PRICE_OPTIONS),
+    priceItems: defaultPriceItems(),
+    priceOptions: clone(DEFAULT_PRICE_OPTIONS),   // 派生视图，normalize 会重算
     pay: clone(DEFAULT_PAY),
     orders: [],
     codes: [],
@@ -94,8 +155,10 @@ function newDoc() {
 }
 
 /**
- * 规范化 / 迁移：补齐缺字段，把 v1（无 schemaVersion）升到 v2。
- * 幂等，任何一次启动都可安全调用。
+ * 规范化 / 迁移（幂等，每次启动都可安全调用）：
+ *   v1（无 schemaVersion）→ v2 → v3。
+ * v2→v3 只做一次：把旧的 priceOptions 平铺档位升级为 priceItems 价格条目；
+ * 之后 **priceItems 是权威源**，priceOptions 每次都由它重算（只读派生）。
  */
 function normalize(doc) {
   const out = doc && typeof doc === 'object' ? doc : newDoc();
@@ -104,13 +167,20 @@ function normalize(doc) {
     if (!out.plans[id]) out.plans[id] = clone(DEFAULT_PLANS[id]);
     else out.plans[id] = Object.assign(clone(DEFAULT_PLANS[id]), out.plans[id]);
   }
-  if (!out.priceOptions || typeof out.priceOptions !== 'object') out.priceOptions = clone(DEFAULT_PRICE_OPTIONS);
-  if (!out.priceOptions.Pro || !out.priceOptions.Pro.length) out.priceOptions.Pro = clone(DEFAULT_PRICE_OPTIONS.Pro);
+  // ---- 价格表：priceItems 权威源 ----
+  if (!Array.isArray(out.priceItems) || !out.priceItems.length) {
+    const migrated = migratePriceOptions(out.priceOptions);
+    out.priceItems = migrated.length ? migrated : defaultPriceItems();
+  }
+  out.priceItems = out.priceItems.map((i) => sanitizePriceItem(i)).filter(Boolean);
+  if (!out.priceItems.length) out.priceItems = defaultPriceItems();
+  out.priceOptions = derivePriceOptions(out);
+  // ---- 收款 ----
   if (!out.pay || typeof out.pay !== 'object') out.pay = clone(DEFAULT_PAY);
   else out.pay = Object.assign(clone(DEFAULT_PAY), out.pay);
   if (!Array.isArray(out.orders)) out.orders = [];
   if (!Array.isArray(out.codes)) out.codes = [];
-  out.schemaVersion = 2;
+  out.schemaVersion = 3;
   return out;
 }
 
@@ -132,6 +202,278 @@ function normCode(c) {
   return 'PP-' + s.slice(2, 6) + '-' + s.slice(6, 10) + '-' + s.slice(10, 14);
 }
 
+/* ---------------- 价格表（v3：等级 × 计费周期 × 生效时段） ---------------- */
+
+function cycleOfMonths(m) {
+  const hit = CYCLE_PRESETS.find((c) => c.months === Number(m) && c.months > 0);
+  return hit ? hit.id : 'custom';
+}
+
+function cycleName(id) {
+  const hit = CYCLE_PRESETS.find((c) => c.id === id);
+  return hit ? hit.name : '自定义';
+}
+
+/** ISO 或 null（非法值一律归 null，避免坏配置把界面搞崩） */
+function isoOrNull(v) {
+  if (!v) return null;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+/**
+ * 价格条目在指定时刻的状态：
+ *   disabled 已停用 / scheduled 未生效（from 在未来）/ expired 已过期 / active 生效中
+ */
+function priceState(item, now) {
+  const t = now || Date.now();
+  if (!item || item.enabled === false) return 'disabled';
+  if (item.effectiveFrom && t < Date.parse(item.effectiveFrom)) return 'scheduled';
+  if (item.effectiveTo && t >= Date.parse(item.effectiveTo)) return 'expired';
+  return 'active';
+}
+
+/** 价格条目消毒（写入口与读入口都过一遍，坏数据不落库也不下发） */
+function sanitizePriceItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const months = clampMonths(raw.months);
+  const plan = String(raw.plan || 'Pro').slice(0, 24);
+  const cycle = CYCLE_PRESETS.some((c) => c.id === raw.cycle) ? String(raw.cycle) : cycleOfMonths(months);
+  const from = isoOrNull(raw.effectiveFrom);
+  const to = isoOrNull(raw.effectiveTo);
+  if (from && to && Date.parse(to) <= Date.parse(from)) return null; // 时段反了：视为非法，丢弃
+  return {
+    id: String(raw.id || rid('pr', 6)),
+    plan,
+    cycle,
+    months,
+    price: Math.max(0, Number(raw.price) || 0),
+    label: String(raw.label || '').slice(0, 40),
+    effectiveFrom: from,
+    effectiveTo: to,
+    enabled: raw.enabled === false ? false : true,
+    // 优先级 0-9：时段重叠时高者胜（促销价建议给 1+，日常价留 0）
+    priority: Math.min(9, Math.max(0, Math.round(Number(raw.priority) || 0))),
+    note: String(raw.note || '').slice(0, 80),
+    createdAt: isoOrNull(raw.createdAt) || new Date().toISOString(),
+  };
+}
+
+/** v2 的 priceOptions 平铺档位 → v3 价格条目（只在 priceItems 为空时执行一次） */
+function migratePriceOptions(priceOptions) {
+  const out = [];
+  for (const [planId, list] of Object.entries(priceOptions || {})) {
+    if (!Array.isArray(list)) continue;
+    for (const o of list) {
+      if (!o) continue;
+      const months = clampMonths(o.months);
+      out.push({
+        id: 'pr-migrated-' + String(planId).toLowerCase() + '-' + months,
+        plan: planId,
+        cycle: cycleOfMonths(months),
+        months,
+        price: Math.max(0, Number(o.price) || 0),
+        label: String(o.label || (months + ' 个月')).slice(0, 40),
+        effectiveFrom: null, effectiveTo: null, enabled: true,
+        note: '由旧版价格档位迁移',
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 时段的优先级排序键：priority 升序比较 → 起期晚者更「具体」→ 创建晚者最新。
+ * 时段重叠时按此键取**唯一胜者**，因此下单价永远确定。
+ */
+function priceRank(item) {
+  return [
+    Number(item.priority) || 0,
+    item.effectiveFrom ? Date.parse(item.effectiveFrom) : 0,
+    Date.parse(item.createdAt) || 0,
+  ];
+}
+
+/** 从一批候选里挑出胜者（priority 高 → 起期晚 → 创建晚） */
+function pickPriceWinner(items) {
+  if (!items || !items.length) return null;
+  return items.slice().sort((a, b) => {
+    const ra = priceRank(a);
+    const rb = priceRank(b);
+    if (ra[0] !== rb[0]) return rb[0] - ra[0];
+    if (ra[1] !== rb[1]) return rb[1] - ra[1];
+    return rb[2] - ra[2];
+  })[0];
+}
+
+/** 某等级当前生效的条目按「月数 → 胜者」归并（每个周期只留唯一有效价） */
+function activeWinnerMap(doc, planId, now) {
+  const t = now || Date.now();
+  const byMonths = new Map();
+  for (const it of (doc.priceItems || [])) {
+    if (it.plan !== planId || priceState(it, t) !== 'active') continue;
+    const arr = byMonths.get(it.months) || [];
+    arr.push(it);
+    byMonths.set(it.months, arr);
+  }
+  const out = [];
+  byMonths.forEach((arr) => { const w = pickPriceWinner(arr); if (w) out.push(w); });
+  return out;
+}
+
+/** priceItems → 旧版 priceOptions 派生视图（只含生效中的周期，每周期取胜者） */
+function derivePriceOptions(doc, now) {
+  const plans = Object.keys(doc.plans || {});
+  const out = {};
+  for (const pid of plans) {
+    const winners = activeWinnerMap(doc, pid, now)
+      .sort((a, b) => a.months - b.months)
+      .map((i) => ({ months: i.months, price: i.price, label: i.label || (i.months + ' 个月') }));
+    if (winners.length) out[pid] = winners;
+  }
+  return out;
+}
+
+/**
+ * 后台可见的价格条目（含未生效/已过期/已停用）。
+ * winner=true 表示「此刻若下单，用的是这条」——后台列表据此标注，避免看不出谁生效。
+ */
+function priceItemOut(doc, item, now) {
+  const t = now || Date.now();
+  const st = priceState(item, t);
+  let winner = false;
+  if (st === 'active') {
+    const w = pickPriceWinner((doc.priceItems || []).filter((i) =>
+      i.plan === item.plan && i.months === item.months && priceState(i, t) === 'active'));
+    winner = !!(w && w.id === item.id);
+  }
+  const shadows = st === 'active' && !winner
+    ? (doc.priceItems || []).filter((i) => i.plan === item.plan && i.months === item.months
+        && priceState(i, t) === 'active' && i.id !== item.id).length
+    : 0;
+  return {
+    id: item.id, plan: item.plan, planName: planOf(doc, item.plan).name,
+    cycle: item.cycle, cycleName: cycleName(item.cycle),
+    months: item.months, price: item.price,
+    perMonth: item.months > 0 ? Math.round((item.price / item.months) * 100) / 100 : 0,
+    label: item.label || (item.months + ' 个月'),
+    effectiveFrom: item.effectiveFrom, effectiveTo: item.effectiveTo,
+    enabled: item.enabled, priority: Number(item.priority) || 0,
+    note: item.note || '', createdAt: item.createdAt,
+    state: st, stateText: PRICE_STATE_TEXT[st] || st,
+    winner: winner, shadowedBy: shadows,
+  };
+}
+
+/** 两个价格条目的生效时段是否重叠（null 视为 ±∞） */
+function rangesOverlap(aFrom, aTo, bFrom, bTo) {
+  const af = aFrom ? Date.parse(aFrom) : -Infinity;
+  const at = aTo ? Date.parse(aTo) : Infinity;
+  const bf = bFrom ? Date.parse(bFrom) : -Infinity;
+  const bt = bTo ? Date.parse(bTo) : Infinity;
+  return af < bt && bf < at;
+}
+
+/** 与该条目时段重叠、同等级同月数的其他**启用中**条目（用于给出提示，不做拒绝） */
+function findPriceOverlaps(doc, cand, excludeId) {
+  return (doc.priceItems || []).filter((it) =>
+    it.id !== excludeId && it.enabled && cand.enabled !== false
+    && it.plan === cand.plan && it.months === cand.months
+    && rangesOverlap(cand.effectiveFrom, cand.effectiveTo, it.effectiveFrom, it.effectiveTo));
+}
+
+/**
+ * 空档预警：给某条价格设了 effectiveTo、而之后再没有任何启用价格接续时返回该时间点。
+ * 这不是错误（管理员可能确实要下架某周期），但不提示就会「悄悄把周期卖死」。
+ */
+function coverageGapAfter(doc, cand, excludeId) {
+  if (!cand.effectiveTo) return null;
+  const after = Date.parse(cand.effectiveTo) + 1;
+  const others = (doc.priceItems || []).filter((i) =>
+    i.id !== excludeId && i.enabled && i.plan === cand.plan && i.months === cand.months);
+  if (others.some((i) => priceState(i, after) === 'active')) return null;
+  return cand.effectiveTo;
+}
+
+/**
+ * 新增 / 更新价格条目。
+ * 允许时段重叠（用优先级决胜负），因此不再因为重叠而拒绝；
+ * 返回 { item, warn, overlaps }：warn 是空档等需要提醒但不必拦的情况。
+ */
+function upsertPriceItem(doc, raw, { now } = {}) {
+  const cand = sanitizePriceItem(raw);
+  if (!cand) return { error: '价格配置非法（时段起止顺序不对或字段缺失）' };
+  if (!doc.plans[cand.plan]) return { error: '等级不存在：' + cand.plan };
+  if (cand.price <= 0) return { error: '价格必须大于 0（免费等级不需要配价）' };
+  const isNew = !(doc.priceItems || []).some((i) => i.id === cand.id);
+  if (isNew && (!raw || !raw.id)) cand.id = rid('pr', 6);
+  if (isNew) {
+    doc.priceItems.push(cand);
+  } else {
+    const idx = doc.priceItems.findIndex((i) => i.id === cand.id);
+    cand.createdAt = doc.priceItems[idx].createdAt;   // 保留原始创建时间，排序稳定
+    doc.priceItems[idx] = cand;
+  }
+  doc.priceOptions = derivePriceOptions(doc, now);
+
+  const warn = [];
+  const others = findPriceOverlaps(doc, cand, cand.id);
+  if (others.length) {
+    const w = pickPriceWinner([cand].concat(others));
+    const isWinner = w && w.id === cand.id;
+    warn.push('与 ' + others.length + ' 条同等级同周期的价格时段重叠；当前按优先级判定'
+      + (isWinner ? '本条胜出' : '由「' + (w.label || w.id) + '」胜出')
+      + '（priority ' + (w ? Number(w.priority) || 0 : 0) + '；要让它胜出请提高优先级）');
+  }
+  const gap = coverageGapAfter(doc, cand, cand.id);
+  if (gap) {
+    warn.push('该周期在 ' + gap.slice(0, 10) + ' 之后将没有任何生效价格，用户届时无法购买这个周期');
+  }
+  return { item: cand, warn: warn.length ? warn.join('；') : '', overlaps: others.length };
+}
+
+function removePriceItem(doc, id) {
+  const idx = (doc.priceItems || []).findIndex((i) => i && i.id === id);
+  if (idx < 0) return { error: '价格条目不存在' };
+  const [removed] = doc.priceItems.splice(idx, 1);
+  doc.priceOptions = derivePriceOptions(doc);
+  return { item: removed };
+}
+
+/** 该等级是否至少有一条生效中的价格（下单开放判据） */
+function hasActivePrice(doc, planId, now) {
+  return activeWinnerMap(doc, planId, now).length > 0;
+}
+
+/**
+ * 下单取价（唯一口径）。
+ * 规则：生效中条目里精确匹配同月数 → 多条时按优先级取胜者；该等级有生效价但没这个周期
+ * → 明确报错（不让用户买到后台没配的周期）；一条生效价都没有 → 退回「等级单价 × 月数」
+ * 兜底（兼容尚未配置价格表的历史数据）。
+ * 返回 { ok, price, months, label, itemId, cycle, source:'item'|'base' } 或 { error }。
+ */
+function effectivePrice(doc, planId, months, now) {
+  const m = clampMonths(months);
+  const pid = planOf(doc, planId).id;
+  const winners = activeWinnerMap(doc, pid, now);
+  const hit = winners.find((i) => i.months === m);
+  if (hit) {
+    return {
+      ok: true, price: hit.price, months: m,
+      label: hit.label || (m + ' 个月'), itemId: hit.id, cycle: hit.cycle, source: 'item',
+    };
+  }
+  if (winners.length) {
+    const opts = winners.map((i) => i.months + ' 个月').sort((a, b) => a - b).join(' / ');
+    return { error: '该计费周期（' + m + ' 个月）当前不可购买；可选：' + opts };
+  }
+  const unit = Number(planOf(doc, pid).price) > 0 ? Number(planOf(doc, pid).price) : 0;
+  if (unit <= 0) return { error: '该等级暂未开放购买（后台未配置价格）' };
+  return { ok: true, price: unit * m, months: m, label: m + ' 个月', itemId: null,
+    cycle: cycleOfMonths(m), source: 'base' };
+}
+
 /* ---------------- 套餐与价格 ---------------- */
 
 function planOf(doc, id) {
@@ -147,14 +489,14 @@ function dailyLimitFor(doc, planId) {
 }
 
 /** 价格档位查询；未配置的月数按「单价 × 月数」兜底 */
+/**
+ * 兼容包装：老调用方只要 {months, price, label}。
+ * 计价口径统一走 effectivePrice（生效中的价格条目优先），保证「展示价」与「下单价」同源。
+ */
 function priceOf(doc, planId, months) {
-  const m = clampMonths(months);
-  const p = planOf(doc, planId);
-  const list = (doc.priceOptions && doc.priceOptions[planId]) || [];
-  const hit = list.find((o) => Number(o.months) === m);
-  if (hit) return { months: m, price: Number(hit.price) || 0, label: hit.label || m + ' 个月' };
-  const unit = Number(p.price) > 0 ? Number(p.price) : 0;
-  return { months: m, price: unit * m, label: m + ' 个月' };
+  const eff = effectivePrice(doc, planId, months);
+  if (eff.ok) return { months: eff.months, price: eff.price, label: eff.label };
+  return { months: clampMonths(months), price: 0, label: '' };
 }
 
 function clampMonths(months) {
@@ -165,7 +507,14 @@ function clampMonths(months) {
 }
 
 /** 客户端可见的套餐目录（不含任何后台敏感字段） */
-function plansForClient(doc) {
+/**
+ * 客户端可见的套餐目录。
+ * - priceOptions：旧版平铺档位（**只含生效中**，兼容已发布的插件版本，字段语义不变）
+ * - priceItems：v3 价格条目（含 cycle / 生效时段 / 折合月单价），供新版客户端展示
+ *   「按月 / 按季 / 按年」与「即将生效」；未生效条目只出现在 upcoming 里且不可下单。
+ */
+function plansForClient(doc, now) {
+  const t = now || Date.now();
   const plans = Object.values(doc.plans || {})
     .sort((a, b) => (Number(a.rank) || 0) - (Number(b.rank) || 0))
     .map((p) => ({
@@ -175,21 +524,45 @@ function plansForClient(doc) {
       highTierModels: !!p.highTierModels,
       tagline: p.tagline || '',
       features: Array.isArray(p.features) ? p.features : [],
-      purchasable: Number(p.price) > 0,
+      // purchasable = 有生效价格 → 可下单；grantable = 可被开通/发激活码（与价格无关）
+      purchasable: hasActivePrice(doc, p.id, t),
+      grantable: p.id !== 'Free',
     }));
   const priceOptions = [];
-  for (const [planId, list] of Object.entries(doc.priceOptions || {})) {
-    if (!Array.isArray(list)) continue;
-    for (const o of list) {
-      priceOptions.push({
-        plan: planId, months: clampMonths(o.months),
-        price: Number(o.price) || 0, label: o.label || '',
-        currency: planOf(doc, planId).currency || 'CNY',
-      });
+  const active = [];
+  const upcoming = [];
+  const base = (it) => ({
+    id: it.id, plan: it.plan, cycle: it.cycle, cycleName: cycleName(it.cycle),
+    months: it.months, price: it.price, currency: planOf(doc, it.plan).currency || 'CNY',
+    label: it.label || (it.months + ' 个月'),
+    perMonth: it.months > 0 ? Math.round((it.price / it.months) * 100) / 100 : 0,
+    effectiveFrom: it.effectiveFrom, effectiveTo: it.effectiveTo,
+    priority: Number(it.priority) || 0,
+  });
+  // 未生效的照旧只进 upcoming（可预告，不可下单）
+  for (const it of (doc.priceItems || [])) {
+    if (priceState(it, t) !== 'scheduled') continue;
+    upcoming.push(Object.assign({ state: 'scheduled' }, base(it)));
+  }
+  // 生效中的按「每周期唯一胜者」下发（时段重叠时高优先级者胜）
+  for (const pid of Object.keys(doc.plans || {})) {
+    for (const it of activeWinnerMap(doc, pid, t)) {
+      active.push(base(it));
+      priceOptions.push({ plan: it.plan, months: it.months, price: it.price,
+        label: it.label || '', currency: planOf(doc, it.plan).currency || 'CNY' });
     }
   }
-  priceOptions.sort((a, b) => (a.plan === b.plan ? a.months - b.months : a.plan < b.plan ? -1 : 1));
-  return { plans, priceOptions, pay: { channel: doc.pay.channel, qrImage: doc.pay.qrImage, qrText: doc.pay.qrText, note: doc.pay.note } };
+  const cmp = (a, b) => (a.plan === b.plan ? a.months - b.months : a.plan < b.plan ? -1 : 1);
+  active.sort(cmp);
+  upcoming.sort(cmp);
+  priceOptions.sort(cmp);
+  return {
+    plans, priceOptions,
+    priceItems: active,
+    upcoming: upcoming,
+    cycles: CYCLE_PRESETS,
+    pay: { channel: doc.pay.channel, qrImage: doc.pay.qrImage, qrText: doc.pay.qrText, note: doc.pay.note },
+  };
 }
 
 /* ---------------- 会员状态 ---------------- */
@@ -261,6 +634,12 @@ function orderOut(doc, o) {
     claimedAt: o.claimedAt || null, fulfilledAt: o.fulfilledAt || null,
     cancelledAt: o.cancelledAt || null, cancelReason: o.cancelReason || '',
     note: o.note || '',
+    // 价格溯源（v3）：这一单落在哪条价格条目上、什么计费周期、折合月单价
+    priceItemId: o.priceItemId || null,
+    cycle: o.cycle || cycleOfMonths(o.months),
+    cycleName: cycleName(o.cycle || cycleOfMonths(o.months)),
+    priceSource: o.priceSource || 'base',
+    unitPrice: typeof o.unitPrice === 'number' ? o.unitPrice : null,
     pay: { channel: doc.pay.channel, qrImage: doc.pay.qrImage, qrText: doc.pay.qrText, note: doc.pay.note },
   };
 }
@@ -282,19 +661,23 @@ function reapOrders(doc, now) {
 function createOrder(doc, { user, plan, months }) {
   const pid = String(plan || 'Pro');
   const p = planOf(doc, pid);
-  if (!(Number(p.price) > 0)) return { error: '该套餐无需购买（' + p.name + '）' };
   const m = clampMonths(months);
-  const opt = priceOf(doc, pid, m);
+  const eff = effectivePrice(doc, pid, m);
+  if (eff.error) return { error: eff.error };
+  if (!(eff.price > 0)) return { error: '该套餐无需购买（' + p.name + '）' };
   const now = new Date().toISOString();
   const order = {
     id: rid('o', 6),
     userId: user.id, email: user.email,
     plan: pid, months: m,
-    amount: opt.price, currency: p.currency || 'CNY',
+    amount: eff.price, currency: p.currency || 'CNY',
     status: 'pending',
     createdAt: now, updatedAt: now,
     claimedAt: null, fulfilledAt: null, cancelledAt: null, cancelReason: '',
     codeId: null, note: '',
+    // 价格溯源（对账用）：这一单是按哪条价格条目、什么周期算出来的
+    priceItemId: eff.itemId, cycle: eff.cycle, priceSource: eff.source,
+    unitPrice: m > 0 ? Math.round((eff.price / m) * 100) / 100 : eff.price,
   };
   doc.orders.push(order);
   return { order };
@@ -427,8 +810,14 @@ function redeem(doc, code, user, now) {
 module.exports = {
   DAY_MS, ORDER_TTL_MS, MAX_MONTHS,
   DEFAULT_PLANS, DEFAULT_PRICE_OPTIONS, DEFAULT_PAY,
+  CYCLE_PRESETS, PRICE_STATE_TEXT,
   newDoc, normalize, newCode, normCode,
   planOf, dailyLimitFor, priceOf, clampMonths, plansForClient,
+  // v3 价格表
+  cycleOfMonths, cycleName, isoOrNull, priceState, sanitizePriceItem,
+  migratePriceOptions, derivePriceOptions, priceItemOut,
+  priceRank, pickPriceWinner, activeWinnerMap, findPriceOverlaps, coverageGapAfter,
+  upsertPriceItem, removePriceItem, hasActivePrice, effectivePrice, rangesOverlap,
   membershipOf, grantMembership,
   orderOut, reapOrders, createOrder, findOrder, claimOrder, cancelOrder, fulfillOrder,
   orderStatusText,

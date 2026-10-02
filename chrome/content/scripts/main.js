@@ -15,6 +15,33 @@ Zotero.PaperPilot = {
     try { _ppDiag(msg); } catch (e) { /* bootstrap 未提供则忽略 */ }
   },
 
+  /**
+   * 0.24.4 会员到期提醒：临近到期（≤1 天）或已过期时，启动后提示一次。
+   * 「同一个到期周期只提示一次」用 pref renewPromptShownFor=<expiresAt> 记住 ——
+   * 否则每次启动都弹，会变成骚扰。主窗口还没就绪时**不落标记**，留给下次。
+   */
+  async _checkRenewal() {
+    try {
+      if (!Account.isLoggedIn || !Account.isLoggedIn()) return;
+      const rem = Account.renewalReminder && Account.renewalReminder();
+      if (!rem || rem.daysLeft > 1) return;
+      if (String(Prefs.get("renewPromptShownFor", "") || "") === rem.key) return;
+      const win = Zotero.getMainWindow();
+      if (!win) { this._diag("renewal reminder deferred (no main window)"); return; }
+      Prefs.set("renewPromptShownFor", rem.key);
+      const when = new Date(rem.expiresAt).toLocaleDateString();
+      const msg = rem.expired
+        ? "你的 PaperPilot 专业版已于 " + when + " 到期，已回落为免费版。\n\n"
+          + "打开「设置 → PaperPilot」可立即续费（时长叠加，不浪费剩余时间）。"
+        : "你的 PaperPilot 专业版仅剩 " + rem.daysLeft + " 天（" + when + " 到期）。\n\n"
+          + "打开「设置 → PaperPilot」可提前续费（时长叠加，不浪费剩余时间）。";
+      Services.prompt.alert(win, "PaperPilot 会员提醒", msg);
+      this._diag("renewal reminder shown (daysLeft=" + rem.daysLeft + ")");
+    } catch (e) {
+      this._diag("renewal reminder FAILED: " + (e && (e.stack || e.message) || e));
+    }
+  },
+
   async init({ id, version, rootURI }) {
     if (this._initialized) return;
     this.id = id;
@@ -190,6 +217,7 @@ Zotero.PaperPilot = {
       Account.restore()
         .then(() => Account.selfCheck())
         .then((snap) => this._diag(snap))
+        .then(() => this._checkRenewal())   // 0.24.4：临近到期/已过期提示一次
         .catch((e) => this._diag("account restore/selfCheck failed: " + (e && e.message)));
       await this._diag("account restore scheduled");
     } catch (e) {

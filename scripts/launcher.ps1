@@ -6,7 +6,8 @@
 #   1. 账号后台控制：启动 / 停止 / 重启 / 查看日志 / 状态灯（端口 8000 健康检测）
 #   2. AI 模型通道管理：列表 / 新增 / 编辑 / 删除 / 设为活动 / 实测 / 🔍检测 / 📡拉取模型
 #      （通道 = 官方网关上游池；Zotero 插件登录用户经 /v1 网关使用活动通道）
-#   3. 账号管理：注册账号 / 用户列表 / 编辑套餐与有效期 / 重置密码 / 删除用户
+#   3. 账号管理：注册账号 / 用户列表 / 重置密码 / 删除用户
+#      会员管理（0.23.0）：订单核销开通 / 激活码生成与作废 / 套餐与收款配置 / 用户开通续期
 #   4. 维护：开机自启（HKCU Run 键） / 数据目录 / 项目目录 / 浏览器管理页
 #   5. 关闭窗口 = 最小化到系统托盘驻留；托盘右键「退出程序」为唯一真正退出
 #
@@ -33,8 +34,8 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ServerDir   = Join-Path $ProjectRoot 'server'
 $DataDir     = Join-Path $ServerDir 'data'
 $ServerLog   = Join-Path $DataDir 'server-console.log'
-$AdminPage   = 'http://127.0.0.1:8000/admin'
 $Port        = 8000
+$AdminPage   = 'http://127.0.0.1:' + $Port + '/admin'
 $HealthUrl   = 'http://127.0.0.1:' + $Port + '/api/health'
 
 # ---------------- node 路径：自动扫描最新版本 ----------------
@@ -281,6 +282,44 @@ $script:providerRows = @()
 function Get-ProviderName([string]$pid_) {
   foreach ($p in $script:providerRows) { if ($p.id -eq $pid_) { return $p.name } }
   return '自定义'
+}
+
+# ISO 时间 → 列表短格式（0.23.0 会员管理复用）
+function Format-Dt([string]$s) {
+  if (-not $s) { return '—' }
+  $t = ([string]$s).Replace('T', ' ')
+  if ($t.Length -ge 16) { return $t.Substring(0, 16) }
+  return $t
+}
+
+# 订单状态 → 中文（0.23.0）
+function Get-OrderStatusText([string]$st) {
+  if ($st -eq 'pending')   { return '待支付' }
+  if ($st -eq 'claimed')   { return '待核销' }
+  if ($st -eq 'fulfilled') { return '已开通' }
+  if ($st -eq 'cancelled') { return '已取消' }
+  if ($st -eq 'expired')   { return '已过期' }
+  return $st
+}
+
+# 激活码状态 → 中文（0.23.0）
+function Get-CodeStatusText([string]$st) {
+  if ($st -eq 'unused')  { return '未使用' }
+  if ($st -eq 'used')    { return '已使用' }
+  if ($st -eq 'expired') { return '已过期' }
+  return $st
+}
+
+# 用户会员摘要（0.23.0 账号列表「会员到期」列）
+function Get-MembershipText($u) {
+  $m = $u.membership
+  if (-not $m -or -not $m.expiresAt) {
+    if ($u.planRaw -and ([string]$u.planRaw) -ne 'Free') { return ([string]$u.planRaw) + '（无到期）' }
+    return '—'
+  }
+  $d = ([string]$m.expiresAt).Substring(0, 10)
+  if ($m.expired) { return '已过期 · ' + $d }
+  return ('剩 ' + $m.daysLeft + ' 天 · ' + $d)
 }
 
 function Show-ChannelManager {
@@ -783,20 +822,26 @@ function Show-RegisterUser {
   New-RLabel '邮箱 *' 16;  $txtEmail = New-RInput 14 260 $false
   New-RLabel '密码 *（≥8 位）' 46;  $txtPwd = New-RInput 44 260 $true
   New-RLabel '昵称' 76;  $txtNick = New-RInput 74 260 $false
-  New-RLabel '套餐' 106
+  New-RLabel '初始等级' 106
   $selPlan = New-Object System.Windows.Forms.ComboBox
   $selPlan.DropDownStyle = 'DropDownList'
   $selPlan.Location = New-Object System.Drawing.Point(140, 104)
   $selPlan.Size = New-Object System.Drawing.Size(120, 24)
-  foreach ($p in @('Free', 'Pro', 'Team')) { [void]$selPlan.Items.Add($p) }
+  foreach ($p in @('Free', 'Pro')) { [void]$selPlan.Items.Add($p) }
   $selPlan.SelectedIndex = 0
   [void]$dlg.Controls.Add($selPlan)
-  New-RLabel '套餐有效期' 136
-  $dtExpires = New-Object System.Windows.Forms.DateTimePicker
-  $dtExpires.Format = 'Short'; $dtExpires.ShowCheckBox = $true; $dtExpires.Checked = $false
-  $dtExpires.Location = New-Object System.Drawing.Point(140, 134)
-  $dtExpires.Size = New-Object System.Drawing.Size(140, 24)
-  [void]$dlg.Controls.Add($dtExpires)
+  # 0.23.0：等级会员一律走「叠加式开通」，不再用固定到期日（避免覆盖式/叠加式两套语义打架）
+  New-RLabel 'Pro 时长（月）' 136
+  $txtMonths = New-Object System.Windows.Forms.TextBox
+  $txtMonths.Text = '12'
+  $txtMonths.Location = New-Object System.Drawing.Point(140, 134)
+  $txtMonths.Size = New-Object System.Drawing.Size(80, 24)
+  [void]$dlg.Controls.Add($txtMonths)
+  $lblMonthsHint = New-Object System.Windows.Forms.Label
+  $lblMonthsHint.Text = '（仅选 Pro 时生效，按剩余时长叠加）'
+  $lblMonthsHint.ForeColor = [System.Drawing.Color]::DimGray
+  $lblMonthsHint.SetBounds(226, 137, 190, 20)
+  [void]$dlg.Controls.Add($lblMonthsHint)
 
   $lblMsg2 = New-Object System.Windows.Forms.Label
   $lblMsg2.Text = ''
@@ -814,14 +859,25 @@ function Show-RegisterUser {
       $lblMsg2.ForeColor = [System.Drawing.Color]::Firebrick
       return
     }
-    $exp = $null
-    if ($dtExpires.Checked) { $exp = $dtExpires.Value.ToString('yyyy-MM-dd') }
     try {
-      [void](Invoke-AdminApi 'POST' '/api/admin/users' @{
+      # 先按 Free 建号，再（可选）用会员接口叠加 Pro —— 与 Web 管理页同一套语义
+      $r = Invoke-AdminApi 'POST' '/api/admin/users' @{
         email = $txtEmail.Text.Trim(); password = $txtPwd.Text
-        nickname = $txtNick.Text.Trim(); plan = $selPlan.Text; expiresAt = $exp
-      })
-      [System.Windows.Forms.MessageBox]::Show('已注册 ' + $txtEmail.Text.Trim() + "`n" + '可在 Zotero：设置 → PaperPilot 中登录使用。', '注册成功', 'OK', 'Information') | Out-Null
+        nickname = $txtNick.Text.Trim(); plan = 'Free'; expiresAt = $null
+      }
+      $extra = ''
+      if ($selPlan.Text -eq 'Pro') {
+        $months = 1
+        [void][int]::TryParse($txtMonths.Text, [ref]$months)
+        if ($months -lt 1) { $months = 1 }
+        $r2 = Invoke-AdminApi 'POST' ('/api/admin/users/' + $r.user.id + '/membership') @{
+          plan = 'Pro'; months = $months; note = '注册时开通'
+        }
+        $exp = ''
+        if ($r2.membership -and $r2.membership.expiresAt) { $exp = ([string]$r2.membership.expiresAt).Substring(0, 10) }
+        $extra = "`n" + '已开通 Pro ' + $months + ' 个月，到期 ' + $exp
+      }
+      [System.Windows.Forms.MessageBox]::Show('已注册 ' + $txtEmail.Text.Trim() + $extra + "`n`n" + '可在 Zotero：设置 → PaperPilot 中登录使用。', '注册成功', 'OK', 'Information') | Out-Null
       $dlg.Close()
     } catch {
       $lblMsg2.Text = '注册失败：' + (Get-HttpErrorDetail $_)
@@ -844,8 +900,8 @@ function Show-RegisterUser {
 function Show-UserList {
   if (-not (Require-ServerRunning)) { return }
   $dlg = New-Object System.Windows.Forms.Form
-  $dlg.Text = '账号列表'
-  $dlg.ClientSize = New-Object System.Drawing.Size(720, 420)
+  $dlg.Text = '账号列表（会员 / 密码 / 删除）'
+  $dlg.ClientSize = New-Object System.Drawing.Size(820, 420)
   $dlg.StartPosition = 'CenterParent'
   $dlg.FormBorderStyle = 'FixedSingle'
   $dlg.MaximizeBox = $false
@@ -855,13 +911,13 @@ function Show-UserList {
   $lv = New-Object System.Windows.Forms.ListView
   $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.HideSelection = $false
   $lv.Location = New-Object System.Drawing.Point(12, 12)
-  $lv.Size = New-Object System.Drawing.Size(696, 320)
-  [void]$lv.Columns.Add('邮箱', 190)
-  [void]$lv.Columns.Add('昵称', 100)
-  [void]$lv.Columns.Add('套餐', 60)
-  [void]$lv.Columns.Add('今日用量', 90)
-  [void]$lv.Columns.Add('套餐有效期', 100)
-  [void]$lv.Columns.Add('最近登录', 130)
+  $lv.Size = New-Object System.Drawing.Size(796, 320)
+  [void]$lv.Columns.Add('邮箱', 195)
+  [void]$lv.Columns.Add('昵称', 90)
+  [void]$lv.Columns.Add('等级', 55)
+  [void]$lv.Columns.Add('会员到期', 150)
+  [void]$lv.Columns.Add('今日用量', 80)
+  [void]$lv.Columns.Add('最近登录', 105)
   [void]$dlg.Controls.Add($lv)
 
   $script:ulRows = @()
@@ -874,8 +930,8 @@ function Show-UserList {
         $it = New-Object System.Windows.Forms.ListViewItem([string]$u.email)
         [void]$it.SubItems.Add([string]($u.nickname))
         [void]$it.SubItems.Add([string]($u.plan))
+        [void]$it.SubItems.Add((Get-MembershipText $u))
         [void]$it.SubItems.Add(($u.dailyUsed.ToString() + ' / ' + $u.dailyLimit.ToString()))
-        [void]$it.SubItems.Add($(if ($u.expiresAt) { ([string]$u.expiresAt).Substring(0, 10) } else { '永久' }))
         $last = '从未'
         if ($u.lastLoginAt) { $last = ([string]$u.lastLoginAt).Replace('T', ' ').Substring(0, 16) }
         [void]$it.SubItems.Add($last)
@@ -893,7 +949,81 @@ function Show-UserList {
     [void]$dlg.Controls.Add($b)
   }
 
-  New-UBtn '编辑（套餐/有效期）' 12 150 {
+  # 0.23.0：开通 / 续期（叠加式）—— 与 Web 管理页同一套语义
+  New-UBtn '开通/续期（叠加）' 12 140 {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    $u = $script:ulRows[$lv.SelectedItems[0].Index]
+    $gm = New-Object System.Windows.Forms.Form
+    $gm.Text = '开通 / 续期：' + $u.email
+    $gm.ClientSize = New-Object System.Drawing.Size(440, 250)
+    $gm.StartPosition = 'CenterParent'
+    $gm.FormBorderStyle = 'FixedSingle'
+    $gm.MaximizeBox = $false
+    $gm.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+    $gm.Icon = $script:appIcon
+
+    $cur = '当前：' + [string]$u.plan + '，无到期日'
+    $mCur = $u.membership
+    if ($mCur -and $mCur.expiresAt) {
+      $d0 = ([string]$mCur.expiresAt).Substring(0, 10)
+      if ($mCur.expired) { $cur = '当前：已过期（' + $d0 + '）' }
+      else { $cur = '当前：' + [string]$mCur.plan + '，剩 ' + $mCur.daysLeft + ' 天（' + $d0 + ' 到期）' }
+    }
+    $lc = New-Object System.Windows.Forms.Label
+    $lc.Text = $cur
+    $lc.ForeColor = [System.Drawing.Color]::DimGray
+    $lc.SetBounds(16, 14, 408, 20)
+    [void]$gm.Controls.Add($lc)
+
+    $lp = New-Object System.Windows.Forms.Label; $lp.Text = '套餐'; $lp.SetBounds(16, 48, 60, 20); [void]$gm.Controls.Add($lp)
+    $gp = New-Object System.Windows.Forms.ComboBox; $gp.DropDownStyle = 'DropDownList'
+    $gp.SetBounds(96, 46, 150, 24)
+    try {
+      $plDoc = Invoke-AdminApi 'GET' '/api/admin/membership'
+      foreach ($p in $plDoc.plans.plans) { if ($p.purchasable) { [void]$gp.Items.Add([string]$p.id) } }
+    } catch {}
+    if ($gp.Items.Count -eq 0) { [void]$gp.Items.Add('Pro') }
+    $gp.SelectedIndex = 0
+    [void]$gm.Controls.Add($gp)
+
+    $lm = New-Object System.Windows.Forms.Label; $lm.Text = '时长（月）'; $lm.SetBounds(16, 84, 80, 20); [void]$gm.Controls.Add($lm)
+    $tm = New-Object System.Windows.Forms.TextBox; $tm.Text = '1'; $tm.SetBounds(96, 82, 80, 24); [void]$gm.Controls.Add($tm)
+
+    $ln = New-Object System.Windows.Forms.Label; $ln.Text = '备注'; $ln.SetBounds(16, 120, 80, 20); [void]$gm.Controls.Add($ln)
+    $tn = New-Object System.Windows.Forms.TextBox; $tn.SetBounds(96, 118, 320, 24); [void]$gm.Controls.Add($tn)
+
+    $lh = New-Object System.Windows.Forms.Label
+    $lh.Text = '按「剩余时长 + 本次时长」叠加；要把到期日钉成固定日期请用「编辑」。'
+    $lh.ForeColor = [System.Drawing.Color]::DimGray
+    $lh.SetBounds(16, 150, 410, 20)
+    [void]$gm.Controls.Add($lh)
+
+    $bg = New-Object System.Windows.Forms.Button; $bg.Text = '确认开通'
+    $bg.SetBounds(216, 190, 100, 32)
+    $bg.add_Click({
+      $months = 1
+      [void][int]::TryParse($tm.Text, [ref]$months)
+      if ($months -lt 1) { $months = 1 }
+      try {
+        $r2 = Invoke-AdminApi 'POST' ('/api/admin/users/' + $u.id + '/membership') @{
+          plan = [string]$gp.SelectedItem; months = $months; note = $tn.Text.Trim()
+        }
+        $exp2 = ''
+        if ($r2.membership -and $r2.membership.expiresAt) { $exp2 = ([string]$r2.membership.expiresAt).Substring(0, 10) }
+        [System.Windows.Forms.MessageBox]::Show('已为 ' + $u.email + ' 开通 ' + $months + ' 个月，到期 ' + $exp2, '成功', 'OK', 'Information') | Out-Null
+        $gm.Close()
+        Refresh-UserList
+      } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '开通失败', 'OK', 'Warning') | Out-Null }
+    })
+    [void]$gm.Controls.Add($bg)
+    $bx = New-Object System.Windows.Forms.Button; $bx.Text = '取消'
+    $bx.SetBounds(326, 190, 100, 32); $bx.add_Click({ $gm.Close() })
+    [void]$gm.Controls.Add($bx)
+
+    [void]$gm.ShowDialog($dlg)
+    $gm.Dispose()
+  }
+  New-UBtn '编辑（等级/到期）' 158 140 {
     if ($lv.SelectedItems.Count -eq 0) { return }
     $u = $script:ulRows[$lv.SelectedItems[0].Index]
     $ed = New-Object System.Windows.Forms.Form
@@ -906,13 +1036,13 @@ function Show-UserList {
     $ed.Icon = $script:appIcon
     $l1 = New-Object System.Windows.Forms.Label; $l1.Text = '昵称'; $l1.SetBounds(16, 16, 80, 20); [void]$ed.Controls.Add($l1)
     $t1 = New-Object System.Windows.Forms.TextBox; $t1.Text = [string]$u.nickname; $t1.SetBounds(100, 14, 250, 24); [void]$ed.Controls.Add($t1)
-    $l2 = New-Object System.Windows.Forms.Label; $l2.Text = '套餐'; $l2.SetBounds(16, 48, 80, 20); [void]$ed.Controls.Add($l2)
+    $l2 = New-Object System.Windows.Forms.Label; $l2.Text = '等级（覆盖式）'; $l2.SetBounds(16, 48, 90, 20); [void]$ed.Controls.Add($l2)
     $cb = New-Object System.Windows.Forms.ComboBox; $cb.DropDownStyle = 'DropDownList'
-    foreach ($p in @('Free', 'Pro', 'Team')) { [void]$cb.Items.Add($p) }
+    foreach ($p in @('Free', 'Pro')) { [void]$cb.Items.Add($p) }
     $cb.SelectedItem = [string]$u.planRaw
     if (-not $cb.SelectedItem) { $cb.SelectedIndex = 0 }
-    $cb.SetBounds(100, 46, 120, 24); [void]$ed.Controls.Add($cb)
-    $l3 = New-Object System.Windows.Forms.Label; $l3.Text = '套餐有效期'; $l3.SetBounds(16, 80, 90, 20); [void]$ed.Controls.Add($l3)
+    $cb.SetBounds(112, 46, 120, 24); [void]$ed.Controls.Add($cb)
+    $l3 = New-Object System.Windows.Forms.Label; $l3.Text = '会员到期日'; $l3.SetBounds(16, 80, 90, 20); [void]$ed.Controls.Add($l3)
     $dt = New-Object System.Windows.Forms.DateTimePicker
     $dt.Format = 'Short'; $dt.ShowCheckBox = $true
     if ($u.expiresAt) { $dt.Checked = $true; $dt.Value = [datetime]([string]$u.expiresAt).Substring(0, 10) } else { $dt.Checked = $false }
@@ -934,7 +1064,7 @@ function Show-UserList {
     [void]$ed.ShowDialog($dlg)
     $ed.Dispose()
   }
-  New-UBtn '重置密码' 172 110 {
+  New-UBtn '重置密码' 304 100 {
     if ($lv.SelectedItems.Count -eq 0) { return }
     $u = $script:ulRows[$lv.SelectedItems[0].Index]
     $pw = [Microsoft.VisualBasic.Interaction]::InputBox('为 ' + $u.email + ' 设置新密码（≥8 位，将吊销其全部登录会话）：', '重置密码', '')
@@ -944,7 +1074,7 @@ function Show-UserList {
       [System.Windows.Forms.MessageBox]::Show('密码已重置，该用户既有登录已全部吊销。', '成功', 'OK', 'Information') | Out-Null
     } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '失败', 'OK', 'Warning') | Out-Null }
   }
-  New-UBtn '删除用户' 292 110 {
+  New-UBtn '删除用户' 410 100 {
     if ($lv.SelectedItems.Count -eq 0) { return }
     $u = $script:ulRows[$lv.SelectedItems[0].Index]
     $r = [System.Windows.Forms.MessageBox]::Show('确定删除用户 ' + $u.email + '？其全部登录会话将被吊销。', '删除用户', 'YesNo', 'Question')
@@ -954,11 +1084,634 @@ function Show-UserList {
       Refresh-UserList
     } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '失败', 'OK', 'Warning') | Out-Null }
   }
-  New-UBtn '注册新账号' 412 130 { [void](Show-RegisterUser); Refresh-UserList }
-  New-UBtn '刷新' 552 60 { Refresh-UserList }
-  New-UBtn '关闭' 620 88 { $dlg.Close() }
+  New-UBtn '注册新账号' 516 110 { [void](Show-RegisterUser); Refresh-UserList }
+  New-UBtn '刷新' 632 56 { Refresh-UserList }
+  New-UBtn '关闭' 694 114 { $dlg.Close() }
 
   Refresh-UserList
+  [void]$dlg.ShowDialog($form)
+  $dlg.Dispose()
+}
+
+# ============================================================
+# 价格条目 新增/编辑 子对话框（0.23.1）
+#   价格条目 = 会员等级 × 计费周期 × 生效时段；时段重叠时按优先级决胜
+#   ⚠️ PS 5.1：不要把「+」放在续行开头（会报「表达式中缺少右)」），一律拆中间变量
+# ============================================================
+function Get-PriceRangeText([string]$from, [string]$to) {
+  $f = '立即'
+  $t = '长期'
+  if ($from -and $from.Length -ge 10) { $f = $from.Substring(0, 10) }
+  if ($to -and $to.Length -ge 10) { $t = $to.Substring(0, 10) }
+  return ($f + ' → ' + $t)
+}
+
+function Show-PriceForm($parent, $editing) {
+  $fm = New-Object System.Windows.Forms.Form
+  if ($editing) { $fm.Text = '编辑价格（' + [string]$editing.planName + ' · ' + [string]$editing.cycleName + '）' }
+  else { $fm.Text = '新增价格条目' }
+  $fm.ClientSize = New-Object System.Drawing.Size(500, 400)
+  $fm.StartPosition = 'CenterParent'
+  $fm.FormBorderStyle = 'FixedSingle'
+  $fm.MaximizeBox = $false
+  $fm.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+  $fm.Icon = $script:appIcon
+
+  function New-PRLabel([string]$text, [int]$y, [int]$w) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.SetBounds(16, $y, $w, 20)
+    [void]$fm.Controls.Add($l)
+  }
+
+  New-PRLabel '会员等级 *' 18 120
+  $selPlan = New-Object System.Windows.Forms.ComboBox
+  $selPlan.DropDownStyle = 'DropDownList'
+  $selPlan.SetBounds(180, 15, 290, 24)
+  foreach ($p in $script:mbPricePlans) {
+    [void]$selPlan.Items.Add(([string]$p.name + '（' + [string]$p.id + '）'))
+  }
+  [void]$fm.Controls.Add($selPlan)
+
+  New-PRLabel '计费周期 *' 52 120
+  $selCycle = New-Object System.Windows.Forms.ComboBox
+  $selCycle.DropDownStyle = 'DropDownList'
+  $selCycle.SetBounds(180, 49, 290, 24)
+  foreach ($c in $script:mbCycles) {
+    [void]$selCycle.Items.Add(([string]$c.id + ' · ' + [string]$c.name + '（' + $c.months + ' 个月）'))
+  }
+  [void]$fm.Controls.Add($selCycle)
+
+  New-PRLabel '周期月数 *' 86 120
+  $txtMonths = New-Object System.Windows.Forms.TextBox
+  $txtMonths.Text = '1'
+  $txtMonths.SetBounds(180, 83, 80, 24)
+  [void]$fm.Controls.Add($txtMonths)
+
+  New-PRLabel '该周期总价（¥）*' 120 150
+  $txtPrice = New-Object System.Windows.Forms.TextBox
+  $txtPrice.Text = '0'
+  $txtPrice.SetBounds(180, 117, 80, 24)
+  [void]$fm.Controls.Add($txtPrice)
+  $lblPer = New-Object System.Windows.Forms.Label
+  $lblPer.ForeColor = [System.Drawing.Color]::DimGray
+  $lblPer.SetBounds(270, 120, 210, 20)
+  [void]$fm.Controls.Add($lblPer)
+
+  New-PRLabel '展示名（可空）' 154 150
+  $txtLabel = New-Object System.Windows.Forms.TextBox
+  $txtLabel.SetBounds(180, 151, 290, 24)
+  [void]$fm.Controls.Add($txtLabel)
+
+  New-PRLabel '生效起始（不勾=立即）' 188 160
+  $dtFrom = New-Object System.Windows.Forms.DateTimePicker
+  $dtFrom.Format = 'Custom'
+  $dtFrom.CustomFormat = 'yyyy-MM-dd HH:mm'
+  $dtFrom.ShowCheckBox = $true
+  $dtFrom.Checked = $false
+  $dtFrom.SetBounds(180, 185, 170, 24)
+  [void]$fm.Controls.Add($dtFrom)
+
+  New-PRLabel '生效截止（不勾=长期）' 218 160
+  $dtTo = New-Object System.Windows.Forms.DateTimePicker
+  $dtTo.Format = 'Custom'
+  $dtTo.CustomFormat = 'yyyy-MM-dd HH:mm'
+  $dtTo.ShowCheckBox = $true
+  $dtTo.Checked = $false
+  $dtTo.SetBounds(180, 215, 170, 24)
+  [void]$fm.Controls.Add($dtTo)
+
+  New-PRLabel '优先级 0-9' 248 120
+  $txtPrio = New-Object System.Windows.Forms.TextBox
+  $txtPrio.Text = '0'
+  $txtPrio.SetBounds(180, 245, 60, 24)
+  [void]$fm.Controls.Add($txtPrio)
+  $lblPrioHint = New-Object System.Windows.Forms.Label
+  $lblPrioHint.Text = '时段重叠时高者胜（促销建议给 1+）'
+  $lblPrioHint.ForeColor = [System.Drawing.Color]::DimGray
+  $lblPrioHint.SetBounds(248, 248, 230, 20)
+  [void]$fm.Controls.Add($lblPrioHint)
+
+  $chkEnabled = New-Object System.Windows.Forms.CheckBox
+  $chkEnabled.Text = '启用（取消勾选 = 停用但保留配置）'
+  $chkEnabled.Checked = $true
+  $chkEnabled.SetBounds(180, 275, 290, 24)
+  [void]$fm.Controls.Add($chkEnabled)
+
+  New-PRLabel '备注（可空）' 306 120
+  $txtNote = New-Object System.Windows.Forms.TextBox
+  $txtNote.SetBounds(180, 303, 290, 24)
+  [void]$fm.Controls.Add($txtNote)
+
+  # 回填 / 默认值
+  if ($editing) {
+    $selPlan.Text = ([string]$editing.planName + '（' + [string]$editing.plan + '）')
+    foreach ($item in $selCycle.Items) {
+      if (([string]$item -split ' · ')[0] -eq [string]$editing.cycle) { $selCycle.SelectedItem = $item }
+    }
+    if (-not $selCycle.SelectedItem -and $selCycle.Items.Count -gt 0) { $selCycle.SelectedIndex = 0 }
+    $txtMonths.Text = [string]$editing.months
+    $txtPrice.Text = [string]$editing.price
+    $txtLabel.Text = [string]$editing.label
+    $txtPrio.Text = [string]$editing.priority
+    $chkEnabled.Checked = [bool]$editing.enabled
+    $txtNote.Text = [string]$editing.note
+    if ($editing.effectiveFrom) {
+      try { $dtFrom.Value = [datetime]([string]$editing.effectiveFrom).Substring(0, 16).Replace('T', ' '); $dtFrom.Checked = $true } catch {}
+    }
+    if ($editing.effectiveTo) {
+      try { $dtTo.Value = [datetime]([string]$editing.effectiveTo).Substring(0, 16).Replace('T', ' '); $dtTo.Checked = $true } catch {}
+    }
+  } else {
+    if ($selPlan.Items.Count -eq 0) {
+      [System.Windows.Forms.MessageBox]::Show('没有可配置价格的等级（免费版不需要配价）', '提示', 'OK', 'Information') | Out-Null
+      $fm.Dispose()
+      return
+    }
+    $selPlan.SelectedIndex = 0
+    if ($selCycle.Items.Count -gt 0) { $selCycle.SelectedIndex = 0 }
+  }
+
+  # 联动：选周期自动带出月数；周期/价格/月数变化实时显示折合月单价
+  $syncPer = {
+    $m = 0
+    [void][int]::TryParse($txtMonths.Text, [ref]$m)
+    $p = 0.0
+    [void][double]::TryParse($txtPrice.Text, [ref]$p)
+    if ($m -gt 0) { $lblPer.Text = ('折合 ¥' + [math]::Round($p / $m, 2) + ' / 月') }
+    else { $lblPer.Text = '' }
+  }
+  $selCycle.add_SelectedIndexChanged({
+    $cid = (([string]$selCycle.SelectedItem) -split ' · ')[0]
+    foreach ($c in $script:mbCycles) {
+      if ([string]$c.id -eq $cid -and [int]$c.months -gt 0) { $txtMonths.Text = [string]$c.months }
+    }
+    & $syncPer
+  })
+  $txtMonths.add_TextChanged($syncPer)
+  $txtPrice.add_TextChanged($syncPer)
+  & $syncPer
+
+  $lblMsg = New-Object System.Windows.Forms.Label
+  $lblMsg.ForeColor = [System.Drawing.Color]::Firebrick
+  $lblMsg.SetBounds(16, 330, 460, 20)
+  [void]$fm.Controls.Add($lblMsg)
+
+  $btnOk = New-Object System.Windows.Forms.Button
+  $btnOk.Text = '保存'
+  $btnOk.SetBounds(280, 354, 90, 32)
+  $btnOk.add_Click({
+    $months = 0
+    [void][int]::TryParse($txtMonths.Text, [ref]$months)
+    $price = 0.0
+    [void][double]::TryParse($txtPrice.Text, [ref]$price)
+    $prio = 0
+    [void][int]::TryParse($txtPrio.Text, [ref]$prio)
+    if ($months -lt 1) { $lblMsg.Text = '周期月数必须 ≥ 1'; return }
+    if ($price -le 0) { $lblMsg.Text = '价格必须大于 0'; return }
+    $pid = $selPlan.Text
+    $lp = $pid.LastIndexOf('（')
+    if ($lp -gt 0) { $pid = $pid.Substring($lp + 1).TrimEnd('）') }
+    $fromIso = $null
+    if ($dtFrom.Checked) { $fromIso = $dtFrom.Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    $toIso = $null
+    if ($dtTo.Checked) { $toIso = $dtTo.Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    $body = @{
+      plan = $pid
+      cycle = (([string]$selCycle.SelectedItem) -split ' · ')[0]
+      months = $months
+      price = $price
+      label = $txtLabel.Text.Trim()
+      effectiveFrom = $fromIso
+      effectiveTo = $toIso
+      priority = $prio
+      enabled = [bool]$chkEnabled.Checked
+      note = $txtNote.Text.Trim()
+    }
+    try {
+      if ($editing) { [void](Invoke-AdminApi 'PUT' ('/api/admin/prices/' + $editing.id) $body) }
+      else { [void](Invoke-AdminApi 'POST' '/api/admin/prices' $body) }
+      $fm.Close()
+      Refresh-Membership
+    } catch { $lblMsg.Text = Get-HttpErrorDetail $_ }
+  })
+  [void]$fm.Controls.Add($btnOk)
+
+  $btnNo = New-Object System.Windows.Forms.Button
+  $btnNo.Text = '取消'
+  $btnNo.SetBounds(380, 354, 90, 32)
+  $btnNo.add_Click({ $fm.Close() })
+  [void]$fm.Controls.Add($btnNo)
+
+  [void]$fm.ShowDialog($parent)
+  $fm.Dispose()
+}
+
+# ============================================================
+# 会员管理对话框（0.23.0）：订单核销 / 激活码 / 价格与周期 / 套餐与收款
+#   购买流程：用户在插件内下单 → 扫码付款后点「我已完成支付」→ 这里核销即自动开通
+#   （订单绑定账号，用户无需再输码；核销同时留档一枚已用兑换码便于对账）
+#   续期一律按「剩余时长 + 本次时长」叠加 —— 与 Web 管理页（/admin）同一套接口
+# ============================================================
+function Show-MembershipManager {
+  if (-not (Require-ServerRunning)) { return }
+  $dlg = New-Object System.Windows.Forms.Form
+  $dlg.Text = '会员管理（订单 / 激活码 / 套餐配置）'
+  $dlg.ClientSize = New-Object System.Drawing.Size(900, 580)
+  $dlg.StartPosition = 'CenterParent'
+  $dlg.MinimizeBox = $false
+  $dlg.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+  $dlg.Icon = $script:appIcon
+
+  $script:mbOrders = @()
+  $script:mbCodes = @()
+  $script:mbPrices = @()
+  $script:mbCycles = @()
+  $script:mbPricePlans = @()
+
+  $lblTop = New-Object System.Windows.Forms.Label
+  $lblTop.SetBounds(14, 8, 872, 38)
+  $lblTop.ForeColor = [System.Drawing.Color]::DimGray
+  $lblTop.Text = '加载中…'
+  [void]$dlg.Controls.Add($lblTop)
+
+  $tabs = New-Object System.Windows.Forms.TabControl
+  $tabs.SetBounds(14, 50, 872, 472)
+  [void]$dlg.Controls.Add($tabs)
+
+  # ---------------- 页 1：订单 ----------------
+  $pgOrder = New-Object System.Windows.Forms.TabPage
+  $pgOrder.Text = '订单'
+  [void]$tabs.TabPages.Add($pgOrder)
+
+  $lvO = New-Object System.Windows.Forms.ListView
+  $lvO.View = 'Details'; $lvO.FullRowSelect = $true; $lvO.HideSelection = $false
+  $lvO.SetBounds(8, 8, 848, 380)
+  [void]$lvO.Columns.Add('订单号', 110)
+  [void]$lvO.Columns.Add('用户', 200)
+  [void]$lvO.Columns.Add('套餐 / 时长', 120)
+  [void]$lvO.Columns.Add('金额', 70)
+  [void]$lvO.Columns.Add('状态', 70)
+  [void]$lvO.Columns.Add('下单时间', 130)
+  [void]$lvO.Columns.Add('已支付', 130)
+  [void]$pgOrder.Controls.Add($lvO)
+
+  $lblOTip = New-Object System.Windows.Forms.Label
+  $lblOTip.Text = '选中一行后点「核销开通」即给该账号叠加会员（未支付订单 7 天后自动过期）'
+  $lblOTip.ForeColor = [System.Drawing.Color]::DimGray
+  $lblOTip.SetBounds(8, 394, 848, 20)
+  [void]$pgOrder.Controls.Add($lblOTip)
+
+  function New-MbBtn($parent, [string]$text, [int]$x, [int]$y, [int]$w, $handler) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.SetBounds($x, $y, $w, 30)
+    $b.add_Click($handler)
+    [void]$parent.Controls.Add($b)
+    return $b
+  }
+
+  function Refresh-Membership {
+    try {
+      $r = Invoke-AdminApi 'GET' '/api/admin/membership'
+      $script:mbOrders = @($r.orders)
+      $script:mbCodes = @($r.codes)
+      $lvO.Items.Clear()
+      foreach ($o in $r.orders) {
+        $it = New-Object System.Windows.Forms.ListViewItem([string]$o.id)
+        [void]$it.SubItems.Add([string]$o.email)
+        [void]$it.SubItems.Add(([string]$o.plan) + ' · ' + $o.months + ' 个月')
+        [void]$it.SubItems.Add(('¥' + $o.amount))
+        [void]$it.SubItems.Add((Get-OrderStatusText ([string]$o.status)))
+        [void]$it.SubItems.Add((Format-Dt ([string]$o.createdAt)))
+        [void]$it.SubItems.Add((Format-Dt ([string]$o.claimedAt)))
+        [void]$lvO.Items.Add($it)
+      }
+      # 激活码页
+      $lvC.Items.Clear()
+      foreach ($c in $r.codes) {
+        $it = New-Object System.Windows.Forms.ListViewItem([string]$c.code)
+        [void]$it.SubItems.Add(([string]$c.plan) + ' · ' + $c.months + ' 个月')
+        [void]$it.SubItems.Add((Get-CodeStatusText ([string]$c.status)))
+        [void]$it.SubItems.Add($(if ($c.usedByEmail) { [string]$c.usedByEmail } elseif ($c.boundToEmail) { '定向 ' + [string]$c.boundToEmail } else { '—' }))
+        [void]$it.SubItems.Add([string]$c.note)
+        [void]$it.SubItems.Add((Format-Dt ([string]$c.usedAt)))
+        [void]$lvC.Items.Add($it)
+      }
+      $cnt = $r.counts
+      # ⚠️ 不要写「换行后以 + 开头」的续行：PS 5.1 解析器不认，会报「表达式中缺少右)」
+      #    （最小复现已验：`$x = ('a' + $b` 换行 `+ 'c')` 直接语法错误）→ 拆成中间变量
+      $s1 = '待核销订单 ' + $cnt.awaitingReview + ' ｜ 未使用激活码 ' + $cnt.codesUnused + ' ｜ '
+      $s2 = '已核销订单 ' + $cnt.fulfilled + ' ｜ 共 ' + $r.orders.Count + ' 个订单、' + $r.codes.Count + ' 枚激活码'
+      $lblTop.Text = ($s1 + $s2)
+      # 价格表页（0.23.1）：单独拉一次，失败不影响订单/激活码区
+      try {
+        $prd = Invoke-AdminApi 'GET' '/api/admin/prices'
+        $script:mbPrices = @($prd.items)
+        $script:mbCycles = @($prd.cycles)
+        $script:mbPricePlans = @($prd.plans)
+        $lvP.Items.Clear()
+        foreach ($it in $prd.items) {
+          $st = [string]$it.stateText
+          if ($it.winner) { $st = $st + ' · 当前' }
+          $row = New-Object System.Windows.Forms.ListViewItem([string]$it.planName)
+          [void]$row.SubItems.Add([string]$it.cycleName)
+          [void]$row.SubItems.Add(([string]$it.months + ' 个月'))
+          [void]$row.SubItems.Add(('¥' + [string]$it.price))
+          [void]$row.SubItems.Add(('¥' + [string]$it.perMonth + '/月'))
+          [void]$row.SubItems.Add((Get-PriceRangeText ([string]$it.effectiveFrom) ([string]$it.effectiveTo)))
+          [void]$row.SubItems.Add([string]$it.priority)
+          [void]$row.SubItems.Add($st)
+          [void]$row.SubItems.Add([string]$it.note)
+          [void]$lvP.Items.Add($row)
+        }
+        $lblTop.Text = $lblTop.Text + ' ｜ 价格 ' + $script:mbPrices.Count + ' 条（生效中 '
+        $active = 0
+        foreach ($it in $script:mbPrices) { if ($it.state -eq 'active') { $active = $active + 1 } }
+        $lblTop.Text = $lblTop.Text + $active + '）'
+      } catch {
+        $script:mbPrices = @()
+        $lvP.Items.Clear()
+      }
+      # 套餐配置页（避免 $hash[[string]$k] 这种嵌套方括号写法——PS 5.1 解析器会报错）
+      $freePlan = $r.plans.plans | Where-Object { $_.id -eq 'Free' } | Select-Object -First 1
+      $proPlan = $r.plans.plans | Where-Object { $_.id -eq 'Pro' } | Select-Object -First 1
+      if ($freePlan) { $txtFreeLimit.Text = [string]$freePlan.dailyLimit }
+      if ($proPlan) {
+        $txtProLimit.Text = [string]$proPlan.dailyLimit
+        $txtProPrice.Text = [string]$proPlan.price
+      }
+      $txtPayChannel.Text = [string]$r.plans.pay.channel
+      $txtPayQr.Text = [string]$r.plans.pay.qrImage
+      $txtPayText.Text = [string]$r.plans.pay.qrText
+      $txtPayNote.Text = [string]$r.plans.pay.note
+      # 生成激活码的套餐下拉（只列可购买的）
+      $selCodePlan.Items.Clear()
+      foreach ($p in $r.plans.plans) { if ($p.purchasable) { [void]$selCodePlan.Items.Add([string]$p.id) } }
+      if ($selCodePlan.Items.Count -gt 0 -and -not $selCodePlan.SelectedItem) { $selCodePlan.SelectedIndex = 0 }
+      $opts = @()
+      foreach ($po in $r.plans.priceOptions) { $opts += ($po.label + ' ¥' + $po.price) }
+      $lblPrice.Text = $(if ($opts.Count -gt 0) { '当前价格档位：' + ($opts -join '　|　') } else { '当前无价格档位' })
+      $r = $null
+    } catch {
+      [System.Windows.Forms.MessageBox]::Show('加载会员数据失败：' + (Get-HttpErrorDetail $_), '错误', 'OK', 'Warning') | Out-Null
+    }
+  }
+
+  New-MbBtn $pgOrder '核销开通（叠加会员）' 8 420 170 {
+    if ($lvO.SelectedItems.Count -eq 0) {
+      [System.Windows.Forms.MessageBox]::Show('请先选中一个订单', '提示', 'OK', 'Information') | Out-Null
+      return
+    }
+    $o = $script:mbOrders[$lvO.SelectedItems[0].Index]
+    if ($o.status -eq 'fulfilled') { [System.Windows.Forms.MessageBox]::Show('该订单已核销，无需重复操作', '提示', 'OK', 'Information') | Out-Null; return }
+    if ($o.status -eq 'cancelled') { [System.Windows.Forms.MessageBox]::Show('该订单已取消，无法核销', '提示', 'OK', 'Information') | Out-Null; return }
+    $q = '确认已收到订单 ' + $o.id + ' 的款项 ¥' + $o.amount + '？' + "`n" + '将立即为 ' + $o.email + ' 叠加 ' + $o.months + ' 个月' + $o.plan + '。'
+    if ([System.Windows.Forms.MessageBox]::Show($q, '核销订单', 'YesNo', 'Question') -ne 'Yes') { return }
+    try {
+      $r = Invoke-AdminApi 'POST' ('/api/admin/orders/' + $o.id + '/fulfill') @{}
+      $exp = ''
+      if ($r.user -and $r.user.membership -and $r.user.membership.expiresAt) { $exp = ([string]$r.user.membership.expiresAt).Substring(0, 10) }
+      $mark = ''
+      if ($r.archiveCode) { $mark = $r.archiveCode.code }
+      [System.Windows.Forms.MessageBox]::Show('已核销并开通。' + "`n`n" + '用户：' + $r.user.email + "`n" + '会员到期：' + $exp + "`n" + '留档兑换码：' + $mark, '核销成功', 'OK', 'Information') | Out-Null
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '核销失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgOrder '取消订单' 186 420 100 {
+    if ($lvO.SelectedItems.Count -eq 0) { return }
+    $o = $script:mbOrders[$lvO.SelectedItems[0].Index]
+    if ([System.Windows.Forms.MessageBox]::Show('取消订单 ' + $o.id + '？用户端会显示为已取消。', '取消订单', 'YesNo', 'Question') -ne 'Yes') { return }
+    try {
+      [void](Invoke-AdminApi 'POST' ('/api/admin/orders/' + $o.id + '/cancel') @{ reason = '管理员取消' })
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '取消失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgOrder '刷新' 294 420 70 { Refresh-Membership }
+  New-MbBtn $pgOrder '打开 Web 管理页' 372 420 130 {
+    Open-Url $AdminPage
+  }
+  New-MbBtn $pgOrder '关闭' 760 420 96 { $dlg.Close() }
+
+  # ---------------- 页 2：激活码 ----------------
+  $pgCode = New-Object System.Windows.Forms.TabPage
+  $pgCode.Text = '激活码'
+  [void]$tabs.TabPages.Add($pgCode)
+
+  $lblGen = New-Object System.Windows.Forms.Label
+  $lblGen.Text = '套餐'
+  $lblGen.SetBounds(8, 14, 40, 20)
+  [void]$pgCode.Controls.Add($lblGen)
+  $selCodePlan = New-Object System.Windows.Forms.ComboBox
+  $selCodePlan.DropDownStyle = 'DropDownList'
+  $selCodePlan.SetBounds(50, 11, 110, 24)
+  [void]$pgCode.Controls.Add($selCodePlan)
+
+  $lblM = New-Object System.Windows.Forms.Label
+  $lblM.Text = '时长(月)'
+  $lblM.SetBounds(172, 14, 56, 20)
+  [void]$pgCode.Controls.Add($lblM)
+  $txtCodeMonths = New-Object System.Windows.Forms.TextBox
+  $txtCodeMonths.Text = '1'
+  $txtCodeMonths.SetBounds(232, 11, 50, 24)
+  [void]$pgCode.Controls.Add($txtCodeMonths)
+
+  $lblN = New-Object System.Windows.Forms.Label
+  $lblN.Text = '数量'
+  $lblN.SetBounds(292, 14, 34, 20)
+  [void]$pgCode.Controls.Add($lblN)
+  $txtCodeCount = New-Object System.Windows.Forms.TextBox
+  $txtCodeCount.Text = '1'
+  $txtCodeCount.SetBounds(328, 11, 50, 24)
+  [void]$pgCode.Controls.Add($txtCodeCount)
+
+  $lblNote = New-Object System.Windows.Forms.Label
+  $lblNote.Text = '备注'
+  $lblNote.SetBounds(388, 14, 34, 20)
+  [void]$pgCode.Controls.Add($lblNote)
+  $txtCodeNote = New-Object System.Windows.Forms.TextBox
+  $txtCodeNote.SetBounds(424, 11, 250, 24)
+  [void]$pgCode.Controls.Add($txtCodeNote)
+
+  New-MbBtn $pgCode '生成' 682 8 70 {
+    try {
+      $plan = [string]$selCodePlan.SelectedItem
+      if (-not $plan) { throw (New-Object System.Exception '请选择套餐（可购买等级）') }
+      $body = @{
+        plan = $plan
+        months = [int]$txtCodeMonths.Text
+        count = [int]$txtCodeCount.Text
+        note = $txtCodeNote.Text.Trim()
+      }
+      $r = Invoke-AdminApi 'POST' '/api/admin/codes' $body
+      $codes = @()
+      foreach ($c in $r.codes) { $codes += $c.code }
+      [System.Windows.Forms.Clipboard]::SetText(($codes -join "`r`n"))
+      [System.Windows.Forms.MessageBox]::Show(('已生成 ' + $codes.Count + ' 枚激活码（已复制到剪贴板）：' + "`n`n" + ($codes -join "`n")), '生成成功', 'OK', 'Information') | Out-Null
+      $txtCodeNote.Text = ''
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '生成失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgCode '刷新' 758 8 96 { Refresh-Membership }
+
+  $lvC = New-Object System.Windows.Forms.ListView
+  $lvC.View = 'Details'; $lvC.FullRowSelect = $true; $lvC.HideSelection = $false
+  $lvC.SetBounds(8, 44, 848, 344)
+  [void]$lvC.Columns.Add('激活码', 160)
+  [void]$lvC.Columns.Add('套餐 / 时长', 120)
+  [void]$lvC.Columns.Add('状态', 70)
+  [void]$lvC.Columns.Add('绑定 / 使用', 200)
+  [void]$lvC.Columns.Add('备注', 170)
+  [void]$lvC.Columns.Add('使用时间', 130)
+  [void]$pgCode.Controls.Add($lvC)
+
+  $lblCTip = New-Object System.Windows.Forms.Label
+  $lblCTip.Text = '激活码给线下售卖 / 赠送 / 补偿用；用户在插件「会员」卡片里输入即可激活（大小写与连字符不敏感）'
+  $lblCTip.ForeColor = [System.Drawing.Color]::DimGray
+  $lblCTip.SetBounds(8, 392, 848, 20)
+  [void]$pgCode.Controls.Add($lblCTip)
+
+  New-MbBtn $pgCode '复制选中' 8 418 100 {
+    if ($lvC.SelectedItems.Count -eq 0) { return }
+    $c = $script:mbCodes[$lvC.SelectedItems[0].Index]
+    [System.Windows.Forms.Clipboard]::SetText([string]$c.code)
+    [System.Windows.Forms.MessageBox]::Show('已复制：' + $c.code, '复制', 'OK', 'Information') | Out-Null
+  }
+  New-MbBtn $pgCode '作废选中' 116 418 100 {
+    if ($lvC.SelectedItems.Count -eq 0) { return }
+    $c = $script:mbCodes[$lvC.SelectedItems[0].Index]
+    if ($c.status -eq 'used') {
+      [System.Windows.Forms.MessageBox]::Show('已使用的激活码不能作废（保留对账记录）', '提示', 'OK', 'Information') | Out-Null
+      return
+    }
+    if ([System.Windows.Forms.MessageBox]::Show('作废激活码 ' + $c.code + '？', '作废', 'YesNo', 'Question') -ne 'Yes') { return }
+    try {
+      [void](Invoke-AdminApi 'DELETE' ('/api/admin/codes/' + $c.id))
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '作废失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgCode '关闭' 760 418 96 { $dlg.Close() }
+
+  # ---------------- 页 3：价格与周期（0.23.1） ----------------
+  $pgPrice = New-Object System.Windows.Forms.TabPage
+  $pgPrice.Text = '价格与周期'
+  [void]$tabs.TabPages.Add($pgPrice)
+
+  $lvP = New-Object System.Windows.Forms.ListView
+  $lvP.View = 'Details'; $lvP.FullRowSelect = $true; $lvP.HideSelection = $false
+  $lvP.SetBounds(8, 8, 848, 344)
+  [void]$lvP.Columns.Add('等级', 90)
+  [void]$lvP.Columns.Add('计费周期', 80)
+  [void]$lvP.Columns.Add('时长', 60)
+  [void]$lvP.Columns.Add('价格', 80)
+  [void]$lvP.Columns.Add('折合', 90)
+  [void]$lvP.Columns.Add('生效时段', 160)
+  [void]$lvP.Columns.Add('优先级', 55)
+  [void]$lvP.Columns.Add('状态', 110)
+  [void]$lvP.Columns.Add('备注', 120)
+  [void]$pgPrice.Controls.Add($lvP)
+
+  $lblPTip2 = New-Object System.Windows.Forms.Label
+  $lblPTip2.Text = '价格 = 等级 × 计费周期 × 生效时段；时段留空即「立即生效 / 长期有效」。促销不必切分基础价：时段重叠时按优先级决胜（高者胜 → 起期晚者胜）。'
+  $lblPTip2.ForeColor = [System.Drawing.Color]::DimGray
+  $lblPTip2.SetBounds(8, 356, 848, 20)
+  [void]$pgPrice.Controls.Add($lblPTip2)
+
+  New-MbBtn $pgPrice '＋ 新增价格' 8 380 110 {
+    Show-PriceForm $dlg $null
+  }
+  New-MbBtn $pgPrice '编辑' 126 380 80 {
+    if ($lvP.SelectedItems.Count -eq 0) { return }
+    Show-PriceForm $dlg $script:mbPrices[$lvP.SelectedItems[0].Index]
+  }
+  New-MbBtn $pgPrice '启用/停用' 214 380 100 {
+    if ($lvP.SelectedItems.Count -eq 0) { return }
+    $it = $script:mbPrices[$lvP.SelectedItems[0].Index]
+    try {
+      [void](Invoke-AdminApi 'PUT' ('/api/admin/prices/' + $it.id) @{ enabled = (-not [bool]$it.enabled) })
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '操作失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgPrice '删除' 322 380 80 {
+    if ($lvP.SelectedItems.Count -eq 0) { return }
+    $it = $script:mbPrices[$lvP.SelectedItems[0].Index]
+    $q = '删除价格条目「' + [string]$it.planName + ' · ' + $it.months + ' 个月 ¥' + $it.price + '」？' + "`n`n" + '历史订单不受影响（订单已存价格快照）。'
+    if ([System.Windows.Forms.MessageBox]::Show($q, '删除价格', 'YesNo', 'Question') -ne 'Yes') { return }
+    try {
+      [void](Invoke-AdminApi 'DELETE' ('/api/admin/prices/' + $it.id))
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '删除失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgPrice '刷新' 410 380 70 { Refresh-Membership }
+  New-MbBtn $pgPrice '关闭' 760 380 96 { $dlg.Close() }
+
+  # ---------------- 页 4：套餐与收款 ----------------
+  $pgPlan = New-Object System.Windows.Forms.TabPage
+  $pgPlan.Text = '套餐与收款'
+  [void]$tabs.TabPages.Add($pgPlan)
+
+  function New-PLabel($parent, [string]$text, [int]$x, [int]$y) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.SetBounds($x, $y, 150, 20)
+    [void]$parent.Controls.Add($l)
+  }
+  function New-PInput($parent, [int]$x, [int]$y, [int]$w) {
+    $t = New-Object System.Windows.Forms.TextBox
+    $t.SetBounds($x, $y, $w, 24)
+    [void]$parent.Controls.Add($t)
+    return $t
+  }
+
+  New-PLabel $pgPlan '免费版 · 每日额度（次）' 16 20
+  $txtFreeLimit = New-PInput $pgPlan 190 17 120
+  New-PLabel $pgPlan '专业版 · 每日额度（次）' 16 54
+  $txtProLimit = New-PInput $pgPlan 190 51 120
+  New-PLabel $pgPlan '专业版 · 单月价（¥）' 16 88
+  $txtProPrice = New-PInput $pgPlan 190 85 120
+  $lblPrice = New-Object System.Windows.Forms.Label
+  $lblPrice.ForeColor = [System.Drawing.Color]::DimGray
+  $lblPrice.SetBounds(330, 88, 500, 20)
+  [void]$pgPlan.Controls.Add($lblPrice)
+
+  New-PLabel $pgPlan '收款渠道名' 16 130
+  $txtPayChannel = New-PInput $pgPlan 190 127 250
+  New-PLabel $pgPlan '收款码图片地址（可空）' 16 164
+  $txtPayQr = New-PInput $pgPlan 190 161 640
+  New-PLabel $pgPlan '文字收款信息（无图片时展示）' 16 198
+  $txtPayText = New-PInput $pgPlan 190 195 640
+  New-PLabel $pgPlan '支付说明' 16 232
+  $txtPayNote = New-PInput $pgPlan 190 229 640
+
+  New-MbBtn $pgPlan '保存配置' 16 276 120 {
+    try {
+      $body = @{
+        plans = @{
+          Free = @{ dailyLimit = [int]$txtFreeLimit.Text }
+          Pro = @{ dailyLimit = [int]$txtProLimit.Text; price = [int]$txtProPrice.Text }
+        }
+        pay = @{
+          channel = $txtPayChannel.Text.Trim()
+          qrImage = $txtPayQr.Text.Trim()
+          qrText = $txtPayText.Text.Trim()
+          note = $txtPayNote.Text.Trim()
+        }
+      }
+      [void](Invoke-AdminApi 'PUT' '/api/admin/membership' $body)
+      [System.Windows.Forms.MessageBox]::Show('已保存并即时生效（插件端下次拉取即更新，无需重启服务端）', '成功', 'OK', 'Information') | Out-Null
+      Refresh-Membership
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '保存失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgPlan '重新载入' 144 276 100 { Refresh-Membership }
+  New-MbBtn $pgPlan '关闭' 760 276 96 { $dlg.Close() }
+
+  $lblPTip = New-Object System.Windows.Forms.Label
+  $lblPTip.Text = '额度改为按套餐配置下发：用户在用户级被管理员单独设过 dailyLimit 的，仍以用户级为准。' + "`n" + '同一套配置也作用于 Web 管理页（/admin → 会员管理）。'
+  $lblPTip.ForeColor = [System.Drawing.Color]::DimGray
+  $lblPTip.SetBounds(16, 320, 830, 40)
+  [void]$pgPlan.Controls.Add($lblPTip)
+
+  Refresh-Membership
   [void]$dlg.ShowDialog($form)
   $dlg.Dispose()
 }
@@ -983,7 +1736,7 @@ function Set-Startup([bool]$enable) {
 # ---------------- 主界面 ----------------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PaperPilot 后台 · 控制台'
-$form.ClientSize = New-Object System.Drawing.Size(472, 648)
+$form.ClientSize = New-Object System.Drawing.Size(472, 682)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
@@ -1062,7 +1815,7 @@ $btnLog = New-Btn $grpCtl '查看服务日志' 328 26 104 {
   else { [System.Windows.Forms.MessageBox]::Show('暂无日志文件（服务经本控制台启动后才会产生）', '提示') | Out-Null }
 }
 $lblCtlTip = New-Object System.Windows.Forms.Label
-$lblCtlTip.Text = '服务数据：server\data\（users.json / channels.json / 日志）· 关闭控制台不影响已启动的服务'
+$lblCtlTip.Text = '服务数据：server\data\（users.json / channels.json / membership.json / 日志）· 关闭控制台不影响已启动的服务'
 $lblCtlTip.ForeColor = [System.Drawing.Color]::DimGray
 $lblCtlTip.SetBounds(10, 64, 424, 20)
 [void]$grpCtl.Controls.Add($lblCtlTip)
@@ -1080,13 +1833,14 @@ $btnChPage = New-Btn $grpLlm '打开浏览器管理页' 226 64 208 {
   Open-Url $AdminPage
 }
 
-# 分组 3：账号管理
-$grpUser = New-Group '账号管理' 314 62
+# 分组 3：账号管理（0.23.0：新增「会员管理」入口 —— 订单核销 / 激活码 / 套餐与收款）
+$grpUser = New-Group '账号管理' 314 96
 $btnReg = New-Btn $grpUser '注册账号' 10 24 208 { Show-RegisterUser }
-$btnUsers = New-Btn $grpUser '用户列表（套餐/密码/删除）' 226 24 208 { Show-UserList }
+$btnUsers = New-Btn $grpUser '用户列表（会员/密码/删除）' 226 24 208 { Show-UserList }
+$btnMember = New-Btn $grpUser '会员管理（订单核销 / 激活码 / 套餐与收款）' 10 58 424 { Show-MembershipManager }
 
 # 分组 4：维护
-$grpOps = New-Group '维护' 384 94
+$grpOps = New-Group '维护' 418 94
 $btnStartup = New-Btn $grpOps '开机自启：…' 10 24 118 {
   $new = -not (Get-StartupEnabled)
   Set-Startup $new
@@ -1115,16 +1869,16 @@ $lblOpsTip.ForeColor = [System.Drawing.Color]::DimGray
 [void]$grpOps.Controls.Add($lblOpsTip)
 
 # 底部操作
-$btnTray = New-Btn $form '最小化到托盘' 14 584 150 { Hide-ToTray }
+$btnTray = New-Btn $form '最小化到托盘' 14 618 150 { Hide-ToTray }
 $btnTray.Height = 32
-$btnExit = New-Btn $form '退出程序' 174 584 110 { Exit-App }
+$btnExit = New-Btn $form '退出程序' 174 618 110 { Exit-App }
 $btnExit.Height = 32
 
 $lblMsg = New-Object System.Windows.Forms.Label
 $lblMsg.Text = ''
 $lblMsg.ForeColor = [System.Drawing.Color]::DimGray
 $lblMsg.TextAlign = 'MiddleLeft'
-$lblMsg.SetBounds(16, 622, 440, 20)
+$lblMsg.SetBounds(16, 656, 440, 20)
 [void]$form.Controls.Add($lblMsg)
 
 # ---------------- 状态刷新 ----------------

@@ -77,7 +77,22 @@
     background: var(--brand-weak); color: var(--brand); }
   .badge.gray { background: #eef0f3; color: var(--muted); }
   .badge.green { background: #d1fae5; color: var(--ok); }
+  .badge.warn { background: #fdf3d7; color: var(--warn); }
+  .badge.red { background: #fee2e2; color: var(--bad); }
+  .badge.blue { background: var(--brand-weak); color: var(--brand); }
+  .cell-sub { display: block; font-size: 11px; color: var(--muted); }
+  .cell-strong { font-weight: 600; }
+  .note-row { font-size: 12px; color: var(--warn); margin: 8px 0 0; min-height: 0; }
   .empty { text-align: center; color: var(--muted); padding: 26px 0; }
+  /* 会员管理（0.23.0） */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .kpi { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+  .kpi .n { font-size: 22px; font-weight: 700; line-height: 1.25; }
+  .kpi .t { font-size: 12px; color: var(--muted); }
+  .kpi.hot { border-color: #f59e0b; background: #fffbeb; }
+  .code-cell { font-family: var(--mono); font-size: 13px; letter-spacing: .4px; }
+  .pay-qr { max-width: 140px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+  .price-preview { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -92,6 +107,7 @@
   <div class="tabs">
     <button id="tab-channels" class="on" onclick="switchTab('channels')">模型通道</button>
     <button id="tab-users" onclick="switchTab('users')">账号管理</button>
+    <button id="tab-membership" onclick="switchTab('membership')">会员管理</button>
   </div>
 
   <!-- ============ 模型通道 ============ -->
@@ -161,25 +177,139 @@
         <div class="field"><label>邮箱 *</label><input id="u-email" type="email" required style="width:220px"></div>
         <div class="field"><label>密码 *（≥8 位）</label><input id="u-password" type="password" required minlength="8" style="width:160px"></div>
         <div class="field"><label>昵称</label><input id="u-nickname" style="width:120px"></div>
-        <div class="field"><label>套餐</label>
-          <select id="u-plan"><option>Free</option><option>Pro</option><option>Team</option></select></div>
-        <div class="field"><label>套餐有效期（可空）</label><input id="u-expires" type="date"></div>
+        <div class="field"><label>初始等级</label>
+          <select id="u-plan" onchange="toggleInitMonths()"><option>Free</option><option>Pro</option></select></div>
+        <div class="field" id="u-init-wrap" style="display:none"><label>Pro 时长（月）</label>
+          <input id="u-init-months" type="number" min="1" max="36" value="12" style="width:110px"></div>
         <button class="btn primary" type="submit">注册</button>
       </form>
+      <p class="hint" style="margin:8px 0 0">
+        选 Pro 时会按「时长」为其开通（叠加式）。日常发放/续期建议用下方用户行的「开通/续期」按钮，幂等且不会误覆盖到期日。
+      </p>
       <div class="msg" id="u-msg"></div>
     </div>
 
     <div class="card">
       <div class="toolbar"><h2 style="margin:0">用户列表</h2>
-        <button class="btn" onclick="loadUsers()">刷新</button></div>
+        <div>
+          <button class="btn" onclick="exportUsageCSV()">导出用量 CSV</button>
+          <button class="btn" onclick="loadUsers()">刷新</button>
+        </div></div>
       <table id="user-table">
         <thead><tr>
-          <th>邮箱</th><th>昵称</th><th>套餐</th><th>今日用量</th>
-          <th>套餐有效期</th><th>最近登录</th><th style="width:250px">操作</th>
+          <th>邮箱</th><th>昵称</th><th>等级</th><th>会员到期</th><th>今日用量</th>
+          <th title="最近 7 天官方模型调用次数合计">近 7 天</th>
+          <th>最近登录</th><th style="width:290px">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
       <div class="empty" id="user-empty" style="display:none">暂无用户</div>
+    </div>
+  </section>
+
+  <!-- ============ 会员管理（0.23.0） ============ -->
+  <section id="pane-membership" style="display:none">
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">会员概览</h2>
+        <button class="btn" onclick="loadMembership()">刷新</button></div>
+      <div class="kpis">
+        <div class="kpi hot"><div class="n" id="mb-k-review">0</div><div class="t">待核销订单</div></div>
+        <div class="kpi"><div class="n" id="mb-k-unused">0</div><div class="t">未使用激活码</div></div>
+        <div class="kpi"><div class="n" id="mb-k-pro">0</div><div class="t">Pro 用户</div></div>
+        <div class="kpi"><div class="n" id="mb-k-used">0</div><div class="t">已核销订单</div></div>
+      </div>
+      <p class="hint" style="margin:10px 0 0">
+        购买流程：用户在插件内下单 → 扫码付款后在插件里点「我已完成支付」→ 在此<b>核销</b>即自动为其开通
+        （订单绑定账号，用户无需再输码；核销同时留档一枚已用兑换码便于对账）。
+        线下售卖 / 赠送 / 补偿用<b>激活码</b>。续期一律按「剩余时长 + 本次时长」叠加，不会吞掉用户已买的时长。
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">订单</h2>
+        <span class="hint">未支付订单 7 天后自动过期</span></div>
+      <table id="mb-order-table">
+        <thead><tr>
+          <th>订单号</th><th>用户</th><th>套餐</th><th>金额</th><th>状态</th>
+          <th>下单时间</th><th style="width:170px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="mb-order-empty" style="display:none">暂无订单</div>
+      <div class="msg" id="mb-order-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">价格与计费周期</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn primary" onclick="openPriceForm(null)">＋ 新增价格</button>
+          <button class="btn" onclick="loadPrices()">刷新</button>
+        </div>
+      </div>
+      <p class="hint" style="margin:0 0 10px">
+        价格条目 = <b>会员等级 × 计费周期 × 生效时段</b>，全部由本表驱动，改完立即生效（无需重启服务）。
+        生效时段留空即「立即生效 / 长期有效」；填了未来的起始时间就是<b>定时生效</b>，到点自动切换，客户端会先看到「即将生效」预告。
+      </p>
+      <p class="hint" style="margin:0 0 10px">
+        <b>做促销不必切分基础价</b>：时段重叠时按<b>优先级</b>决胜（高者胜 → 起期晚者胜 → 新建者胜），
+        所以「长期基础价 priority 0 + 限时促销价 priority 1」可以共存，促销窗口一过自动回到基础价。
+      </p>
+      <table id="pr-table">
+        <thead><tr>
+          <th>等级</th><th>计费周期</th><th>价格</th><th>折合</th><th>生效时段</th>
+          <th>优先级</th><th>状态</th><th style="width:210px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="pr-empty" style="display:none">暂无价格条目——没有价格则该等级不可下单</div>
+      <div class="note-row" id="pr-msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>生成激活码</h2>
+      <form class="inline" id="code-form" onsubmit="return createCodes(event)">
+        <div class="field"><label>套餐</label><select id="c-plan"></select></div>
+        <div class="field"><label>时长（月）</label><input id="c-months" type="number" min="1" max="36" value="1" style="width:90px"></div>
+        <div class="field"><label>数量</label><input id="c-count" type="number" min="1" max="200" value="1" style="width:90px"></div>
+        <div class="field"><label>有效期至（可空）</label><input id="c-expires" type="date"></div>
+        <div class="field" style="flex:1;min-width:170px"><label>备注</label><input id="c-note" placeholder="如：线下售卖第一批"></div>
+        <button class="btn primary" type="submit">生成</button>
+      </form>
+      <div class="msg" id="c-msg"></div>
+      <table id="mb-code-table" style="margin-top:12px">
+        <thead><tr>
+          <th>激活码</th><th>套餐</th><th>状态</th><th>绑定 / 使用</th><th>备注</th>
+          <th>使用时间</th><th style="width:130px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="mb-code-empty" style="display:none">暂无激活码</div>
+    </div>
+
+    <div class="card">
+      <h2>套餐额度与收款</h2>
+      <p class="hint" style="margin:0 0 12px">
+        改完点保存即时生效（插件端下次拉取即更新），无需重启服务端。
+        价格请在上方「价格与计费周期」里配置；这里的「兜底月单价」只在<b>该等级一条价格条目都没有</b>时作为退路
+        （按 月单价 × 月数 计价），正常都应由价格表决定。
+      </p>
+      <div class="grid2">
+        <div class="field"><label>免费版 · 每日额度（次）</label><input id="p-free-limit" type="number" min="0" style="width:140px"></div>
+        <div class="field"><label>专业版 · 每日额度（次）</label><input id="p-pro-limit" type="number" min="0" style="width:140px"></div>
+        <div class="field"><label>专业版 · 兜底月单价（¥）</label><input id="p-pro-price" type="number" min="0" style="width:140px"></div>
+        <div class="field"><label>收款渠道名</label><input id="p-pay-channel" placeholder="微信收款码" style="width:180px"></div>
+        <div class="field wide"><label>收款码图片地址（可空）</label>
+          <input id="p-pay-qr" placeholder="https://…/qr.png" style="width:100%"></div>
+        <div class="field wide"><label>文字收款信息（无图片时展示给用户）</label>
+          <input id="p-pay-text" placeholder="微信号 xxx / 支付宝账号 xxx" style="width:100%"></div>
+        <div class="field wide"><label>支付说明</label>
+          <input id="p-pay-note" placeholder="扫码支付后点「我已完成支付」，管理员核销后自动开通" style="width:100%"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+        <button class="btn primary" onclick="savePlans()">保存配置</button>
+        <span class="price-preview" id="p-preview"></span>
+      </div>
+      <div class="msg" id="p-msg"></div>
     </div>
   </section>
 </main>
@@ -224,14 +354,70 @@
   <div class="modal" style="width:420px">
     <h3>编辑用户 <span id="eu-email" class="mono"></span></h3>
     <div class="field" style="margin-bottom:12px"><label>昵称</label><input id="eu-nickname"></div>
-    <div class="field" style="margin-bottom:12px"><label>套餐</label>
-      <select id="eu-plan"><option>Free</option><option>Pro</option><option>Team</option></select></div>
-    <div class="field" style="margin-bottom:12px"><label>套餐有效期（清空 = 永久）</label>
+    <div class="field" style="margin-bottom:12px"><label>等级（覆盖式）</label>
+      <select id="eu-plan"><option>Free</option><option>Pro</option></select></div>
+    <div class="field" style="margin-bottom:12px"><label>会员到期日（清空 = 无到期）</label>
       <input id="eu-expires" type="date"></div>
+    <p class="hint" style="margin:0 0 6px">
+      此处是<b>覆盖式</b>后台裁决：到期日以填写的为准。要给用户叠加时长的续期请用列表里的「开通/续期」。
+    </p>
     <div class="actions">
       <button class="btn" type="button" onclick="closeMask('user-mask')">取消</button>
       <button class="btn primary" type="button" onclick="saveUser()">保存</button>
     </div>
+  </div>
+</div>
+
+<!-- 价格条目 新增/编辑 弹窗 -->
+<div class="mask" id="price-mask">
+  <div class="modal" style="width:520px">
+    <h3 id="pr-form-title">新增价格条目</h3>
+    <div class="grid2">
+      <div class="field"><label>会员等级 *</label><select id="pf-plan" onchange="syncPricePreview()"></select></div>
+      <div class="field"><label>计费周期 *</label>
+        <select id="pf-cycle" onchange="onCycleChange()"></select></div>
+      <div class="field"><label>周期月数 *（按月=1 按季=3 半年=6 按年=12）</label>
+        <input id="pf-months" type="number" min="1" max="36" value="1" oninput="syncPricePreview()"></div>
+      <div class="field"><label>该周期总价（¥）*</label>
+        <input id="pf-price" type="number" min="0" step="0.01" value="0" oninput="syncPricePreview()"></div>
+      <div class="field wide"><label>展示名（可空，留空自动用「N 个月」）</label>
+        <input id="pf-label" placeholder="如：按年 · 省 ¥79"></div>
+      <div class="field"><label>生效起始（留空 = 立即生效）</label>
+        <input id="pf-from" type="datetime-local" oninput="syncPricePreview()"></div>
+      <div class="field"><label>生效截止（留空 = 长期有效）</label>
+        <input id="pf-to" type="datetime-local" oninput="syncPricePreview()"></div>
+      <div class="field"><label>优先级 0-9（时段重叠时高者胜）</label>
+        <input id="pf-priority" type="number" min="0" max="9" value="0"></div>
+      <div class="field"><label>启用</label>
+        <select id="pf-enabled"><option value="1">启用</option><option value="0">停用（保留配置但不参与）</option></select></div>
+      <div class="field wide"><label>备注（可空）</label>
+        <input id="pf-note" placeholder="如：双十一限时 / 渠道特价"></div>
+    </div>
+    <p class="hint" id="pf-preview" style="margin:12px 0 0"></p>
+    <div class="actions">
+      <button class="btn" type="button" onclick="closeMask('price-mask')">取消</button>
+      <button class="btn primary" type="button" onclick="savePrice()">保存</button>
+    </div>
+    <div class="msg" id="pf-msg"></div>
+  </div>
+</div>
+
+<!-- 会员开通 / 续期弹窗（叠加式） -->
+<div class="mask" id="membership-mask">
+  <div class="modal" style="width:440px">
+    <h3>开通 / 续期 <span id="gm-email" class="mono"></span></h3>
+    <p class="hint" id="gm-current" style="margin:0 0 12px"></p>
+    <div class="grid2">
+      <div class="field"><label>套餐</label><select id="gm-plan"></select></div>
+      <div class="field"><label>时长（月）</label><input id="gm-months" type="number" min="1" max="36" value="1"></div>
+      <div class="field wide"><label>备注（可空）</label><input id="gm-note" placeholder="补偿 / 渠道分成 / 线下售卖…"></div>
+    </div>
+    <p class="hint" style="margin:10px 0 0">按「剩余时长 + 本次时长」叠加。若要把到期日钉成固定日期，请用「编辑」。</p>
+    <div class="actions">
+      <button class="btn" type="button" onclick="closeMask('membership-mask')">取消</button>
+      <button class="btn primary" type="button" onclick="grantMembership()">确认开通</button>
+    </div>
+    <div class="msg" id="gm-msg"></div>
   </div>
 </div>
 
@@ -259,14 +445,17 @@ function api(method, path, body) {
 function switchTab(t) {
   $('tab-channels').classList.toggle('on', t === 'channels');
   $('tab-users').classList.toggle('on', t === 'users');
+  $('tab-membership').classList.toggle('on', t === 'membership');
   $('pane-channels').style.display = t === 'channels' ? '' : 'none';
   $('pane-users').style.display = t === 'users' ? '' : 'none';
+  $('pane-membership').style.display = t === 'membership' ? '' : 'none';
   if (location.hash !== '#' + t) location.hash = t;
   if (t === 'users') loadUsers();
+  if (t === 'membership') loadMembership();
 }
 window.addEventListener('hashchange', function () {
   var h = location.hash.replace('#', '');
-  if (h === 'users' || h === 'channels') switchTab(h);
+  if (h === 'users' || h === 'channels' || h === 'membership') switchTab(h);
 });
 
 /* ---------------- 通道 ---------------- */
@@ -561,23 +750,54 @@ function saveChannel() {
 }
 
 /* ---------------- 用户 ---------------- */
+/** 注册表单：选 Pro 时才显示「时长（月）」 */
+function toggleInitMonths() {
+  $('u-init-wrap').style.display = $('u-plan').value === 'Pro' ? '' : 'none';
+}
 function createUser(ev) {
   ev.preventDefault();
-  var body = {
-    email: $('u-email').value.trim(),
-    password: $('u-password').value,
-    nickname: $('u-nickname').value.trim(),
-    plan: $('u-plan').value,
-    expiresAt: $('u-expires').value || null,
-  };
+  var plan = $('u-plan').value;
+  var months = Number($('u-init-months').value) || 1;
+  var body = { email: $('u-email').value.trim(), password: $('u-password').value,
+    nickname: $('u-nickname').value.trim(), plan: 'Free', expiresAt: null };
+  // 账号一律按 Free 建，再用会员接口叠加 Pro —— 避免「覆盖式」与「叠加式」两套语义打架
   api('POST', '/api/admin/users', body).then(function (r) {
-    if (r.ok) {
-      msg('u-msg', '✓ 已注册 ' + body.email + '，可在 Zotero 插件设置中登录', true);
-      $('u-email').value = ''; $('u-password').value = ''; $('u-nickname').value = ''; $('u-expires').value = '';
-      loadUsers();
-    } else msg('u-msg', r.error || '注册失败', false);
+    if (!r.ok) return msg('u-msg', r.error || '注册失败', false);
+    if (plan !== 'Pro') {
+      msg('u-msg', '✓ 已注册 ' + body.email + '（免费版），可在 Zotero 插件设置中登录', true);
+      afterCreateUser();
+      return;
+    }
+    api('POST', '/api/admin/users/' + r.user.id + '/membership',
+      { plan: 'Pro', months: months, note: '注册时开通' }).then(function (r2) {
+      if (r2.ok) {
+        msg('u-msg', '✓ 已注册 ' + body.email + ' 并开通 Pro ' + months + ' 个月（到期 '
+          + String(r2.membership.expiresAt || '').slice(0, 10) + '）', true);
+      } else {
+        msg('u-msg', '账号已建但开通 Pro 失败：' + (r2.error || '未知错误') + '，请用用户列表的「开通/续期」补发', false);
+      }
+      afterCreateUser();
+    });
   });
   return false;
+}
+function afterCreateUser() {
+  $('u-email').value = ''; $('u-password').value = ''; $('u-nickname').value = '';
+  $('u-plan').value = 'Free'; toggleInitMonths();
+  loadUsers();
+}
+function fmtExpiry(u) {
+  var m = u.membership || {};
+  if (!m.expiresAt) {
+    return u.planRaw && u.planRaw !== 'Free'
+      ? '<span class="badge">' + esc(u.planRaw) + '</span> <span class="badge gray">无到期</span>'
+      : '<span class="badge gray">—</span>';
+  }
+  var d = new Date(m.expiresAt);
+  if (m.expired) return '<span class="badge red">已过期</span> <span class="mono">' + m.expiresAt.slice(0, 10) + '</span>';
+  var days = m.daysLeft;
+  var cls = (typeof days === 'number' && days <= 7) ? 'badge warn' : 'badge green';
+  return '<span class="' + cls + '">剩 ' + days + ' 天</span> <span class="mono">' + m.expiresAt.slice(0, 10) + '</span>';
 }
 function loadUsers() {
   api('GET', '/api/admin/users').then(function (r) {
@@ -587,26 +807,52 @@ function loadUsers() {
     $('user-empty').style.display = r.users.length ? 'none' : '';
     r.users.forEach(function (u) {
       var tr = document.createElement('tr');
-      var expBadge = u.expiresAt
-        ? (new Date(u.expiresAt) < new Date() ? '<span class="badge gray">已过期</span>' : '<span class="badge green">' + u.expiresAt.slice(0, 10) + '</span>')
-        : '<span class="badge gray">永久</span>';
       tr.innerHTML =
         '<td class="mono">' + esc(u.email) + (u.status === 'pending'
-          ? ' <span class="badge" style="background:#fdf3d7;color:#b45309">待验证</span>' : '') + '</td>' +
+          ? ' <span class="badge warn">待验证</span>' : '') + '</td>' +
         '<td>' + esc(u.nickname || '—') + '</td>' +
-        '<td><span class="badge">' + esc(u.plan) + '</span></td>' +
+        '<td><span class="badge' + (u.plan === 'Pro' ? '' : ' gray') + '">' + esc(u.plan) + '</span></td>' +
+        '<td>' + fmtExpiry(u) + '</td>' +
         '<td>' + u.dailyUsed + ' / ' + u.dailyLimit + '</td>' +
-        '<td>' + expBadge + '</td>' +
+        '<td>' + (u.usage7 == null ? '—' : u.usage7) + '</td>' +
         '<td class="mono">' + (u.lastLoginAt ? u.lastLoginAt.replace('T', ' ').slice(0, 16) : '从未') + '</td>';
       var td = document.createElement('td');
       td.style.whiteSpace = 'nowrap';
       td.innerHTML =
+        '<button class="btn sm" onclick="openGrant(\'' + u.id + '\')">开通/续期</button> ' +
         '<button class="btn sm" onclick="editUser(\'' + u.id + '\')">编辑</button> ' +
         '<button class="btn sm" onclick="resetPwd(\'' + u.id + '\',\'' + esc(u.email) + '\')">重置密码</button> ' +
         '<button class="btn sm danger" onclick="delUser(\'' + u.id + '\',\'' + esc(u.email) + '\')">删除</button>';
       tr.appendChild(td);
       tb.appendChild(tr);
     });
+  });
+}
+/* 用量导出（0.24.4）：CSV 含近 30 天按日用量，带 BOM 便于 Excel 直接打开 */
+function csvCell(v) {
+  var s = (v == null ? '' : String(v));
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function exportUsageCSV() {
+  api('GET', '/api/admin/users').then(function (r) {
+    if (!r.ok) return alert(r.error || '导出失败');
+    var users = r.users || [];
+    var days = (users[0] && users[0].usageDaily ? users[0].usageDaily : []).map(function (d) { return d.date; });
+    var lines = [['邮箱', '等级', '今日用量', '近7天', '近30天'].concat(days).map(csvCell).join(',')];
+    users.forEach(function (u) {
+      var byDate = {};
+      (u.usageDaily || []).forEach(function (d) { byDate[d.date] = d.count; });
+      var row = [u.email, u.plan, u.dailyUsed, u.usage7 == null ? '' : u.usage7,
+        u.usage30 == null ? '' : u.usage30].concat(days.map(function (d) { return byDate[d] || 0; }));
+      lines.push(row.map(csvCell).join(','));
+    });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'paperpilot-usage-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { try { URL.revokeObjectURL(a.href); a.remove(); } catch (e) { /* ignore */ } }, 0);
   });
 }
 function editUser(id) {
@@ -617,7 +863,7 @@ function editUser(id) {
     editingUser = u;
     $('eu-email').textContent = u.email;
     $('eu-nickname').value = u.nickname || '';
-    $('eu-plan').value = ['Free', 'Pro', 'Team'].indexOf(u.planRaw) >= 0 ? u.planRaw : 'Free';
+    $('eu-plan').value = u.planRaw === 'Pro' ? 'Pro' : 'Free';
     $('eu-expires').value = u.expiresAt ? u.expiresAt.slice(0, 10) : '';
     $('user-mask').classList.add('show');
   });
@@ -645,6 +891,434 @@ function delUser(id, email) {
   api('DELETE', '/api/admin/users/' + id).then(function () { loadUsers(); loadChannels(); });
 }
 
+/* ---------------- 会员管理（0.23.0） ---------------- */
+
+var mb = { orders: [], codes: [], plans: null, counts: {},
+  priceItems: [], cycles: [], pricePlans: [] };
+var grantTarget = null;
+var ORDER_STATUS = { pending: '待支付', claimed: '待核销', fulfilled: '已开通',
+  cancelled: '已取消', expired: '已过期' };
+var ORDER_CLASS = { pending: 'gray', claimed: 'warn', fulfilled: 'green', cancelled: 'gray', expired: 'red' };
+var CODE_STATUS = { unused: 'unused', used: 'used', expired: 'expired' };
+var CODE_LABEL = { unused: '未使用', used: '已使用', expired: '已过期' };
+var CODE_CLASS = { unused: 'green', used: 'gray', expired: 'red' };
+
+function fmtTime(s) { return s ? String(s).replace('T', ' ').slice(0, 16) : '—'; }
+
+function loadMembership() {
+  return api('GET', '/api/admin/membership').then(function (r) {
+    if (!r.ok) { msg('mb-order-msg', r.error || '加载失败', false); return; }
+    mb.orders = r.orders || [];
+    mb.codes = r.codes || [];
+    mb.plans = r.plans || null;
+    mb.counts = r.counts || {};
+    $('mb-k-review').textContent = mb.counts.awaitingReview || 0;
+    $('mb-k-unused').textContent = mb.counts.codesUnused || 0;
+    $('mb-k-used').textContent = mb.counts.fulfilled || 0;
+    renderOrders();
+    renderCodes();
+    renderPlanForm();
+    loadPrices();
+    // Pro 用户数：从用户列表统计（保证与账号页一致）
+    api('GET', '/api/admin/users').then(function (ru) {
+      if (!ru.ok) return;
+      $('mb-k-pro').textContent = ru.users.filter(function (u) { return u.plan === 'Pro'; }).length;
+    });
+  });
+}
+
+function renderOrders() {
+  var tb = $('mb-order-table').querySelector('tbody');
+  tb.textContent = '';
+  $('mb-order-empty').style.display = mb.orders.length ? 'none' : '';
+  mb.orders.forEach(function (o) {
+    var tr = document.createElement('tr');
+    if (o.status === 'claimed') tr.className = 'active-row';
+    tr.innerHTML =
+      '<td class="mono">' + esc(o.id) + '</td>' +
+      '<td class="mono">' + esc(o.email || '') + '</td>' +
+      '<td>' + esc(o.planName || o.plan) + ' · ' + o.months + ' 个月</td>' +
+      '<td>¥' + o.amount + '</td>' +
+      '<td><span class="badge ' + (ORDER_CLASS[o.status] || 'gray') + '">'
+        + (ORDER_STATUS[o.status] || o.status) + '</span></td>' +
+      '<td class="mono">' + fmtTime(o.createdAt) + '</td>';
+    var td = document.createElement('td');
+    td.style.whiteSpace = 'nowrap';
+    var canFulfill = o.status === 'pending' || o.status === 'claimed';
+    var canCancel = o.status === 'pending' || o.status === 'claimed';
+    td.innerHTML =
+      '<button class="btn sm primary" ' + (canFulfill ? '' : 'disabled')
+        + ' onclick="fulfillOrder(\'' + o.id + '\')">核销开通</button> ' +
+      '<button class="btn sm danger" ' + (canCancel ? '' : 'disabled')
+        + ' onclick="cancelOrder(\'' + o.id + '\')">取消</button>';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function renderCodes() {
+  var tb = $('mb-code-table').querySelector('tbody');
+  tb.textContent = '';
+  $('mb-code-empty').style.display = mb.codes.length ? 'none' : '';
+  mb.codes.forEach(function (c) {
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="code-cell">' + esc(c.code) + '</td>' +
+      '<td>' + esc(c.plan) + ' · ' + c.months + ' 个月</td>' +
+      '<td><span class="badge ' + (CODE_CLASS[c.status] || 'gray') + '">'
+        + (CODE_LABEL[c.status] || c.status) + '</span></td>' +
+      '<td class="mono">' + (c.usedByEmail ? esc(c.usedByEmail) : '—')
+        + (c.status === 'unused' && c.boundToEmail ? ' <span class="badge gray">定向 ' + esc(c.boundToEmail) + '</span>' : '') + '</td>' +
+      '<td>' + esc(c.note || '—') + '</td>' +
+      '<td class="mono">' + fmtTime(c.usedAt) + '</td>';
+    var td = document.createElement('td');
+    td.style.whiteSpace = 'nowrap';
+    td.innerHTML =
+      '<button class="btn sm" onclick="copyCode(\'' + esc(c.code) + '\')">复制</button> ' +
+      '<button class="btn sm danger" ' + (c.status === 'used' ? 'disabled' : '')
+        + ' onclick="revokeCode(\'' + c.id + '\')">作废</button>';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function renderPlanForm() {
+  if (!mb.plans) return;
+  var byId = {};
+  (mb.plans.plans || []).forEach(function (p) { byId[p.id] = p; });
+  if (byId.Free) $('p-free-limit').value = byId.Free.dailyLimit;
+  if (byId.Pro) {
+    $('p-pro-limit').value = byId.Pro.dailyLimit;
+    $('p-pro-price').value = byId.Pro.price;
+  }
+  var pay = mb.plans.pay || {};
+  $('p-pay-channel').value = pay.channel || '';
+  $('p-pay-qr').value = pay.qrImage || '';
+  $('p-pay-text').value = pay.qrText || '';
+  $('p-pay-note').value = pay.note || '';
+  // 激活码 / 开通 下拉：用 grantable（可开通，与「有没有生效价格」无关）
+  var sel = $('c-plan');
+  var cur = sel.value;
+  sel.textContent = '';
+  (mb.plans.plans || []).filter(function (p) { return p.grantable; }).forEach(function (p) {
+    var o = document.createElement('option'); o.value = p.id; o.textContent = p.name + '（' + p.id + '）';
+    sel.appendChild(o);
+  });
+  var gp = $('gm-plan');
+  var gcur = gp.value;
+  gp.textContent = '';
+  (mb.plans.plans || []).filter(function (p) { return p.grantable; }).forEach(function (p) {
+    var o = document.createElement('option'); o.value = p.id; o.textContent = p.name + '（' + p.id + '）';
+    gp.appendChild(o);
+  });
+  if (cur && Array.prototype.some.call(sel.options, function (o) { return o.value === cur; })) sel.value = cur;
+  if (gcur && Array.prototype.some.call(gp.options, function (o) { return o.value === gcur; })) gp.value = gcur;
+  var opts = (mb.plans.priceOptions || []).map(function (o) {
+    return o.label + ' ¥' + o.price;
+  }).join('　|　');
+  $('p-preview').textContent = opts
+    ? '当前生效价格：' + opts
+    : '⚠ 价格表里没有生效中的条目——买家将无法下单该等级';
+}
+
+function fulfillOrder(id) {
+  if (!confirm('确认已收到该订单款项并核销？将立即为下单账号开通/叠加会员。')) return;
+  api('POST', '/api/admin/orders/' + id + '/fulfill', {}).then(function (r) {
+    if (!r.ok) return msg('mb-order-msg', '✗ ' + (r.error || '核销失败'), false);
+    msg('mb-order-msg', '✓ 已核销 ' + id + '，' + (r.user ? r.user.email : '') + ' 会员到期 '
+      + String((r.user && r.user.membership && r.user.membership.expiresAt) || '').slice(0, 10)
+      + '（留档码 ' + (r.archiveCode ? r.archiveCode.code : '—') + '）', true);
+    loadMembership(); loadUsers();
+  });
+}
+function cancelOrder(id) {
+  if (!confirm('取消该订单？用户端会显示为已取消。')) return;
+  api('POST', '/api/admin/orders/' + id + '/cancel', { reason: '管理员取消' }).then(function (r) {
+    msg('mb-order-msg', r.ok ? '✓ 订单已取消' : ('✗ ' + (r.error || '取消失败')), r.ok);
+    loadMembership();
+  });
+}
+
+function createCodes(ev) {
+  ev.preventDefault();
+  var body = {
+    plan: $('c-plan').value,
+    months: Number($('c-months').value) || 1,
+    count: Number($('c-count').value) || 1,
+    note: $('c-note').value.trim(),
+    expiresAt: $('c-expires').value || null,
+  };
+  api('POST', '/api/admin/codes', body).then(function (r) {
+    if (!r.ok) return msg('c-msg', '✗ ' + (r.error || '生成失败'), false);
+    msg('c-msg', '✓ 已生成 ' + r.codes.length + ' 枚：' + r.codes.map(function (c) { return c.code; }).join('、'), true);
+    $('c-note').value = '';
+    loadMembership();
+  });
+  return false;
+}
+function revokeCode(id) {
+  if (!confirm('作废该激活码？已使用的码不可作废（保留对账）。')) return;
+  api('DELETE', '/api/admin/codes/' + id).then(function (r) {
+    msg('c-msg', r.ok ? '✓ 已作废' : ('✗ ' + (r.error || '作废失败')), r.ok);
+    loadMembership();
+  });
+}
+function copyCode(code) {
+  try {
+    navigator.clipboard.writeText(code).then(function () { msg('c-msg', '✓ 已复制 ' + code, true); },
+      function () { prompt('复制激活码：', code); });
+  } catch (e) { prompt('复制激活码：', code); }
+}
+
+function savePlans() {
+  var body = {
+    plans: {},
+    pay: {
+      channel: $('p-pay-channel').value.trim(),
+      qrImage: $('p-pay-qr').value.trim(),
+      qrText: $('p-pay-text').value.trim(),
+      note: $('p-pay-note').value.trim(),
+    },
+  };
+  body.plans.Free = { dailyLimit: Number($('p-free-limit').value) || 0 };
+  body.plans.Pro = {
+    dailyLimit: Number($('p-pro-limit').value) || 0,
+    price: Number($('p-pro-price').value) || 0,
+  };
+  api('PUT', '/api/admin/membership', body).then(function (r) {
+    if (!r.ok) return msg('p-msg', '✗ ' + (r.error || '保存失败'), false);
+    mb.plans = r.plans;
+    renderPlanForm();
+    msg('p-msg', '✓ 已保存并即时生效（插件端下次拉取即更新）', true);
+  });
+}
+
+/* ---------------- 价格与计费周期（0.23.1） ---------------- */
+
+var editingPrice = null;
+var PR_STATE_CLASS = { active: 'green', scheduled: 'blue', expired: 'red', disabled: 'gray' };
+
+/** ISO → <input type="datetime-local"> 需要的本地时间串 */
+function toLocalInput(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+/** 本地时间串 → ISO（空值 = null，即不限） */
+function fromLocalInput(v) {
+  if (!v) return null;
+  var d = new Date(v);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+function fmtRange(a, b) {
+  var f = a ? a.slice(0, 10) : '立即';
+  var t = b ? b.slice(0, 10) : '长期';
+  return f + ' → ' + t;
+}
+
+function loadPrices() {
+  return api('GET', '/api/admin/prices').then(function (r) {
+    if (!r.ok) { msg('pr-msg', r.error || '加载价格表失败', false); return; }
+    mb.priceItems = r.items || [];
+    mb.cycles = r.cycles || [];
+    mb.pricePlans = r.plans || [];
+    renderPrices();
+  });
+}
+
+function renderPrices() {
+  var tb = $('pr-table').querySelector('tbody');
+  tb.textContent = '';
+  var items = mb.priceItems || [];
+  $('pr-empty').style.display = items.length ? 'none' : '';
+  items.forEach(function (it) {
+    var tr = document.createElement('tr');
+    if (it.state === 'active' && it.winner) tr.className = 'active-row';
+    var stBadge = '<span class="badge ' + (PR_STATE_CLASS[it.state] || 'gray') + '">'
+      + esc(it.stateText) + '</span>';
+    if (it.state === 'active' && it.winner) stBadge += ' <span class="badge green">当前生效</span>';
+    if (it.state === 'active' && !it.winner) {
+      stBadge += ' <span class="badge gray">被压制</span>';
+    }
+    tr.innerHTML =
+      '<td class="cell-strong">' + esc(it.planName || it.plan) + '<span class="cell-sub">'
+        + esc(it.plan) + '</span></td>' +
+      '<td>' + esc(it.cycleName) + '<span class="cell-sub">' + it.months + ' 个月</span></td>' +
+      '<td class="cell-strong">¥' + it.price + '</td>' +
+      '<td class="mono">¥' + it.perMonth + '/月</td>' +
+      '<td class="mono">' + esc(fmtRange(it.effectiveFrom, it.effectiveTo))
+        + (it.label ? '<span class="cell-sub">' + esc(it.label) + '</span>' : '') + '</td>' +
+      '<td class="mono">' + (it.priority || 0) + '</td>' +
+      '<td>' + stBadge + '</td>';
+    var td = document.createElement('td');
+    td.style.whiteSpace = 'nowrap';
+    td.innerHTML =
+      '<button class="btn sm" onclick="openPriceForm(\'' + it.id + '\')">编辑</button> ' +
+      '<button class="btn sm" onclick="togglePrice(\'' + it.id + '\',' + (it.enabled ? 'false' : 'true')
+        + ')">' + (it.enabled ? '停用' : '启用') + '</button> ' +
+      '<button class="btn sm danger" onclick="delPrice(\'' + it.id + '\')">删除</button>';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function openPriceForm(id) {
+  editingPrice = null;
+  var it = null;
+  if (id) {
+    it = (mb.priceItems || []).filter(function (x) { return x.id === id; })[0] || null;
+    if (!it) return;
+    editingPrice = it;
+  }
+  $('pr-form-title').textContent = it ? ('编辑价格：' + (it.planName || it.plan) + ' · ' + it.cycleName) : '新增价格条目';
+  // 等级下拉（Free 不配价）
+  var ps = $('pf-plan');
+  ps.textContent = '';
+  (mb.pricePlans || []).forEach(function (p) {
+    var o = document.createElement('option'); o.value = p.id; o.textContent = p.name + '（' + p.id + '）';
+    ps.appendChild(o);
+  });
+  // 周期下拉
+  var cs = $('pf-cycle');
+  cs.textContent = '';
+  (mb.cycles || []).forEach(function (c) {
+    var o = document.createElement('option'); o.value = c.id;
+    o.textContent = c.name + '（' + (c.months || '自填') + '）';
+    cs.appendChild(o);
+  });
+  if (it) {
+    ps.value = it.plan;
+    cs.value = it.cycle || 'custom';
+    $('pf-months').value = it.months;
+    $('pf-price').value = it.price;
+    $('pf-label').value = it.label || '';
+    $('pf-from').value = toLocalInput(it.effectiveFrom);
+    $('pf-to').value = toLocalInput(it.effectiveTo);
+    $('pf-priority').value = it.priority || 0;
+    $('pf-enabled').value = it.enabled ? '1' : '0';
+    $('pf-note').value = it.note || '';
+  } else {
+    if (!ps.options.length) { alert('没有可配置价格的等级'); return; }
+    ps.selectedIndex = 0;
+    cs.value = 'monthly';
+    $('pf-months').value = 1;
+    $('pf-price').value = 0;
+    $('pf-label').value = '';
+    $('pf-from').value = '';
+    $('pf-to').value = '';
+    $('pf-priority').value = 0;
+    $('pf-enabled').value = '1';
+    $('pf-note').value = '';
+  }
+  $('pf-msg').textContent = '';
+  syncPricePreview();
+  $('price-mask').classList.add('show');
+}
+
+/** 选周期时自动带出月数（自定义时保留手填） */
+function onCycleChange() {
+  var c = (mb.cycles || []).filter(function (x) { return x.id === $('pf-cycle').value; })[0];
+  if (c && c.months > 0) $('pf-months').value = c.months;
+  syncPricePreview();
+}
+
+function syncPricePreview() {
+  var m = Number($('pf-months').value) || 0;
+  var p = Number($('pf-price').value) || 0;
+  var per = m > 0 ? Math.round((p / m) * 100) / 100 : 0;
+  var from = $('pf-from').value, to = $('pf-to').value;
+  var state = '保存后立即生效';
+  if (from && new Date(from) > new Date()) state = '保存后为「未生效」，到 ' + from.replace('T', ' ') + ' 自动生效';
+  else if (to && new Date(to) <= new Date()) state = '保存后即为「已过期」，不会下发到客户端';
+  $('pf-preview').textContent = '折合 ¥' + per + ' / 月；' + state
+    + (p <= 0 && m > 0 ? '（价格必须大于 0）' : '');
+}
+
+function savePrice() {
+  var body = {
+    plan: $('pf-plan').value,
+    cycle: $('pf-cycle').value,
+    months: Number($('pf-months').value) || 1,
+    price: Number($('pf-price').value) || 0,
+    label: $('pf-label').value.trim(),
+    effectiveFrom: fromLocalInput($('pf-from').value),
+    effectiveTo: fromLocalInput($('pf-to').value),
+    priority: Number($('pf-priority').value) || 0,
+    enabled: $('pf-enabled').value === '1',
+    note: $('pf-note').value.trim(),
+  };
+  var p = editingPrice
+    ? api('PUT', '/api/admin/prices/' + editingPrice.id, body)
+    : api('POST', '/api/admin/prices', body);
+  p.then(function (r) {
+    if (!r.ok) { msg('pf-msg', r.error || '保存失败', false); return; }
+    closeMask('price-mask');
+    var t = '✓ 已保存价格：' + body.plan + ' · ' + body.months + ' 个月 ¥' + body.price
+      + '（折合 ¥' + (body.months > 0 ? Math.round((body.price / body.months) * 100) / 100 : 0) + '/月）';
+    if (r.warn) t += '　⚠ ' + r.warn;
+    msg('pr-msg', t, true);
+    loadPrices();
+    loadMembership();
+  });
+}
+
+function togglePrice(id, enabled) {
+  api('PUT', '/api/admin/prices/' + id, { enabled: enabled }).then(function (r) {
+    msg('pr-msg', r.ok ? ('✓ 已' + (enabled ? '启用' : '停用') + '该价格') : ('✗ ' + (r.error || '失败')), r.ok);
+    loadPrices();
+  });
+}
+
+function delPrice(id) {
+  var it = (mb.priceItems || []).filter(function (x) { return x.id === id; })[0];
+  var name = it ? (it.planName + ' · ' + it.months + ' 个月 ¥' + it.price) : id;
+  if (!confirm('删除价格条目「' + name + '」？\n已产生的历史订单不受影响（订单已存价格快照）。')) return;
+  api('DELETE', '/api/admin/prices/' + id).then(function (r) {
+    msg('pr-msg', r.ok ? '✓ 已删除' : ('✗ ' + (r.error || '删除失败')), r.ok);
+    loadPrices();
+    loadMembership();
+  });
+}
+
+/* 开通 / 续期（叠加式） */
+function openGrant(id) {
+  api('GET', '/api/admin/users').then(function (r) {
+    if (!r.ok) return;
+    var u = r.users.filter(function (x) { return x.id === id; })[0];
+    if (!u) return;
+    grantTarget = u;
+    $('gm-email').textContent = u.email;
+    var m = u.membership || {};
+    $('gm-current').textContent = m.expiresAt
+      ? '当前：' + (m.expired ? '已过期（' + m.expiresAt.slice(0, 10) + '）' : 'Pro，剩 ' + m.daysLeft + ' 天（' + m.expiresAt.slice(0, 10) + ' 到期）')
+      : ('当前：' + (u.plan || 'Free') + '，无到期日');
+    $('gm-months').value = 1;
+    $('gm-note').value = '';
+    $('gm-msg').textContent = '';
+    renderPlanForm();
+    $('membership-mask').classList.add('show');
+  });
+}
+function grantMembership() {
+  if (!grantTarget) return;
+  var body = {
+    plan: $('gm-plan').value || 'Pro',
+    months: Number($('gm-months').value) || 1,
+    note: $('gm-note').value.trim(),
+  };
+  api('POST', '/api/admin/users/' + grantTarget.id + '/membership', body).then(function (r) {
+    if (!r.ok) return msg('gm-msg', '✗ ' + (r.error || '开通失败'), false);
+    closeMask('membership-mask');
+    alert('✓ 已为 ' + grantTarget.email + ' 开通 ' + body.months + ' 个月，到期 '
+      + String((r.membership && r.membership.expiresAt) || '').slice(0, 10));
+    loadUsers();
+    if ($('pane-membership').style.display !== 'none') loadMembership();
+  });
+}
+
 /* ---------------- 通用 ---------------- */
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -666,7 +1340,8 @@ api('GET', '/api/admin/providers').then(function (r) {
   });
 });
 loadChannels();
-if (location.hash === '#users') switchTab('users');
+toggleInitMonths();
+if (location.hash === '#users' || location.hash === '#membership') switchTab(location.hash.slice(1));
 </script>
 </body>
 </html>

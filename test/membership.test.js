@@ -194,7 +194,7 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
 
     /* 12. 持久化：membership.json 与 users.json 均落盘且可重新加载 */
     const mdoc = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'membership.json'), 'utf8'));
-    eq(mdoc.schemaVersion, 2, '12.1 membership.json 带 schemaVersion');
+    eq(mdoc.schemaVersion, 3, '12.1 membership.json 带 schemaVersion=3');
     ok(mdoc.orders.length >= 1 && mdoc.codes.length >= 3, '12.2 订单与激活码已落盘',
       { orders: mdoc.orders.length, codes: mdoc.codes.length });
     const udoc = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'users.json'), 'utf8'));
@@ -202,6 +202,120 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
     ok(!!su.membership && su.membership.history.length >= 3, '12.3 用户会员历史已落盘',
       su.membership && su.membership.history.length);
     eq(su.plan, su.membership.plan, '12.4 兼容镜像 user.plan 与 membership.plan 一致');
+
+    /* ============ 13. 价格表：等级 × 计费周期 × 生效时段 ============ */
+    r = await req('GET', '/api/admin/prices');
+    eq(r.status, 200, '13.1 价格表接口可用');
+    eq(r.json.items.length, 3, '13.2 默认 3 条价格');
+    ok(r.json.cycles.length >= 5, '13.3 下发计费周期预设', r.json.cycles.length);
+    eq(r.json.plans.length, 1, '13.4 可配价等级只有 Pro（Free 不需要配价）');
+    eq(r.json.plans[0].id, 'Pro', '13.5 等级 id 正确');
+    const p12 = r.json.items.find((i) => i.months === 12);
+    eq(p12.cycleName, '按年', '13.6 12 个月识别为按年');
+    eq(p12.perMonth, 22.42, '13.7 折合月单价 269/12');
+    eq(p12.state, 'active', '13.8 默认价格生效中');
+    eq(p12.winner, true, '13.9 默认价格是胜者');
+
+    // 新增「未来生效」的限时促销价（同周期、priority 1）
+    const promoFrom = new Date(Date.now() + 2 * DAY).toISOString();
+    const promoTo = new Date(Date.now() + 10 * DAY).toISOString();
+    r = await req('POST', '/api/admin/prices', { plan: 'Pro', months: 1, price: 19,
+      label: '限时 19', effectiveFrom: promoFrom, effectiveTo: promoTo, priority: 1 });
+    eq(r.status, 200, '13.10 新增促销价成功');
+    const promoId = r.json.item.id;
+    eq(r.json.item.state, 'scheduled', '13.11 起期在将来 → 状态为未生效');
+    ok(/重叠/.test(r.json.warn || ''), '13.12 与基础价重叠 → 返回提示而不是报错', r.json.warn);
+
+    // 未生效的价格不能下单，只能预告
+    r = await req('GET', '/api/plans');
+    ok(!(r.json.priceItems || []).some((i) => i.months === 1 && i.price === 19),
+      '13.13 未生效促销价不下发到可购清单');
+    ok((r.json.upcoming || []).some((i) => i.months === 1 && i.price === 19),
+      '13.14 未生效促销价出现在 upcoming 预告里');
+    ok(!(r.json.priceOptions || []).some((o) => o.months === 1 && o.price === 19),
+      '13.15 派生 priceOptions 也不含未生效价');
+    r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
+    eq(r.json.order.amount, 29, '13.16 促销未生效时下单仍是原价 29');
+    eq(r.json.order.cycle, 'monthly', '13.17 订单记录计费周期');
+    ok(!!r.json.order.priceItemId, '13.18 订单记录价格条目 id（对账溯源）');
+    const orderBeforePromo = r.json.order.id;
+
+    // 把促销价改成「现在立刻生效 + 更高优先级」→ 立刻覆盖基础价
+    r = await req('PUT', '/api/admin/prices/' + promoId, {
+      effectiveFrom: null, effectiveTo: null, priority: 2 });
+    eq(r.status, 200, '13.19 改促销价时段成功');
+    eq(r.json.item.state, 'active', '13.20 去掉时段限制后立即生效');
+    r = await req('GET', '/api/plans');
+    const oneMonth = (r.json.priceItems || []).filter((i) => i.months === 1);
+    eq(oneMonth.length, 1, '13.21 同一周期客户端只看到一条价');
+    eq(oneMonth[0].price, 19, '13.22 高优先级促销价胜出');
+    r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
+    eq(r.json.order.amount, 19, '13.23 下单立刻用上促销价');
+    eq(r.json.order.priceItemId, promoId, '13.24 订单指向促销条目');
+    eq(r.json.order.priceSource, 'item', '13.25 价格来源为条目');
+
+    // 后台仍能看到两条同周期价，且只有一条标注胜出
+    r = await req('GET', '/api/admin/prices');
+    const oneMonthAll = r.json.items.filter((i) => i.months === 1);
+    eq(oneMonthAll.length, 2, '13.26 后台仍可见两条同周期价格');
+    eq(oneMonthAll.filter((i) => i.winner).length, 1, '13.27 仅一条标注为胜出');
+    eq(oneMonthAll.find((i) => i.winner).price, 19, '13.28 胜出的是促销价');
+
+    // 停用促销 → 立刻回到基础价
+    r = await req('PUT', '/api/admin/prices/' + promoId, { enabled: false });
+    eq(r.status, 200, '13.29 停用促销价成功');
+    eq(r.json.item.state, 'disabled', '13.30 状态为已停用');
+    r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
+    eq(r.json.order.amount, 29, '13.31 停用后下单回到基础价');
+
+    // 未配置的计费周期明确拒绝（不让用户买到没配的周期）
+    r = await req('POST', '/api/orders', { plan: 'Pro', months: 6 }, token);
+    eq(r.status, 400, '13.32 未配置周期下单被拒');
+    ok(/可选/.test(r.json.error || ''), '13.33 报错里列出可购买周期', r.json.error);
+
+    // 空档预警
+    r = await req('POST', '/api/admin/prices', { plan: 'Pro', months: 18, price: 399,
+      label: '十八个月', effectiveTo: new Date(Date.now() + 30 * DAY).toISOString() });
+    eq(r.status, 200, '13.34 新增有限时段价格成功');
+    ok(/没有任何生效价格/.test(r.json.warn || ''), '13.35 其后无接续 → 返回空档预警', r.json.warn);
+    const gapId = r.json.item.id;
+
+    // 非法输入
+    r = await req('POST', '/api/admin/prices', { plan: 'Pro', months: 7, price: 0 });
+    eq(r.status, 400, '13.36 价格 0 被拒');
+    r = await req('POST', '/api/admin/prices', { plan: 'Nope', months: 7, price: 10 });
+    eq(r.status, 400, '13.37 未知等级被拒');
+    r = await req('PUT', '/api/admin/prices/pr-not-exist', { price: 5 });
+    eq(r.status, 404, '13.38 改不存在的条目 → 404');
+    r = await req('DELETE', '/api/admin/prices/pr-not-exist');
+    eq(r.status, 404, '13.39 删不存在的条目 → 404');
+
+    // 删除
+    r = await req('DELETE', '/api/admin/prices/' + gapId);
+    eq(r.status, 200, '13.40 删除价格条目成功');
+    r = await req('GET', '/api/admin/prices');
+    ok(!r.json.items.some((i) => i.id === gapId), '13.41 条目已从列表中移除');
+
+    // 健康检查反映价格表规模
+    r = await req('GET', '/api/health');
+    ok(typeof r.json.priceActive === 'number', '13.42 health 暴露 priceActive', r.json.priceActive);
+    ok(typeof r.json.priceScheduled === 'number', '13.43 health 暴露 priceScheduled');
+    eq(r.json.priceActive, 3, '13.44 生效中价格数（1/3/12 月基础价；停用的促销与已删条目不计）',
+      r.json.priceActive);
+    eq(r.json.priceScheduled, 0, '13.44b 无未生效价格（促销已改为停用而非未来生效）',
+      r.json.priceScheduled);
+
+    // 落盘校验
+    const mdoc2 = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'membership.json'), 'utf8'));
+    ok(Array.isArray(mdoc2.priceItems) && mdoc2.priceItems.length >= 4, '13.45 价格表已落盘',
+      mdoc2.priceItems.length);
+    ok(!!mdoc2.priceOptions && !!mdoc2.priceOptions.Pro, '13.46 派生的 priceOptions 也写回文档');
+    eq(mdoc2.priceOptions.Pro.filter((o) => o.months === 1).length, 1,
+      '13.47 派生视图中同周期只保留胜者');
+    const promoRow = mdoc2.priceItems.find((i) => i.id === promoId);
+    eq(promoRow.enabled, false, '13.48 停用状态已落盘');
+    eq(promoRow.priority, 2, '13.49 优先级已落盘');
+    void orderBeforePromo;
   } catch (e) {
     failures.push('异常中断：' + (e && e.stack || e));
   } finally {

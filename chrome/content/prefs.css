@@ -276,3 +276,33 @@
   border: 1px solid var(--pp-border); border-radius: 6px;
 }
 .pp-root .pp-mb-warn { font-size: 11.5px; color: var(--pp-warn); margin-top: 8px; line-height: 1.5; }
+
+/* ---------- 会员到期提醒 + 用量趋势（0.24.4） ---------- */
+.pp-root .pp-mb-renew {
+  margin-top: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; line-height: 1.5;
+  border: 1px solid var(--pp-warn);
+  background: var(--pp-surface-2); color: var(--pp-warn);
+}
+.pp-root .pp-mb-renew:hover { border-color: var(--pp-accent); }
+.pp-root .pp-mb-renew-expired {
+  border-color: var(--pp-danger); color: var(--pp-danger); font-weight: 600;
+}
+.pp-root .pp-mb-usage {
+  margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--pp-border);
+}
+.pp-root .pp-mb-usage-head { font-size: 11.5px; color: var(--pp-muted); }
+.pp-root .pp-mb-bars {
+  margin-top: 6px; display: flex; align-items: flex-end; gap: 6px; height: 44px;
+}
+.pp-root .pp-mb-bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.pp-root .pp-mb-bar {
+  width: 16px; border-radius: 3px 3px 0 0; background: var(--pp-accent);
+}
+.pp-root .pp-mb-bar-zero { background: var(--pp-border); }
+.pp-root .pp-mb-bar-day { font-size: 9.5px; color: var(--pp-muted); margin-top: 3px; }
+.pp-root .pp-mb-opt-soon {
+  opacity: .65; cursor: default; border-style: dashed;
+  font-size: 11.5px; padding: 4px 10px; border-radius: 6px;
+  border: 1px dashed var(--pp-border); background: var(--pp-surface-2); color: var(--pp-muted);
+}

@@ -37,6 +37,16 @@ class JsonStore {
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
     fs.renameSync(tmp, this.file);
   }
+
+  /**
+   * 从磁盘重新加载（1.4.2：备份回滚后必须调用，否则内存里还是回滚前的旧数据）。
+   * 注意 _load() 对损坏文件会回退默认值——回滚后应立刻校验关键字段，
+   * 发现被回退成默认值要当作回滚失败上报，而不是继续用空数据服务。
+   */
+  reload() {
+    this.data = this._load();
+    return this.data;
+  }
 }
 
 module.exports = { JsonStore };

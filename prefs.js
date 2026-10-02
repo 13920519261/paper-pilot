@@ -152,3 +152,5 @@ pref("extensions.zotero.paperpilot.discoveryCollectionName", "arXiv 推荐");
 // 0.24.0 新增：MCP 对外供给（默认关闭；令牌首次自动生成并持久化）
 pref("extensions.zotero.paperpilot.mcpEnabled", false);
 pref("extensions.zotero.paperpilot.mcpToken", "");
+// 0.24.4 新增：会员到期提醒「已提示过的到期周期」（存 expiresAt；避免每次启动重复弹窗）
+pref("extensions.zotero.paperpilot.renewPromptShownFor", "");

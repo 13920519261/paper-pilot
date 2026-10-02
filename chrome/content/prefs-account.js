@@ -289,8 +289,8 @@
    *   B 激活码：线下购买/赠送/补偿，直接输码激活（绑定账号 + 叠加续期）
    */
 
-  let mbPlans = null;       // {plans, priceOptions, pay}（服务端下发，缓存）
-  let mbSel = null;         // 当前选中的价格档位
+  let mbPlans = null;       // {plans, priceOptions, priceItems, upcoming, cycles, pay}（服务端下发，缓存）
+  let mbSel = null;         // 当前选中的价格档位 {plan, months, text}
   let mbOrder = null;       // 当前订单
   let mbTimer = null;       // 订单轮询定时器
   let mbPollDeadline = 0;   // 轮询截止（避免永久轮询）
@@ -312,13 +312,46 @@
     if (mbPlans && !force) return mbPlans;
     try {
       mbPlans = await A.plans();
-      const cheap = (mbPlans.priceOptions || [])[0];
-      if (!mbSel && cheap) mbSel = cheap;
+      if (!mbSel) mbSel = pickDefaultOption(mbOptions());
     } catch (e) {
       if (force) throw e;
       mbPlans = null;
     }
     return mbPlans;
+  }
+
+  /**
+   * 价格档位（生效中）→ 统一成 {plan, months, text}。
+   * 0.24.4：优先用价格表 priceItems（含中文周期名 + 折合月单价，用户才看得出买长周期划不划算）；
+   * 老服务端没有 priceItems 时回落旧的 priceOptions。
+   */
+  function mbOptions() {
+    const items = (mbPlans && mbPlans.priceItems) || [];
+    if (items.length) {
+      return items.map((it) => {
+        const cyc = it.cycleName || it.label || (it.months + " 个月");
+        const per = Number(it.months) > 1
+          ? " · 折合 ¥" + (Number(it.perMonth) || Math.round((it.price / it.months) * 100) / 100) + "/月"
+          : "";
+        return { plan: it.plan, months: Number(it.months), text: cyc + " · ¥" + it.price + per };
+      });
+    }
+    return ((mbPlans && mbPlans.priceOptions) || []).map((o) => ({
+      plan: o.plan, months: Number(o.months),
+      text: (o.label || o.months + " 个月") + " · ¥" + o.price,
+    }));
+  }
+
+  /** 默认档位：优先「上次购买的周期」（续费不用重新挑），否则最少月数（花钱最少） */
+  function pickDefaultOption(list) {
+    if (!list || !list.length) return null;
+    const A = account();
+    const last = A && A.lastPurchasedMonths ? A.lastPurchasedMonths() : null;
+    if (last) {
+      const hit = list.find((o) => Number(o.months) === Number(last));
+      if (hit) return hit;
+    }
+    return list.slice().sort((a, b) => a.months - b.months)[0];
   }
 
   function renderMembership() {
@@ -363,7 +396,56 @@
 
     const up = $("pp-mb-upgrade");
     if (up) up.textContent = isPro ? "续费专业版" : "升级专业版";
+
+    /* 0.24.4 到期提醒横幅：剩余 ≤7 天（含已到期）出现，点击直接打开续费面板 */
+    const rb = $("pp-mb-renew");
+    if (rb) {
+      const rem = A.renewalReminder ? A.renewalReminder() : null;
+      if (rem) {
+        rb.style.display = "";
+        rb.className = rem.expired ? "pp-mb-renew pp-mb-renew-expired" : "pp-mb-renew";
+        rb.textContent = rem.expired
+          ? ("⚠ 会员已于 " + fmtDate(rem.expiresAt) + " 到期，当前为免费版 —— 点此续费立即恢复")
+          : ("⏳ 仅剩 " + rem.daysLeft + " 天（" + fmtDate(rem.expiresAt) + " 到期）—— 点此续费，时长可叠加");
+      } else {
+        rb.style.display = "none";
+      }
+    }
+
+    renderMbUsage();
     renderPersistWarn();
+  }
+
+  /** 0.24.4 用量趋势：今日/额度 + 近 7 天迷你柱状图 + 近 7 天合计（纯 CSS 高度绘图，无外部依赖） */
+  function renderMbUsage() {
+    const box = $("pp-mb-usage");
+    const A = account();
+    if (!box || !A) return;
+    if (!A.isLoggedIn()) { box.style.display = "none"; return; }
+    const us = A.usage();
+    const days = (us && us.days) || [];
+    if (!days.length) { box.style.display = "none"; return; }   // 老服务端没有趋势数据 → 整块隐藏
+    box.style.display = "";
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "pp-mb-usage-head" },
+      "用量：今日 " + us.today + (us.limit > 0 ? " / " + us.limit : "")
+      + " 次 · 近 7 天合计 " + us.last7 + " 次"));
+
+    const last = days.slice(-7);
+    const max = Math.max(1, last.reduce((m, d) => Math.max(m, Number(d && d.count) || 0), 0));
+    const bars = el("div", { class: "pp-mb-bars" });
+    for (const d of last) {
+      const n = Number(d && d.count) || 0;
+      const h = n ? Math.max(3, Math.round((n / max) * 26)) : 2;
+      const col = el("div", { class: "pp-mb-bar-col" });
+      const bar = el("div", { class: n ? "pp-mb-bar" : "pp-mb-bar pp-mb-bar-zero" });
+      bar.style.height = h + "px";
+      bar.setAttribute("title", String(d.date) + "：" + n + " 次");
+      col.appendChild(bar);
+      col.appendChild(el("div", { class: "pp-mb-bar-day" }, String(d.date).slice(8, 10)));
+      bars.appendChild(col);
+    }
+    box.appendChild(bars);
   }
 
   /** 0.23.0：会话写盘失败不再静默——面板直接给出原因与后果 */
@@ -388,12 +470,21 @@
     const opts = $("pp-mb-options");
     if (!opts) return;
     opts.innerHTML = "";
-    const list = (mbPlans && mbPlans.priceOptions) || [];
+    const list = mbOptions();
+    if (!mbSel && list.length) mbSel = pickDefaultOption(list);
     for (const o of list) {
       const on = mbSel && mbSel.plan === o.plan && Number(mbSel.months) === Number(o.months);
-      const chip = el("span", { class: on ? "pp-mb-opt pp-mb-opt-on" : "pp-mb-opt" });
-      chip.textContent = (o.label || o.months + " 个月") + " · ¥" + o.price;
+      const chip = el("span", { class: on ? "pp-mb-opt pp-mb-opt-on" : "pp-mb-opt" }, o.text);
       chip.addEventListener("click", () => { mbSel = o; renderMbOptions(); });
+      opts.appendChild(chip);
+    }
+    // 尚未生效的价格：只作预告（灰底、不可点）——让用户知道「什么时候会变价」
+    for (const it of ((mbPlans && mbPlans.upcoming) || [])) {
+      const d = it.effectiveFrom ? String(it.effectiveFrom).slice(0, 10) : "";
+      const text = "即将生效 · " + (it.cycleName || it.label || (it.months + " 个月"))
+        + " ¥" + it.price + (d ? " · " + d : "");
+      const chip = el("span", { class: "pp-mb-opt pp-mb-opt-soon" }, text);
+      chip.setAttribute("title", "该价格尚未生效，到时间后自动可购买");
       opts.appendChild(chip);
     }
     const note = $("pp-mb-price-note");
@@ -401,6 +492,15 @@
       const pay = (mbPlans && mbPlans.pay) || {};
       note.textContent = "支持 " + (pay.channel || "收款码") + (pay.note ? "；" + pay.note : "");
     }
+  }
+
+  /** 点到期横幅 = 打开续费面板（默认档位取「上次购买的周期」） */
+  function onMbRenew() {
+    const A = account();
+    if (!A || !A.isLoggedIn()) return;
+    mbSel = null;                       // 重新按上次购买周期挑默认档位
+    onMbUpgrade();
+    try { const b = $("pp-mb-order"); if (b && b.scrollIntoView) b.scrollIntoView(false); } catch (e) { /* ignore */ }
   }
 
   async function onMbUpgrade() {
@@ -1036,6 +1136,7 @@
     bind("pp-account-official-model", "change", onOfficialModelChange);
     // 会员（0.23.0）
     bind("pp-mb-upgrade", "click", onMbUpgrade);
+    bind("pp-mb-renew", "click", onMbRenew);
     bind("pp-mb-create", "click", onMbCreate);
     bind("pp-mb-close-order", "click", () => { const b = $("pp-mb-order"); if (b) b.style.display = "none"; });
     bind("pp-mb-claim", "click", onMbClaim);
