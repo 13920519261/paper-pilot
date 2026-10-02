@@ -115,7 +115,7 @@
       },
     }, cur === "custom"));
     // 分类卡（标准 / 动漫 / 风景 / 动态）
-    for (const cat of ["standard", "anime", "scenery", "dynamic"]) {
+    for (const cat of ["standard", "anime", "scenery", "dynamic", "giant"]) {
       const grid = $("pp-cat-" + cat);
       if (!grid) continue;
       while (grid.firstChild) grid.removeChild(grid.firstChild);
