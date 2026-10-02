@@ -6,7 +6,7 @@
  *   1. PubScholar 中科院公益学术平台——开放 JSON API、无验证码、覆盖知网/万方/维普，
  *      含摘要/DOI/关键词，为首选源（移植自 jasminum pubscholar.ts，签名算法同源）
  *   2. CNKI 知网直接搜索——命中率高但会触发风控：403 滑块 或 200 no-content 软拦；
- *      被拦时由 CNVerify 引导用户在内置标签页过验证（0.14.8 起验证通过自动续抓）
+ *      被拦时由 CNVerify 引导用户过验证（0.14.8 起自动续抓；0.14.9 手动确认按钮/5 分钟缓存/会话去重）
  *
  * 保护策略：仅在条目元数据不完整（标题=文件名 或 缺作者/期刊）时回填；
  * 字段级保护——已有值的字段（除标题=文件名场景）一律不覆盖。
@@ -537,13 +537,20 @@ var CNFetch = {
     // 知网被风控（滑块/软拦）→ 引导在内置标签页过验证，通过后自动续抓本批
     if (blockedHit) {
       const win = Zotero.getMainWindow();
-      const go = Services.prompt.confirm(win,
-        "PaperPilot · " + (zh ? "知网验证" : "CNKI verification"),
-        zh
-          ? "知网触发了安全验证（滑块/风控拦截）。\n是否现在打开知网页面完成验证？验证通过后会自动继续本次抓取。"
-          : "CNKI is blocking requests (slider/risk control). Open the CNKI page to verify? Fetching will resume automatically afterwards.");
-      if (go) {
-        CNVerify.openAndWait(() => this.runForSelected());
+      if (CNVerify.recentlyPassed()) {
+        // 5 分钟内刚验证过仍被拦：大概率是频次限制，再开验证窗无济于事
+        Zotero.alert(win, "PaperPilot · " + (zh ? "知网验证" : "CNKI verification"),
+          zh ? "5 分钟内刚完成过知网验证，但仍被拦截——可能是访问频次限制，请几分钟后再试。"
+             : "Verified within the last 5 minutes but still blocked — likely rate limiting; try again later.");
+      } else {
+        const go = Services.prompt.confirm(win,
+          "PaperPilot · " + (zh ? "知网验证" : "CNKI verification"),
+          zh
+            ? "知网触发了安全验证（滑块/风控拦截）。\n是否现在打开知网页面完成验证？验证通过后会自动继续本次抓取。"
+            : "CNKI is blocking requests (slider/risk control). Open the CNKI page to verify? Fetching will resume automatically afterwards.");
+        if (go) {
+          CNVerify.openAndWait(() => this.runForSelected());
+        }
       }
     }
   },
@@ -705,18 +712,30 @@ var CNFetch = {
   },
 };
 
-/* ==================== 知网验证（0.14.8，茉莉花 passCaptchaToCookieBox 同等能力） ====================
+/* ==================== 知网验证（0.14.8 起，0.14.9 吸收茉莉花 cookiebox 三点改进） ====================
  * 知网风控两种形态：403 滑块 JSON；200 但 no-content 软拦（"抱歉，暂无数据"）。
- * 解除唯一途径：在真实浏览器里过一次安全验证——Zotero 标签页与 Zotero.HTTP 共享
- * profile cookie 罐，标签页里过验证后 XHR 即恢复。
- * 本模块：热词探测（区分软拦/真空结果）→ 开验证页 → 轮询等待 → 通过回调（自动续抓）。
+ * 解除唯一途径：在真实浏览器里过一次安全验证——Zotero 标签页/viewer 与 Zotero.HTTP
+ * 共享 profile 默认 cookie 罐，页面里过验证后 XHR 即恢复。
+ * 本模块：热词探测（区分软拦/真空结果）→ 开验证窗 → 自动轮询 + 手动确认按钮并行
+ * （借鉴茉莉花 cookiebox.ts 的注入面板）→ 通过回调（自动续抓）。
+ * 0.14.9：验证通过状态缓存 5 分钟（免重复验证）；等待会话 Promise 去重（并发只开一个窗）。
  */
 var CNVerify = {
   VERIFY_URL: "https://kns.cnki.net/",
-  _waiting: false,
+  PASS_TTL: 5 * 60 * 1000, // 验证通过状态缓存时长（借鉴茉莉花 COOKIE_EXPIRE_MS）
+  _passTime: 0,
+  _waitPromise: null,   // 进行中的验证会话（并发去重）
+  _manualWaiters: [],
+  _closeWaiters: [],
+  _panelHint: null,
 
   _diag(msg) {
     try { _ppDiag("cn-verify: " + msg); } catch (e) { /* ignore */ }
+  },
+
+  /** 是否在验证通过后的有效期内（5 分钟内免重复验证） */
+  recentlyPassed() {
+    return !!(this._passTime && (Date.now() - this._passTime) < this.PASS_TTL);
   },
 
   /** 探测知网当前是否可用：固定热词搜索，能出结果 = 未被风控 */
@@ -724,6 +743,7 @@ var CNVerify = {
     try {
       const r = await CNFetch._searchCNKI("高血压", "");
       const ok = !r.maybeBlocked && !r.captcha && r.results.length > 0;
+      if (ok) this._passTime = Date.now();
       this._diag("probe: " + (ok ? "ok" : "blocked"));
       return ok;
     } catch (e) {
@@ -733,55 +753,154 @@ var CNVerify = {
   },
 
   /**
-   * 打开知网验证页并轮询等待通过（最长 5 分钟）。
-   * onPass 在通过后回调（如自动续抓）；onGiveup 超时/异常时回调。
+   * 打开知网验证窗并等待通过（自动轮询 + 页面内手动确认按钮并行，最长 5 分钟）。
+   * 并发去重：已有验证会话时挂到同一会话上，不再开新窗。
+   * onPass 在通过后回调（如自动续抓）；onGiveup 超时/关窗时回调。
    */
   async openAndWait(onPass, onGiveup) {
-    if (this._waiting) return;
-    this._waiting = true;
+    if (!this._waitPromise) {
+      this._waitPromise = this._waitSession()
+        .finally(() => { this._waitPromise = null; });
+    } else {
+      this._diag("wait session already running, attaching to it");
+    }
+    const ok = await this._waitPromise;
+    if (ok) {
+      if (onPass) { try { onPass(); } catch (e) { Zotero.logError(e); } }
+    } else if (onGiveup) {
+      try { onGiveup(); } catch (e) { Zotero.logError(e); }
+    }
+    return ok;
+  },
+
+  /** 单个验证会话；resolve true=通过 false=超时/用户关窗 */
+  async _waitSession() {
     const zh = I18n.isZh;
-    try {
+    this._manualWaiters = [];
+    this._closeWaiters = [];
+    this._panelHint = null;
+
+    // viewer 窗口打开知网（默认 cookie 容器，与 Zotero.HTTP 共享会话）
+    let win = null;
+    try { win = Zotero.openInViewer(this.VERIFY_URL); }
+    catch (e) { this._diag("openInViewer failed: " + (e && e.message)); }
+    if (!win) {
       try { Zotero.getActiveZoteroPane().loadURI(this.VERIFY_URL); }
       catch (e) { try { Zotero.launchURL(this.VERIFY_URL); } catch (e2) { /* ignore */ } }
-      const pw = new Zotero.ProgressWindow({ closeOnClick: false });
-      pw.changeHeadline("PaperPilot · " + (zh ? "知网验证" : "CNKI verification"));
-      const line = new pw.ItemProgress("chrome://paperpilot/content/icons/chat.svg",
-        zh ? "已打开知网页面：请在页面中完成滑块/安全验证，通过后自动继续（最长等 5 分钟）…"
-           : "CNKI page opened — complete the slider verification there (wait up to 5 min)…");
-      pw.show();
-      const deadline = Date.now() + 5 * 60 * 1000;
-      while (Date.now() < deadline) {
-        await new Promise((ok) => setTimeout(ok, 3000));
-        if (await this.probe()) {
-          line.setText(zh ? "✓ 验证已通过，知网恢复访问" : "✓ Verification passed");
-          line.setProgress(100);
-          pw.startCloseTimer(2500);
-          this._waiting = false;
-          if (onPass) {
-            try { onPass(); } catch (e) { Zotero.logError(e); }
-          }
-          return;
-        }
-      }
-      line.setError();
-      line.setText(zh ? "等待超时——可稍后从工具菜单重新发起「知网验证」"
-                      : "Timed out — retry from the Tools menu later");
-      pw.startCloseTimer(4000);
-    } catch (e) {
-      Zotero.logError(e);
     }
-    this._waiting = false;
-    if (onGiveup) {
-      try { onGiveup(); } catch (e) { Zotero.logError(e); }
+    if (win) {
+      this._injectConfirmPanel(win);
+      win.addEventListener("close", () => {
+        const ws = this._closeWaiters.splice(0);
+        for (const r of ws) { try { r(); } catch (e) { /* ignore */ } }
+      });
+    }
+
+    const pw = new Zotero.ProgressWindow({ closeOnClick: false });
+    pw.changeHeadline("PaperPilot · " + (zh ? "知网验证" : "CNKI verification"));
+    const line = new pw.ItemProgress("chrome://paperpilot/content/icons/chat.svg",
+      zh ? "请在打开的知网页面完成滑块/安全验证——通过后自动继续，也可点页面右上角「我已完成验证」（最长 5 分钟）…"
+         : "Complete the slider in the CNKI page — auto-resume on pass, or click the confirm button in the page (up to 5 min)…");
+    pw.show();
+
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const race = await Promise.race([
+        new Promise((r) => setTimeout(() => r("tick"), 3000)),
+        new Promise((r) => this._manualWaiters.push(() => r("manual"))),
+        new Promise((r) => this._closeWaiters.push(() => r("closed"))),
+      ]);
+      if (race === "closed") {
+        this._diag("verification window closed by user");
+        line.setError();
+        line.setText(zh ? "验证窗口已关闭，验证未完成" : "Verification window closed");
+        pw.startCloseTimer(3500);
+        return false;
+      }
+      if (await this.probe()) {
+        line.setText(zh ? "✓ 验证已通过，知网恢复访问" : "✓ Verification passed");
+        line.setProgress(100);
+        pw.startCloseTimer(2500);
+        try { if (win) win.close(); } catch (e) { /* ignore */ }
+        return true;
+      }
+      if (race === "manual") {
+        this._flashPanel(zh
+          ? "仍未检测到通过——请确认已在页面中完成滑块，或稍等自动检测"
+          : "Not passed yet — finish the slider, or wait for auto-detection");
+      }
+    }
+    line.setError();
+    line.setText(zh ? "等待超时——可稍后从工具菜单重新发起「知网验证」"
+                    : "Timed out — retry from the Tools menu later");
+    pw.startCloseTimer(4000);
+    try { if (win) win.close(); } catch (e) { /* ignore */ }
+    return false;
+  },
+
+  /** 往验证窗口注入悬浮确认面板（茉莉花 cookiebox 同款：红框 + 绿色确认按钮） */
+  _injectConfirmPanel(win) {
+    const inject = () => {
+      try {
+        const zh = I18n.isZh;
+        const doc = win.document;
+        const XHTML = "http://www.w3.org/1999/xhtml";
+        const box = doc.createElementNS(XHTML, "div");
+        box.setAttribute("style",
+          "position:fixed;top:10px;right:10px;z-index:10000;padding:12px 14px;" +
+          "background:#ffffff;border:2px solid #c0392b;border-radius:8px;" +
+          "box-shadow:0 2px 8px rgba(0,0,0,0.3);font-family:sans-serif;");
+        const hint = doc.createElementNS(XHTML, "div");
+        hint.textContent = zh ? "PaperPilot：在页面完成滑块后点击按钮"
+                              : "PaperPilot: click after passing the slider";
+        hint.setAttribute("style", "font-size:12px;color:#333;margin-bottom:8px;max-width:230px;");
+        const btn = doc.createElementNS(XHTML, "button");
+        btn.textContent = zh ? "我已完成验证" : "Done verifying";
+        btn.setAttribute("style",
+          "font-size:13px;padding:6px 14px;background:#2e7d32;color:#ffffff;" +
+          "border:none;border-radius:6px;cursor:pointer;font-weight:bold;");
+        btn.addEventListener("click", () => {
+          const ws = this._manualWaiters.splice(0);
+          for (const r of ws) { try { r(); } catch (e) { /* ignore */ } }
+        });
+        box.appendChild(hint);
+        box.appendChild(btn);
+        (doc.documentElement || doc.body).appendChild(box);
+        this._panelHint = hint;
+      } catch (e) {
+        this._diag("inject panel failed: " + (e && e.message));
+      }
+    };
+    try {
+      if (win.document && win.document.readyState === "complete") inject();
+      else win.addEventListener("load", inject, { once: true });
+    } catch (e) {
+      this._diag("panel setup failed: " + (e && e.message));
     }
   },
 
-  /** 菜单入口：主动发起验证（先探测，未被拦则提示无需验证） */
+  /** 手动确认但探测未通过时，把面板提示变红 */
+  _flashPanel(msg) {
+    try {
+      if (this._panelHint) {
+        this._panelHint.textContent = msg;
+        this._panelHint.style.color = "#c0392b";
+      }
+    } catch (e) { /* ignore */ }
+  },
+
+  /** 菜单入口：主动发起验证（先探测；5 分钟内刚验证过则提示限流可能） */
   async interactive() {
     const zh = I18n.isZh;
     if (await this.probe()) {
       Zotero.alert(null, "PaperPilot",
         zh ? "知网访问正常，无需验证。" : "CNKI is accessible — no verification needed.");
+      return;
+    }
+    if (this.recentlyPassed()) {
+      Zotero.alert(null, "PaperPilot",
+        zh ? "5 分钟内刚完成过验证但仍被拦截——可能是知网访问频次限制，请几分钟后自动解除再试。"
+           : "Verified within the last 5 minutes but still blocked — likely rate limiting; try again in a few minutes.");
       return;
     }
     await this.openAndWait(() => {

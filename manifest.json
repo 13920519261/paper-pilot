@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "PaperPilot 文献副驾",
-  "version": "0.14.8",
+  "version": "0.14.9",
   "description": "知网验证（风控解除+自动续抓）+ 模型通道行内选模型 + 敏感信息掩码 + 中文转换器更新/知网元数据抓取 + 账号系统 + 工作台 2.0 + 功能中心 + 划词翻译/精读问答 + 全文对照翻译 + AI 综述/思维导图/Anki 制卡 + 阅读状态 + 期刊分区/被引量 · Zotero 7-10 插件",
   "author": "you",
   "icons": {
