@@ -63,6 +63,8 @@ pref("extensions.zotero.paperpilot.cnTranslatorsAuto", true);
 pref("extensions.zotero.paperpilot.cnTranslatorUpdateTime", "0");
 pref("extensions.zotero.paperpilot.cnFetchUseCNKI", true);
 pref("extensions.zotero.paperpilot.cnDownloadDir", "");
+// 0.16.1 新增：抓取中文元数据时同时尝试下载 PDF 全文（PubScholar 免费直链 + CNKI 机构权限通道）
+pref("extensions.zotero.paperpilot.cnFetchPDF", true);
 // 0.14.7 新增：设置界面敏感信息默认掩码（接口地址明文开关）
 pref("extensions.zotero.paperpilot.uiShowFullUrl", false);
 // 0.16.0 新增：界面主题（"" = 跟随 Zotero 原生；主题 id 见 ui-theme.js THEMES）

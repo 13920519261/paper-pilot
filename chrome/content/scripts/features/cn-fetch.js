@@ -189,6 +189,7 @@ var CNFetch = {
             abstract: this._stripHTML(a.abstracts),
             keywords: a.keywords || [],
             url: (a.links || []).find((l) => l && l.url)?.url || "",
+            pdfUrl: (a.local_links || [])[0] || "", // 公益平台免费全文直链（file.scholarin.cn，实测免鉴权）
             articleID: String(a.id || ""),
             itemType: a.article_type === "学位论文" ? "thesis"
               : a.article_type === "会议论文" ? "conferencePaper"
@@ -424,6 +425,131 @@ var CNFetch = {
     }
   },
 
+  // ================= PDF 附件抓取（0.14.10） =================
+
+  /** 条目是否已有 PDF 附件 */
+  _hasPDFAttachment(item) {
+    try {
+      for (const id of (item.getAttachments ? item.getAttachments() : [])) {
+        const a = Zotero.Items.get(id);
+        if (a && a.attachmentContentType === "application/pdf") return true;
+        if (a && a.isPDFAttachment && a.isPDFAttachment()) return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  },
+
+  /** 下载 URL → bytes，校验 %PDF magic；返回 {bytes} 或 {fail:true} */
+  async _downloadPDFBytes(url, referer) {
+    const resp = await Zotero.HTTP.request("GET", url, {
+      responseType: "arraybuffer",
+      headers: referer ? { "Referer": referer } : undefined,
+      timeout: 45000,
+    });
+    const bytes = new Uint8Array(resp.response);
+    // 无权限/未登录时知网返回 HTML 登录或购买页；免费直链异常时也可能是 HTML 错误页
+    if (bytes.length < 500 ||
+        !(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) {
+      return { fail: true };
+    }
+    return { bytes };
+  },
+
+  /** bytes → 临时文件 → 导入为条目附件并命名 */
+  async _importPDF(item, bytes, title) {
+    const tmp = PathUtils.join(PathUtils.tempDir, "paperpilot-" + Date.now() + ".pdf");
+    await IOUtils.write(tmp, bytes);
+    try {
+      const att = await Zotero.Attachments.importFromFile({ file: tmp, parentItemID: item.id });
+      try {
+        att.setField("title", title ? ("Full Text: " + title).slice(0, 200) : "Full Text PDF");
+        await att.saveTx();
+      } catch (e) { /* ignore */ }
+      return att;
+    } finally {
+      try { await IOUtils.remove(tmp, { ignoreAbsent: true }); } catch (e) { /* ignore */ }
+    }
+  },
+
+  /**
+   * 尝试抓 PDF 附件。两条路：
+   * ① PubScholar local_links 免费全文（file.scholarin.cn 直链，免鉴权，实测返回 %PDF）
+   * ② CNKI 详情页 .btn-dlpdf（与 translators_CN/CNKI.js 同款解析；
+   *    按钮只在有下载权限的会话中渲染，下载需要机构订阅/知网账号——任何插件都绕不过付费墙）
+   * 返回 "ok" | "denied" | "no-link" | "captcha" | "error" | "skip"
+   */
+  async _tryAttachPDF(item, pick) {
+    try {
+      if (pick.pdfUrl) {
+        try {
+          const r = await this._downloadPDFBytes(pick.pdfUrl, "https://pubscholar.cn/");
+          if (r.bytes) {
+            await this._importPDF(item, r.bytes, pick.articleTitle);
+            this._diag("pdf attached from scholarin: " + pick.articleTitle);
+            return "ok";
+          }
+          this._diag("scholarin link not-pdf: " + pick.pdfUrl);
+        } catch (e) {
+          this._diag("scholarin pdf error: " + (e && e.message));
+        }
+      }
+      if (pick.source === "CNKI" && (pick.filename || pick.url)) {
+        return await this._tryCNKIPdf(item, pick);
+      }
+      return pick.pdfUrl ? "error" : "no-link";
+    } catch (e) {
+      this._diag("attach pdf error: " + (e && (e.stack || e.message)));
+      return "error";
+    }
+  },
+
+  /** CNKI 机构权限通道：详情页 → .btn-dlpdf → 下载（共享验证后的 cookie 会话） */
+  async _tryCNKIPdf(item, pick) {
+    const pages = [];
+    if (pick.dbname && pick.filename) {
+      pages.push("https://kns.cnki.net/kcms/detail/detail.aspx?dbname=" +
+        encodeURIComponent(pick.dbname) + "&filename=" + encodeURIComponent(pick.filename));
+    }
+    if (pick.url) pages.push(pick.url);
+    let pdfUrl = "", pageUrl = "";
+    for (const u of pages) {
+      let resp;
+      try {
+        resp = await Zotero.HTTP.request("GET", u, {
+          headers: { "Referer": "https://kns.cnki.net/kns8s/" },
+          timeout: 15000, successCodes: [200, 403],
+        });
+      } catch (e) {
+        this._diag("cnki detail page failed: " + (e && e.message));
+        continue;
+      }
+      const html = resp.responseText || "";
+      // 知网节超时验证页（translators_CN 同款检测）
+      if (/知网节超时验证|>captcha</i.test(html)) return "captcha";
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const a = doc.querySelector(".btn-dlpdf > a") || doc.querySelector("a.btn-dlpdf");
+      const href = a && a.getAttribute("href");
+      if (href) {
+        pdfUrl = href.startsWith("http") ? href
+          : "https://kns.cnki.net" + (href.startsWith("/") ? href : "/" + href);
+        pageUrl = u;
+        break;
+      }
+    }
+    if (!pdfUrl) {
+      // 无下载权限/未登录时按钮不渲染——这是正常结果而非错误
+      this._diag("no pdf button on detail pages (no access?)");
+      return "no-link";
+    }
+    let r;
+    try { r = await this._downloadPDFBytes(pdfUrl, pageUrl); }
+    catch (e) { return "error"; }
+    if (r.fail) return "denied"; // 返回 HTML 登录/购买页 = 无权限
+    await this._importPDF(item, r.bytes, pick.articleTitle);
+    this._diag("pdf attached from cnki: " + pick.articleTitle);
+    return "ok";
+  },
+
   /** 单条目抓取流程；返回 {status, detail} */
   async _fetchForItem(item, opts) {
     // 附件上溯父条目
@@ -476,9 +602,18 @@ var CNFetch = {
 
     // 类型不一致（如 thesis vs journalArticle）且字段差异大时，先尽量字段级回填
     const filled = this._enrichItem(item, pick, upgradeTitle);
-    if (!filled.length) return { status: "skip", detail: "nothing-new" };
+    // PDF 附件：元数据有/无新字段都尝试（用户核心诉求是全文）
+    let pdf = "";
+    if (Prefs.get("cnFetchPDF", true) && !this._hasPDFAttachment(item)) {
+      pdf = await this._tryAttachPDF(item, pick);
+    }
+    if (!filled.length) {
+      return pdf === "ok"
+        ? { status: "ok", detail: "pdf", source: pick.source, captcha, pdf }
+        : { status: "skip", detail: "nothing-new", pdf };
+    }
     await item.saveTx();
-    return { status: "ok", detail: filled.join(","), source: pick.source, captcha };
+    return { status: "ok", detail: filled.join(","), source: pick.source, captcha, pdf };
   },
 
   /** 菜单入口：抓取所选条目 */
@@ -507,7 +642,13 @@ var CNFetch = {
         progress.setProgress(100);
         if (r.status === "ok") {
           nOk++;
-          progress.setText((zh ? "已回填（" : "Filled (") + (r.source || "") + "）");
+          let t = (zh ? "已回填（" : "Filled (") + (r.source || "") + "）";
+          if (r.pdf === "ok") t += zh ? " + PDF 全文" : " + PDF";
+          else if (r.pdf === "denied") t += zh ? "；PDF 无下载权限" : "; PDF no access";
+          else if (r.pdf === "no-link") t += zh ? "；无免费 PDF" : "; no free PDF";
+          else if (r.pdf === "error") t += zh ? "；PDF 下载失败" : "; PDF failed";
+          progress.setText(t);
+          if (r.pdf === "captcha") blockedHit = true;
         } else if (r.status === "empty") {
           nEmpty++;
           if (r.captcha) blockedHit = true;
