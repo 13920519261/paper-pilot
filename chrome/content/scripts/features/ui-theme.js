@@ -99,6 +99,30 @@ var UiTheme = {
       wp: { kind: "svg-anim", svg: "__FIREFLY__", anim: true } },
   ],
 
+  /* ==================== 在线美图（0.19.0） ====================
+   * 参考项目 E:/project/工具集合 的精选图库：Unsplash CDN 直链，可直接热链
+   * （响应头 Access-Control-Allow-Origin: *，本机实测 200 / <0.5s）。
+   * 缩略图取 w=400 省流量，应用为壁纸时取 w=1920。
+   * 点击即写 uiWallpaperUrl + uiWallpaper="custom"（与自定义壁纸同一通道）。 */
+  PHOTOS: [
+    { id: "mountain", name: "雪山之巅", pid: "1506905925346-21bda4d32df4" },
+    { id: "forest", name: "雾林", pid: "1441974231531-c6227db76b6e" },
+    { id: "mist", name: "山间晨雾", pid: "1470071459604-3b5ec3a7fe05" },
+    { id: "wave", name: "海浪", pid: "1518837695005-2083093ee35b" },
+    { id: "lake", name: "湖光山色", pid: "1493246507139-91e8fad9978e" },
+    { id: "canoe", name: "静谧小舟", pid: "1476514525535-07fb3b4ae5f1" },
+    { id: "beach", name: "海岸", pid: "1507525428034-b723cf961d3e" },
+    { id: "night", name: "星夜群山", pid: "1519681393784-d120267933ba" },
+    { id: "valley", name: "峡谷", pid: "1426604966848-d7adac402bff" },
+    { id: "meadow", name: "暮色原野", pid: "1472214103451-9374bd1c798e" },
+    { id: "milkyway", name: "银河", pid: "1419242902214-272b3f66ee7a" },
+    { id: "flower", name: "花野", pid: "1465146344425-f00d5f5c8f07" },
+  ],
+
+  photoURL(pid, w) {
+    return "https://images.unsplash.com/photo-" + pid + "?auto=format&fit=crop&w=" + w + "&q=80";
+  },
+
   /* ==================== SVG 插画库（程序化原创） ==================== */
 
   _svgOpen(defs) {
@@ -614,6 +638,95 @@ var UiTheme = {
     return "data:image/svg+xml," + encodeURIComponent(svg).replace(/'/g, "%27");
   },
 
+  /* ==================== 壁纸引擎 v2（0.19.0）：mesh 氛围光 ====================
+   * 0.16~0.18 的壁纸是"具象插画"（樱花/远山/雪落），实测效果：800×600 的插画
+   * 被 cover 拉伸到全屏后元素巨大且模糊，浅色主题下几乎不可见，观感廉价。
+   * v2 改为「色相分层的 mesh 氛围光」：
+   *   · 取主题 accent 作主色，用 _shiftHue 派生 2~3 个邻近色相副色
+   *   · 四团大半径柔光叠加成有机的渐变场，靠色相差异而非具象形状建立层次
+   *   · 画布 1600×1000（与主流屏比例接近，cover 拉伸不变形不糊）
+   *   · 动态版给每团光加 SMIL 位置漂移，形成缓慢呼吸的氛围流动
+   * pref wpEngine = "mesh"（默认）/ "art"（回退到 0.18 的具象插画） */
+
+  /** HSL 色相偏移 + 饱和度/明度缩放：从强调色派生协调副色 */
+  _shiftHue(hex, deg, satMul, lightMul) {
+    const h0 = String(hex || "#888888").replace("#", "");
+    const n = parseInt(h0.length === 3 ? h0.split("").map((c) => c + c).join("") : h0.slice(0, 6), 16);
+    if (!isFinite(n)) return hex;
+    let r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if (max === min) { h = 0; s = 0; }
+    else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+    h = (h + (deg || 0) / 360 + 1) % 1;
+    s = Math.min(1, Math.max(0, s * (satMul === undefined ? 1 : satMul)));
+    l = Math.min(1, Math.max(0, l * (lightMul === undefined ? 1 : lightMul)));
+    const hue2rgb = (p, q, t) => {
+      let tt = t;
+      if (tt < 0) tt += 1;
+      if (tt > 1) tt -= 1;
+      if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+      if (tt < 1 / 2) return q;
+      if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+      return p;
+    };
+    let rr, gg, bb;
+    if (s === 0) { rr = gg = bb = l; }
+    else {
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+      rr = hue2rgb(p, q, h + 1 / 3); gg = hue2rgb(p, q, h); bb = hue2rgb(p, q, h - 1 / 3);
+    }
+    const to = (v) => Math.round(v * 255).toString(16).padStart(2, "0");
+    return "#" + to(rr) + to(gg) + to(bb);
+  },
+
+  /** 生成 mesh 氛围光壁纸（anim=true 时光团缓慢漂移） */
+  _meshSVG(theme, anim) {
+    const c = theme.colors || {};
+    const dark = !!theme.dark;
+    const A = c.accent || "#0969da";
+    const B = this._shiftHue(A, dark ? -30 : 36, dark ? 0.92 : 0.80, dark ? 0.94 : 1.02);
+    const C = this._shiftHue(A, dark ? 46 : -48, dark ? 0.86 : 0.74, dark ? 0.98 : 1.06);
+    const D = this._shiftHue(A, dark ? 18 : 20, dark ? 0.90 : 0.85, dark ? 1.00 : 1.04);
+    const blobs = [
+      { cx: 0.13, cy: 0.08, r: 0.74, color: A, op: dark ? 0.42 : 0.30, drift: 0.05 },
+      { cx: 0.94, cy: 0.28, r: 0.64, color: B, op: dark ? 0.34 : 0.24, drift: 0.06 },
+      { cx: 0.54, cy: 1.10, r: 1.00, color: C, op: dark ? 0.32 : 0.22, drift: 0.04 },
+      { cx: 0.02, cy: 0.86, r: 0.70, color: D, op: dark ? 0.24 : 0.17, drift: 0.07 },
+    ];
+    const W = 1600, H = 1000;
+    let defs = "", body = "";
+    blobs.forEach((b, i) => {
+      const id = "ppb" + i;
+      defs += "<radialGradient id='" + id + "' cx='" + b.cx + "' cy='" + b.cy + "' r='" + b.r + "'>" +
+        "<stop offset='0' stop-color='" + this._rgba(b.color, b.op) + "'/>" +
+        "<stop offset='0.45' stop-color='" + this._rgba(b.color, b.op * 0.45) + "'/>" +
+        "<stop offset='1' stop-color='" + this._rgba(b.color, 0) + "'/></radialGradient>";
+      if (anim) {
+        const d = b.drift;
+        const xs = b.cx + ";" + (b.cx + d).toFixed(3) + ";" + (b.cx - d * 0.6).toFixed(3) + ";" + b.cx;
+        const ys = b.cy + ";" + (b.cy - d * 0.7).toFixed(3) + ";" + (b.cy + d * 0.5).toFixed(3) + ";" + b.cy;
+        defs += "<animate href='#" + id + "' attributeName='cx' values='" + xs + "' dur='" + (26 + i * 7) + "s' repeatCount='indefinite'/>";
+        defs += "<animate href='#" + id + "' attributeName='cy' values='" + ys + "' dur='" + (31 + i * 6) + "s' repeatCount='indefinite'/>";
+      }
+      body += "<rect width='" + W + "' height='" + H + "' fill='url(#" + id + ")'/>";
+    });
+    defs += "<linearGradient id='ppvig' x1='0' y1='0' x2='0' y2='1'>" +
+      "<stop offset='0' stop-color='#ffffff' stop-opacity='" + (dark ? 0.05 : 0.26) + "'/>" +
+      "<stop offset='0.42' stop-color='#ffffff' stop-opacity='0'/>" +
+      "<stop offset='1' stop-color='#000000' stop-opacity='" + (dark ? 0.20 : 0.06) + "'/></linearGradient>";
+    return "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + W + " " + H + "' " +
+      "preserveAspectRatio='xMidYMid slice'><defs>" + defs + "</defs>" +
+      "<rect width='" + W + "' height='" + H + "' fill='" + (c.background || "#ffffff") + "'/>" + body +
+      "<rect width='" + W + "' height='" + H + "' fill='url(#ppvig)'/></svg>";
+  },
+
   /* ==================== 当前主题 / 壁纸解析 ==================== */
 
   /** 返回 {id,name,dark,cat,colors,wp,wpOpacity} 或 null（跟随原生） */
@@ -629,12 +742,21 @@ var UiTheme = {
     return t;
   },
 
-  /** 惰性展开 SVG 占位符（占位符字符串 → 完整 SVG，避免 THEMES 表巨大） */
+  /** 壁纸解析（幂等）：默认走 v2 mesh 氛围光；wpEngine="art" 时回退 0.18 具象插画 */
   _resolveSVGs() {
-    if (!this._svgPool) this._svgPool = this._buildSVGs();
+    const engine = String((Prefs.get("wpEngine", "mesh") || "mesh"));
     for (const t of this.THEMES) {
-      if (t.wp && typeof t.wp.svg === "string" && this._svgPool[t.wp.svg]) {
-        t.wp.svg = this._svgPool[t.wp.svg];
+      if (!t.wp) continue;
+      if (engine === "art") {
+        if (!this._svgPool) this._svgPool = this._buildSVGs();
+        if (typeof t.wp.svg === "string" && this._svgPool[t.wp.svg]) {
+          t.wp.svg = this._svgPool[t.wp.svg];
+        }
+        continue;
+      }
+      if (!t.wp.__mesh) {
+        t.wp.__mesh = true;
+        t.wp.svg = this._meshSVG(t, t.wp.kind === "svg-anim");
       }
     }
   },
@@ -1032,9 +1154,11 @@ var UiTheme = {
     Prefs.set(this.PREF_KEY, id || "");
     const theme = this.THEMES.find((t) => t.id === id);
     if (theme) {
-      // 主题包壁纸默认跟随主题（用户若选过 off/custom 则尊重其选择）
+      // 主题包壁纸默认跟随主题。0.19.0 起：custom 也一并拉回 theme——
+      // 「在线美图/自定义壁纸」是独立通道，点主题卡片 = 配色+壁纸一起切
+      // （否则从美图切主题时壁纸不变，用户会以为没生效）；只有 off 尊重用户选择
       const wpSel = String(Prefs.get(this.PREF_WP, "theme") || "theme");
-      if (wpSel !== "off" && wpSel !== "custom") {
+      if (wpSel !== "off") {
         Prefs.set(this.PREF_WP, "theme");
       }
       // 主题推荐可见度写入滑条（用户仍可再调）

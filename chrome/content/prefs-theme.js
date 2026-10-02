@@ -78,8 +78,10 @@
         } else {
           // 一键切换 = 配色 + 壁纸 + 推荐可见度（与主模块 setTheme 同语义）
           setPref("uiTheme", t.id);
+          // 0.19.0：from「在线美图/自定义壁纸」切回主题时必须把模式拉回 theme，
+          // 否则用户点了主题卡片、壁纸却还是那张照片（模式压在 custom 上）
           const wpMode = String(getPref("uiWallpaper", "theme") || "theme");
-          if (wpMode !== "off" && wpMode !== "custom") setPref("uiWallpaper", "theme");
+          if (wpMode !== "off") setPref("uiWallpaper", "theme");
           if (typeof t.wpOpacity === "number") setPref("uiWallpaperOpacity", t.wpOpacity);
           renderAll();
         }
@@ -124,6 +126,39 @@
           cur === t.id
         ));
       }
+    }
+  }
+
+  /* ==================== 在线美图（0.19.0） ==================== */
+
+  /** Unsplash 精选美图：点击即应用为自定义壁纸（走 uiWallpaperUrl 通道） */
+  function renderPhotoLibrary() {
+    const grid = $("pp-photo-grid");
+    const mod = uiT();
+    if (!grid || !mod || !mod.PHOTOS) return;
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    const curUrl = String(getPref("uiWallpaperUrl", "") || "").trim();
+    const curMode = String(getPref("uiWallpaper", "theme") || "theme");
+    for (const p of mod.PHOTOS) {
+      const on = curMode === "custom" && curUrl.indexOf(p.pid) >= 0;
+      const card = h("div");
+      card.setAttribute("class", "pp-theme-card" + (on ? " pp-theme-on" : ""));
+      const sw = h("div");
+      sw.setAttribute("class", "pp-theme-swatches pp-wp-preview");
+      sw.style.backgroundImage = 'url("' + mod.photoURL(p.pid, 400) + '")';
+      sw.style.backgroundSize = "cover";
+      sw.style.backgroundPosition = "center";
+      const label = h("div");
+      label.setAttribute("class", "pp-theme-name");
+      label.textContent = "🖼 " + p.name;
+      card.appendChild(sw);
+      card.appendChild(label);
+      card.addEventListener("click", () => {
+        setPref("uiWallpaperUrl", mod.photoURL(p.pid, 1920));
+        setPref("uiWallpaper", "custom");
+        renderAll();
+      });
+      grid.appendChild(card);
     }
   }
 
@@ -423,6 +458,7 @@
 
   function renderAll() {
     renderThemeLibrary();
+    renderPhotoLibrary();
     initAppearanceControls();
     renderPdfList();
   }

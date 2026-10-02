@@ -170,6 +170,9 @@
 }
 /* 壁纸缩略预览（SVG/图片背景铺满） */
 .pp-root .pp-wp-preview { height: 52px; }
+/* 在线美图卡（0.19.0）：稍宽的画面比例，缩略图更高 */
+.pp-root #pp-photo-grid { grid-template-columns: repeat(auto-fill, minmax(142px, 1fr)); }
+.pp-root #pp-photo-grid .pp-wp-preview { height: 66px; }
 /* 主题库分类标题（动漫风 / 风景 / 动态壁纸） */
 .pp-root .pp-theme-cat {
   font-size: 12.5px; font-weight: 600; color: var(--pp-text);
