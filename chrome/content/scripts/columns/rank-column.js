@@ -1,10 +1,12 @@
-/* PaperPilot 期刊分区列（0.5.0 升级）
+/* PaperPilot 期刊分区列（0.5.0 升级；0.15.0 内置官方 SecretKey）
  * 数据来源（按优先级）：
  *  1. 内置示例数据 + 用户自定义 JSON（离线兜底，设置中可指定）
  *  2. easyScholar 开放接口 getPublicationRank（在线主源：JCR 分区 / 影响因子 /
  *     中科院分区 / CCF 等），结果本地缓存（DataDirectory/paperpilot-easyscholar.json），
  *     查询队列限速 ~3 req/s，未命中 30 分钟负缓存
  * JSON 格式：{"规范化期刊名": "分区"}，规范化 = 小写、仅保留字母数字与中日韩字符
+ *
+ * SecretKey 优先级（0.15.0）：设置中自定义 easyScholarKey > 内置官方 Key（开箱即用）
  */
 /* global Zotero, IOUtils, PathUtils, Prefs, I18n */
 
@@ -16,6 +18,14 @@ var RankColumn = {
 
   /* easyScholar 状态 */
   ES_ENDPOINT: "https://www.easyscholar.cc/open/getPublicationRank",
+
+  /* ⚠️ 内置官方默认 SecretKey（0.15.0）：前期用户开箱即用。
+   * ┌─ 发版前必改：把下方空字符串填入官方 SecretKey（easyscholar.cc 控制台获取）。
+   * ├─ 用户在设置中填了自定义 Key 时优先使用用户值（走用户自有额度）。
+   * └─ 注意：此值会随插件分发公开，请使用可公开共享的官方 Key，勿填私人高额 Key。
+   */
+  ES_OFFICIAL_KEY: "",
+
   _esCache: new Map(),     // 规范化刊名 -> {text, detail, neg, t, retryAfter}
   _esQueue: [],
   _esQueued: new Set(),
@@ -26,8 +36,14 @@ var RankColumn = {
 
   /* ================= easyScholar 在线源 ================= */
 
+  /** 生效的 SecretKey：用户自定义 pref 优先，留空回退内置官方 Key（0.15.0） */
+  esKey() {
+    const custom = String(Prefs.get("easyScholarKey", "") || "").trim();
+    return custom || String(this.ES_OFFICIAL_KEY || "").trim();
+  },
+
   _esEnabled() {
-    return !!Prefs.get("easyScholarEnabled", true) && !!String(Prefs.get("easyScholarKey", "") || "").trim();
+    return !!Prefs.get("easyScholarEnabled", true) && !!this.esKey();
   },
 
   _esCacheFile() {
@@ -112,8 +128,8 @@ var RankColumn = {
   },
 
   async _esFetch(pubName) {
-    const key = String(Prefs.get("easyScholarKey", "") || "").trim();
-    if (!key) throw new Error("未配置 easyScholar secretKey");
+    const key = this.esKey();
+    if (!key) throw new Error("未配置 easyScholar SecretKey（内置官方 Key 未填入，且设置中未自定义）");
     const url = this.ES_ENDPOINT + "?secretKey=" + encodeURIComponent(key)
       + "&publicationName=" + encodeURIComponent(pubName);
     const req = await Zotero.HTTP.request("GET", url, { responseType: "json", timeout: 15000 });

@@ -1,8 +1,10 @@
-/* PaperPilot 设置窗格脚本·账号与模型通道（0.14.0 新增）
+/* PaperPilot 设置窗格脚本·账号与模型通道（0.14.0 新增；0.15.0 随设置界面重构改版）
  * 与 prefs-pane.js 同窗格运行；经 Zotero.PaperPilot.account / .channels 访问
  * bootstrap 作用域的 Account / Channels 模块。
  * 交互逻辑移植自「AI 带教中心」模型通道面板：状态卡 + 通道行（切换/实测/参数/删除）
  * + 新增/编辑表单（厂商预设自动填充、密钥检测、上游拉取模型、模型 chips、extraBody）。
+ * 0.15.0：动态元素改用 prefs.xhtml 内 <html:style> 的 .pp-* 类（随系统明暗主题）；
+ * 语义色经 CSS 变量引用（var(--pp-success) 等，定义于 .pp-root 作用域）。
  */
 /* global Zotero, window, document, Components */
 
@@ -114,21 +116,21 @@
     const result = $("pp-login-result");
     if (!email || !password) {
       result.textContent = "请填写邮箱和密码";
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
       return;
     }
     btn.disabled = true;
     result.textContent = "登录中…";
-    result.style.color = "#888";
+    result.style.color = "var(--pp-muted)";
     try {
       await A.login(email, password);
       result.textContent = "✓ 登录成功";
-      result.style.color = "#1e7d32";
+      result.style.color = "var(--pp-success)";
       $("pp-login-password").value = "";
       renderAll(); // 通道状态（官方通道可用性）联动刷新
     } catch (e) {
       result.textContent = "✗ " + (e && e.message || "登录失败");
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
     } finally {
       btn.disabled = false;
     }
@@ -139,7 +141,7 @@
     if (!A) return;
     const result = $("pp-account-result");
     result.textContent = "退出中…";
-    result.style.color = "#888";
+    result.style.color = "var(--pp-muted)";
     try { await A.logout(); } catch (e) { /* 本地登出不失败 */ }
     result.textContent = "";
     renderAll();
@@ -151,14 +153,14 @@
     if (!A) return;
     if (!A.isLoggedIn()) { renderAll(); return; }
     result.textContent = "刷新中…";
-    result.style.color = "#888";
+    result.style.color = "var(--pp-muted)";
     try {
       await A.refreshUser();
       result.textContent = "✓ 已刷新";
-      result.style.color = "#1e7d32";
+      result.style.color = "var(--pp-success)";
     } catch (e) {
       result.textContent = "✗ " + (e && e.message || "刷新失败");
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
     }
     renderAccount();
   }
@@ -193,14 +195,14 @@
     st.innerHTML = "";
     const act = chans.find((c) => c.id === active);
     if (!act) {
-      st.appendChild(el("span", { style: "color:#c0392b;" }, "⚠ 没有活动通道，AI 功能不可用——请切换或新增一个通道。"));
+      st.appendChild(el("span", { style: "color:var(--pp-danger);" }, "⚠ 没有活动通道，AI 功能不可用——请切换或新增一个通道。"));
     } else if (act.official && !loggedIn) {
-      st.appendChild(el("span", { style: "color:#b8860b;" },
+      st.appendChild(el("span", { style: "color:var(--pp-warn);" },
         "● 活动通道「" + act.name + "」需要登录——请登录账号（官方模型免费），或切换到自己的通道。"));
     } else {
-      const dot = el("span", { style: "color:#1e7d32;" }, "● ");
+      const dot = el("span", { style: "color:var(--pp-success);" }, "● ");
       const b = el("b", null, act.name);
-      const rest = el("span", { style: "color:#888;" },
+      const rest = el("span", { style: "color:var(--pp-muted);" },
         " " + act.model + " — 活动通道 · 共 " + chans.length + " 个已注册");
       st.appendChild(dot); st.appendChild(b); st.appendChild(rest);
     }
@@ -209,7 +211,7 @@
     const list = $("pp-ch-list");
     list.innerHTML = "";
     if (!chans.length) {
-      list.appendChild(el("div", { style: "font-size:12.5px;color:#888;" },
+      list.appendChild(el("div", { class: "pp-hint" },
         "暂无通道，点击下方「新增通道」接入。"));
     }
     for (const c of chans) {
@@ -219,22 +221,16 @@
   }
 
   function buildChannelRow(c, isActive) {
-    const row = el("div", {
-      style: "border:1px solid #d8d8d8;border-radius:8px;padding:8px 10px;display:flex;align-items:center;gap:10px;",
-    });
+    const row = el("div", { class: "pp-ch-row" });
 
     const left = el("div", { style: "flex:1;min-width:0;" });
-    const head = el("div", { style: "display:flex;align-items:center;gap:6px;" });
-    head.appendChild(el("span", { style: "font-weight:700;font-size:13px;" }, c.name));
+    const head = el("div", { class: "pp-ch-head" });
+    head.appendChild(el("span", { class: "pp-ch-name" }, c.name));
     if (isActive) {
-      head.appendChild(el("span", {
-        style: "font-size:11px;padding:1px 8px;border-radius:99px;background:#e6f4ea;color:#1e7d32;",
-      }, "活动中"));
+      head.appendChild(el("span", { class: "pp-pill pp-pill-ok" }, "活动中"));
     }
     if (c.official && !c.available) {
-      head.appendChild(el("span", {
-        style: "font-size:11px;padding:1px 8px;border-radius:99px;background:#fdf3d7;color:#b8860b;",
-      }, "未登录"));
+      head.appendChild(el("span", { class: "pp-pill pp-pill-warn" }, "未登录"));
     }
     left.appendChild(head);
     const sub = [displayUrl(c.baseUrl), c.model];
@@ -244,14 +240,13 @@
       sub.push(p ? p.name : c.provider);
     }
     sub.push(c.apiKeyMasked);
-    left.appendChild(el("div", {
-      style: "font-size:11.5px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-    }, sub.join(" · ")));
+    left.appendChild(el("div", { class: "pp-ch-sub" }, sub.join(" · ")));
     row.appendChild(left);
 
     /* 当前调用模型下拉（0.14.7）：改动立即生效，无需进编辑表单 */
     const modelBox = el("div", { style: "flex:none;max-width:170px;" });
     const modelSel = el("select", {
+      class: "pp-input",
       style: "width:100%;font-size:12px;padding:2px 4px;",
       title: "该通道当前调用的模型（选择后立即生效）",
     });
@@ -262,14 +257,12 @@
     modelSel.value = c.model || opts[0];
     modelSel.addEventListener("change", () => onModelPick(c, modelSel.value, modelSel));
     modelBox.appendChild(modelSel);
-    modelBox.appendChild(el("div", {
-      style: "font-size:10.5px;color:#999;text-align:center;margin-top:1px;",
-    }, "当前模型"));
+    modelBox.appendChild(el("div", { class: "pp-ch-modelcap" }, "当前模型"));
     row.appendChild(modelBox);
 
     const acts = el("div", { style: "display:flex;gap:6px;flex:none;" });
     const mkBtn = (label, title) => el("button", {
-      style: "padding:3px 10px;font-size:12px;white-space:nowrap;", title: title || "",
+      class: "pp-btn pp-btn-sm", title: title || "",
     }, label);
     if (!isActive) {
       const b = mkBtn("切换", "设为活动通道（全部 AI 功能经此通道）");
@@ -296,7 +289,7 @@
     if (!r.ok) {
       const result = $("pp-ch-test-result");
       result.textContent = "✗ " + r.error;
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
       return;
     }
     renderAll();
@@ -309,17 +302,17 @@
       const r = channels().upsert({ id: c.id, model: model });
       if (!r || !r.ok) {
         result.textContent = "✗ 模型切换失败：" + ((r && r.error) || "未知错误");
-        result.style.color = "#c0392b";
+        result.style.color = "var(--pp-danger)";
         sel.value = c.model; // 回退显示
         return;
       }
       result.textContent = "";
-      result.appendChild(el("span", { style: "color:#1e7d32;" },
+      result.appendChild(el("span", { style: "color:var(--pp-success);" },
         "✓ 「" + c.name + "」当前调用模型已切换为 " + model + "（立即生效）"));
       renderChannels(); // 状态卡/行内显示同步
     } catch (e) {
       result.textContent = "✗ 模型切换异常：" + (e && e.message || e);
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
       sel.value = c.model;
     }
   }
@@ -340,21 +333,21 @@
     btn.disabled = true;
     btn.textContent = "…";
     result.textContent = "实测中（真实调用一次）…";
-    result.style.color = "#888";
+    result.style.color = "var(--pp-muted)";
     try {
       const j = await channels().testChannel(id);
       if (j.ok) {
         result.textContent = "";
-        result.appendChild(el("span", { style: "color:#1e7d32;" },
+        result.appendChild(el("span", { style: "color:var(--pp-success);" },
           "✓ " + id + " 通道正常：模型 " + j.model + "，延迟 " + j.latencyMs + "ms，应答「" + (j.reply || "") + "」"));
       } else {
         result.textContent = "";
-        result.appendChild(el("span", { style: "color:#c0392b;" },
+        result.appendChild(el("span", { style: "color:var(--pp-danger);" },
           "✗ " + id + " 调用失败：" + (j.error || "未知错误")));
       }
     } catch (e) {
       result.textContent = "✗ " + (e && e.message || "实测异常");
-      result.style.color = "#c0392b";
+      result.style.color = "var(--pp-danger)";
     } finally {
       btn.disabled = false;
       btn.textContent = "实测";
@@ -365,7 +358,7 @@
     if (c.official) {
       const result = $("pp-ch-test-result");
       result.textContent = "";
-      result.appendChild(el("span", { style: "color:#888;" },
+      result.appendChild(el("span", { style: "color:var(--pp-muted);" },
         "官方通道由账号系统管理：模型在上方账号卡片选择（登录后免费）；如需自定义接口请「＋ 新增通道」。"));
       return;
     }
@@ -437,7 +430,7 @@
     const box = $("pp-mf-models");
     box.innerHTML = "";
     if (!mfModels.length) {
-      box.appendChild(el("span", { style: "font-size:11.5px;color:#888;" },
+      box.appendChild(el("span", { class: "pp-hint" },
         "暂无模型，可拉取上游或手动添加；点击模型名即设为默认模型"));
       return;
     }
@@ -445,14 +438,11 @@
     mfModels.forEach((m, i) => {
       const selected = m === cur;
       const chip = el("span", {
-        style: "font-size:12px;padding:2px 8px;border-radius:6px;cursor:pointer;" +
-          "border:1px solid " + (selected ? "#2563eb" : "#bbb") + ";" +
-          "background:" + (selected ? "#e6f0fe" : "#f5f5f5") + ";" +
-          (selected ? "color:#2563eb;font-weight:600;" : ""),
+        class: selected ? "pp-chip pp-chip-on" : "pp-chip",
         title: "点击设为该通道默认模型",
       });
       chip.appendChild(document.createTextNode(m + " "));
-      const x = el("span", { style: "cursor:pointer;color:#c0392b;font-weight:700;", title: "从列表移除" }, "×");
+      const x = el("span", { class: "pp-chip-x", title: "从列表移除" }, "×");
       x.addEventListener("click", (ev) => {
         ev.stopPropagation(); // 只移除，不触发「设为默认」
         mfModels.splice(i, 1);
@@ -484,7 +474,7 @@
       apiKey = (C.getChannel(mfEditing) || {}).apiKey || ""; // 编辑时留空 = 用原密钥
     }
     if (!baseUrl) {
-      setDetectResult("请先填写接口地址", "#c0392b");
+      setDetectResult("请先填写接口地址", "var(--pp-danger)");
       return;
     }
     btn.disabled = true;
@@ -494,9 +484,9 @@
       if (j.ok) {
         mfModels = j.models || [];
         renderModelChips();
-        setDetectResult("✓ 拉到 " + mfModels.length + " 个模型", "#1e7d32");
+        setDetectResult("✓ 拉到 " + mfModels.length + " 个模型", "var(--pp-success)");
       } else {
-        setDetectResult("✗ 拉取失败：" + j.error, "#c0392b");
+        setDetectResult("✗ 拉取失败：" + j.error, "var(--pp-danger)");
       }
     } finally {
       btn.disabled = false;
@@ -510,14 +500,14 @@
     const key = $("pp-mf-apiKey").value.trim();
     const baseUrl = $("pp-mf-baseUrl").value.trim();
     if (!key && !baseUrl) {
-      setDetectResult("请先填写 API Key 或接口地址", "#c0392b");
+      setDetectResult("请先填写 API Key 或接口地址", "var(--pp-danger)");
       return;
     }
     let apiKey = key;
     if (!apiKey && mfEditing) apiKey = (C.getChannel(mfEditing) || {}).apiKey || "";
     btn.disabled = true;
     btn.textContent = "检测中";
-    setDetectResult("探测中（识别厂商并拉取模型）…", "#888");
+    setDetectResult("探测中（识别厂商并拉取模型）…", "var(--pp-muted)");
     try {
       const j = await C.detectChannel({ apiKey, baseUrl });
       if (j.ok) {
@@ -530,16 +520,16 @@
         if (mfModels.length && (!cur || !mfModels.includes(cur))) $("pp-mf-model").value = mfModels[0];
         if (!$("pp-mf-name").value.trim() && j.providerName) $("pp-mf-name").value = j.providerName + " 通道";
         setDetectResult("✓ 识别为 " + (j.providerName || j.provider) + "：" + mfModels.length + " 个模型" +
-          (j.latencyMs ? "，" + j.latencyMs + "ms" : ""), "#1e7d32");
+          (j.latencyMs ? "，" + j.latencyMs + "ms" : ""), "var(--pp-success)");
       } else {
         if (j.provider && providerPreset(j.provider)) {
           $("pp-mf-provider").value = j.provider;
           syncProviderNote();
         }
-        setDetectResult("✗ " + (j.error || "检测失败"), "#c0392b");
+        setDetectResult("✗ " + (j.error || "检测失败"), "var(--pp-danger)");
       }
     } catch (e) {
-      setDetectResult("✗ " + (e && e.message || "检测异常"), "#c0392b");
+      setDetectResult("✗ " + (e && e.message || "检测异常"), "var(--pp-danger)");
     } finally {
       btn.disabled = false;
       btn.textContent = "🔍 检测";
@@ -549,7 +539,7 @@
   function setDetectResult(msg, color) {
     const r = $("pp-mf-detect-result");
     r.textContent = msg;
-    r.style.color = color || "#888";
+    r.style.color = color || "var(--pp-muted)";
   }
 
   function openForm(c) {
@@ -571,7 +561,7 @@
     $("pp-mf-provider").value = providerPreset(pv) ? pv : (pv || "custom");
     syncProviderNote();
     renderModelChips();
-    setDetectResult("", "#888");
+    setDetectResult("", "var(--pp-muted)");
     $("pp-mf-err").textContent = "";
     $("pp-ch-form").style.display = "";
     try { $("pp-mf-id").focus(); } catch (e) { /* ignore */ }

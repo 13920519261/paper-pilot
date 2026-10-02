@@ -292,7 +292,7 @@ function Show-ChannelManager {
 
   $dlg = New-Object System.Windows.Forms.Form
   $dlg.Text = 'AI 模型通道管理（官方网关上游）'
-  $dlg.ClientSize = New-Object System.Drawing.Size(568, 480)
+  $dlg.ClientSize = New-Object System.Drawing.Size(568, 524)
   $dlg.StartPosition = 'CenterParent'
   $dlg.FormBorderStyle = 'FixedSingle'
   $dlg.MaximizeBox = $false
@@ -328,6 +328,15 @@ function Show-ChannelManager {
   $cmbDefault.SetBounds(108, 328, 296, 24)
   [void]$dlg.Controls.Add($cmbDefault)
 
+  # 对外上线模型行（0.15.0）：逗号分隔；留空 = 全部上线；auto 恒可用
+  $lblPub = New-Object System.Windows.Forms.Label
+  $lblPub.Text = '对外上线模型：'
+  $lblPub.SetBounds(12, 362, 96, 18)
+  [void]$dlg.Controls.Add($lblPub)
+  $txtPub = New-Object System.Windows.Forms.TextBox
+  $txtPub.SetBounds(108, 358, 296, 24)
+  [void]$dlg.Controls.Add($txtPub)
+
   $script:cmRows = @()
   $script:cmActiveId = $null
 
@@ -357,6 +366,8 @@ function Show-ChannelManager {
       }
       $actCh = $null
       foreach ($c in $r.channels) { if ($c.id -eq $r.active) { $actCh = $c; break } }
+      # 对外上线模型清单（空 = 全部上线，0.15.0）
+      $txtPub.Text = (@($r.publishedModels) -join ', ')
       # 官方默认模型下拉跟随活动通道（可下拉选择，也可自由输入自定义模型名）
       $cmbDefault.Items.Clear()
       if ($actCh) {
@@ -412,7 +423,31 @@ function Show-ChannelManager {
     } catch { $lblInfo.Text = '✗ 设置失败：' + (Get-HttpErrorDetail $_) }
   }
 
-  $btnActivate = New-DlgBtn $dlg '设为活动' 12 360 104 {
+  # 0.15.0 对外上线模型：填充候选 / 保存清单（控制插件端可见可调用的模型范围）
+  $btnFillPub = New-DlgBtn $dlg '📡 填充' 410 355 70 {
+    if (-not $script:cmActiveId) { $lblInfo.Text = '请先在列表中设置活动通道'; return }
+    $lblInfo.Text = '正在拉取活动通道的模型列表…'
+    [System.Windows.Forms.Application]::DoEvents()
+    try {
+      $r = Invoke-AdminApi 'GET' ('/api/admin/channels/' + $script:cmActiveId + '/models')
+      $txtPub.Text = (@($r.models) -join ', ')
+      $lblInfo.Text = '✓ 已填充 ' + @($r.models).Count + ' 个候选——删掉不上线的，再点「保存上线」'
+    } catch { $lblInfo.Text = '✗ 拉取失败：' + (Get-HttpErrorDetail $_) }
+  }
+  $btnSavePub = New-DlgBtn $dlg '保存上线' 484 355 72 {
+    try {
+      $models = @($txtPub.Text -split '[,，]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+      [void](Invoke-AdminApi 'PUT' '/api/admin/channels/published' @{ models = $models })
+      if ($models.Count) {
+        $lblInfo.Text = '✓ 已上线 ' + $models.Count + ' 个模型（auto 恒可用），插件端 /v1/models 即时生效'
+      } else {
+        $lblInfo.Text = '✓ 上线清单已清空——恢复为全部上线'
+      }
+      Refresh-CmList
+    } catch { $lblInfo.Text = '✗ 保存失败：' + (Get-HttpErrorDetail $_) }
+  }
+
+  $btnActivate = New-DlgBtn $dlg '设为活动' 12 392 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     try {
@@ -421,7 +456,7 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '切换失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnTest = New-DlgBtn $dlg '实测' 124 360 104 {
+  $btnTest = New-DlgBtn $dlg '实测' 124 392 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $lblInfo.Text = '正在实测「' + $c.name + '」，请稍候…'
@@ -440,13 +475,13 @@ function Show-ChannelManager {
       $lblInfo.Text = '实测请求失败'
     }
   }
-  $btnEdit = New-DlgBtn $dlg '编辑' 236 360 104 {
+  $btnEdit = New-DlgBtn $dlg '编辑' 236 392 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     [void](Show-ChannelForm $c)
     Refresh-CmList
   }
-  $btnDel = New-DlgBtn $dlg '删除' 348 360 104 {
+  $btnDel = New-DlgBtn $dlg '删除' 348 392 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $r = [System.Windows.Forms.MessageBox]::Show('确定删除通道「' + $c.name + '」？删除后不可恢复。', '删除通道', 'YesNo', 'Question')
@@ -457,19 +492,19 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '删除失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnClose = New-DlgBtn $dlg '关闭' 460 360 96 { $dlg.Close() }
+  $btnClose = New-DlgBtn $dlg '关闭' 460 392 96 { $dlg.Close() }
 
-  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 396 180 {
+  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 428 180 {
     [void](Show-ChannelForm $null)
     Refresh-CmList
   }
-  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 396 180 { Open-Url $AdminPage }
-  $btnRefresh = New-DlgBtn $dlg '刷新' 388 396 168 { Refresh-CmList }
+  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 428 180 { Open-Url $AdminPage }
+  $btnRefresh = New-DlgBtn $dlg '刷新' 388 428 168 { Refresh-CmList }
 
   $tip = New-Object System.Windows.Forms.Label
-  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。`n「官方默认模型」= 活动通道的默认模型（登录用户 auto 映射），从拉取列表选择或输入自定义名后点「设为默认」。"
+  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。`n「官方默认模型」= 活动通道的默认模型（登录用户 auto 映射），从拉取列表选择或输入自定义名后点「设为默认」。`n「对外上线模型」= 插件端可见可调用的模型范围（逗号分隔；留空 = 全部上线；auto 恒可用）——官方模型分批发布用。"
   $tip.ForeColor = [System.Drawing.Color]::DimGray
-  $tip.SetBounds(12, 432, 544, 40)
+  $tip.SetBounds(12, 464, 544, 54)
   [void]$dlg.Controls.Add($tip)
 
   Refresh-CmList

@@ -133,6 +133,20 @@ Zotero.PaperPilot = {
     } catch (e) {
       await this._diag("channels migration FAILED: " + (e && (e.stack || e.message) || e));
     }
+    // 0.15.0 一次性迁移：不再开放自建后台——清掉指向本地的旧服务器地址（设置界面
+    // 已无服务器入口，残留 127.0.0.1 会让老用户升级后登录永远失败）。执行一次后打标。
+    try {
+      if (!Prefs.get("accountServerMigrated15", false)) {
+        const curSrv = String(Prefs.get("accountServerUrl", "") || "");
+        if (curSrv && /127\.0\.0\.1|localhost/i.test(curSrv)) {
+          Prefs.set("accountServerUrl", ""); // 空值回落官方默认（account.js SERVER_DEFAULT）
+          await this._diag("accountServerUrl reset to official (self-host sunset)");
+        }
+        Prefs.set("accountServerMigrated15", true);
+      }
+    } catch (e) {
+      await this._diag("account server migration FAILED: " + (e && (e.stack || e.message) || e));
+    }
     try {
       Account.restore().catch((e) => this._diag("account restore failed: " + (e && e.message)));
       await this._diag("account restore scheduled");
@@ -143,6 +157,8 @@ Zotero.PaperPilot = {
     // 注册设置面板（prefs.xhtml 为 fragment，配套脚本处理测试连接/文件选择）
     // 显式给稳定 id：openPreferences(paneID) 导航需要它（自动生成的 id 带随机串，
     // 且传 pluginID 给 openPreferences 无法定位面板——Z10 preferences.js 实证）
+    // 0.15.0：stylesheets = 设置面板主题样式（prefs.css，随系统明暗切换；
+    // 官方推荐通道，避免在 fragment 里内嵌 <html:style>）
     try {
       this._paneID = await Zotero.PreferencePanes.register({
         pluginID: id,
@@ -151,6 +167,9 @@ Zotero.PaperPilot = {
         scripts: [
           rootURI + "chrome/content/prefs-pane.js",
           rootURI + "chrome/content/prefs-account.js",
+        ],
+        stylesheets: [
+          rootURI + "chrome/content/prefs.css",
         ],
         label: "PaperPilot",
         image: "chrome://paperpilot/content/icons/icon.png",

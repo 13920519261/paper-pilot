@@ -61,6 +61,13 @@ var I18n = (() => {
     popupDailyNotice: zh
       ? "提示：今日 AI 请求已达 500 次，请注意额度"
       : "Note: 500 AI requests today — watch your quota",
+    // ---- 0.15.0 划词浮窗交互升级 ----
+    popupStop: zh ? "停止" : "Stop",
+    popupBusyHint: zh ? "生成中…（点「停止」可取消）" : "Generating… (click Stop to cancel)",
+    popupExpand: zh ? "展开" : "Expand",
+    popupCollapse: zh ? "收起" : "Collapse",
+    popupZoomIn: zh ? "放大结果字号" : "Larger result text",
+    popupZoomOut: zh ? "缩小结果字号" : "Smaller result text",
     promptRun: zh ? "执行" : "Run",
     tagApplyDone: zh ? "已写入标签" : "Tags applied",
     chatPlaceholder: zh ? "针对这篇文献提问…" : "Ask about this paper…",

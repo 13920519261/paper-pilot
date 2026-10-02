@@ -24,9 +24,12 @@
  *   通道：GET/POST /api/admin/channels · PUT/DELETE /api/admin/channels/:id
  *         PUT /api/admin/channels/active · POST /api/admin/channels/:id/test
  *         GET /api/admin/channels/:id/models · POST /api/admin/channels/detect
+ *   上线：PUT /api/admin/channels/published {models:[...]}（0.15.0 对外上线模型清单，
+ *         空数组=全部上线；/v1/models 只返回上线模型，显式调用未上线模型返回 400）
  *
  * 数据：server/data/users.json（scrypt 密码散列 + 令牌表，令牌仅存散列）
- *      server/data/channels.json（官方网关上游通道池，与插件本地通道互不相干）
+ *      server/data/channels.json（官方网关上游通道池 + active + publishedModels，
+ *      与插件本地通道互不相干）
  *
  * 启动：node account-server.js [--port=8000]（或环境变量 PP_PORT）
  * 用量：官方网关每成功转发一次 chat/completions，当日计数 +1；超 dailyLimit 返回 429。
@@ -523,10 +526,20 @@ function activeChannel() {
   return doc.channels.find((c) => c && c.id === doc.active) || null;
 }
 
+/** 对外上线模型清单（0.15.0）：channels.json 顶层 publishedModels。
+ * 空/缺省 = 全部上线（兼容既有部署）；非空 = 仅上线清单内模型（auto 恒放行）。
+ * 后台据此控制官方模型分批上线：不一次性暴露全部上游模型。 */
+function publishedModels() {
+  const s = sanitizeModels(channelsStore.data.publishedModels);
+  return s || [];
+}
+
 function gatewayModels() {
+  const pub = publishedModels();
   const c = activeChannel();
   const out = ['auto'];
-  for (const m of (c && c.models) || []) {
+  const src = pub.length ? pub : ((c && c.models) || []);
+  for (const m of src) {
     if (!out.includes(m)) out.push(m);
   }
   return out;
@@ -557,6 +570,18 @@ function gatewayChat(req, res, user) {
       return json(res, 503, { ok: false,
         error: '官方网关尚未配置模型通道：请在「启动管理器」或后台管理页添加并启用一条通道' });
     }
+
+    // 0.15.0 模型上线管控：后台配置了 publishedModels 时，显式指定的模型必须在
+    // 上线清单内（auto 恒放行——映射到通道默认模型，由通道 model 字段另行控制）
+    const pub = publishedModels();
+    if (pub.length) {
+      const asked = (!body.model || body.model === 'auto') ? null : String(body.model);
+      if (asked && !pub.includes(asked)) {
+        return json(res, 400, { ok: false,
+          error: '模型 ' + asked + ' 暂未开放。当前开放模型：auto、' + pub.join('、') });
+      }
+    }
+
     if (dailyUsedOf(user) >= dailyLimitOf(user)) {
       return json(res, 429, { ok: false,
         error: '今日官方模型用量已达上限（' + dailyLimitOf(user) + ' 次），明日自动重置；或在设置中配置自己的模型通道' });
@@ -700,12 +725,13 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.2.0',
+        ok: true, service: 'paperpilot-account-server', version: '1.3.0',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
         channels: channelsStore.data.channels.length,
         active: channelsStore.data.active || null,
+        publishedModels: publishedModels().length, // 0 = 全部上线
       });
     }
 
@@ -951,6 +977,7 @@ const server = http.createServer(async (req, res) => {
             ok: true,
             channels: channelsStore.data.channels.map(channelOut),
             active: channelsStore.data.active || null,
+            publishedModels: publishedModels(), // 0.15.0 对外上线清单（空 = 全部上线）
           });
         }
         if (method === 'POST') {
@@ -978,6 +1005,18 @@ const server = http.createServer(async (req, res) => {
         channelsStore.save();
         log('active channel ->', id);
         return json(res, 200, { ok: true, active: id });
+      }
+      // 0.15.0 对外上线模型清单：{ models: [...] }（空数组 = 恢复全部上线）
+      if (url === '/api/admin/channels/published' && method === 'PUT') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const list = sanitizeModels(input.models);
+        if (list === undefined) return json(res, 400, { ok: false, error: 'models 必须是模型名数组' });
+        channelsStore.data.publishedModels = list;
+        channelsStore.save();
+        log('published models ->', JSON.stringify(list));
+        return json(res, 200, { ok: true, publishedModels: list,
+          note: list.length ? '仅上线清单内模型（auto 恒放行）' : '已恢复全部上线' });
       }
       if (url === '/api/admin/channels/detect' && method === 'POST') {
         let input;

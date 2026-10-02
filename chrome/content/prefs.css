@@ -1,0 +1,149 @@
+/* PaperPilot 设置面板样式（0.15.0 重构）
+ * 参考 GitHub Primer / VS Code 设置页的视觉语言：模块 = 卡片，卡片内分功能区，
+ * 配色经 CSS 变量随系统明暗主题切换（Zotero 7/10 chrome 文档支持 prefers-color-scheme）。
+ * 经 Zotero.PreferencePanes.register({ stylesheets: [...] }) 随面板加载（官方推荐通道）。
+ * 全部选择器以 .pp-root 作用域收口，不泄漏到设置窗口其他面板。
+ */
+/* ---------- 主题变量（浅色 = GitHub Primer Light；深色 = Primer Dark） ---------- */
+.pp-root {
+  --pp-surface: #ffffff;
+  --pp-surface-2: #f6f8fa;
+  --pp-border: #d1d9e0;
+  --pp-text: #1f2328;
+  --pp-muted: #59636e;
+  --pp-accent: #0969da;
+  --pp-accent-emphasis: #0757b3;
+  --pp-accent-weak: #ddf4ff;
+  --pp-success: #1a7f37;
+  --pp-danger: #cf222e;
+  --pp-warn: #9a6700;
+  --pp-btn-hover: #eef1f4;
+  --pp-focus-ring: rgba(9, 105, 218, .18);
+  --pp-ok-bg: rgba(31, 134, 61, .13);
+  --pp-warn-bg: rgba(154, 103, 0, .13);
+  font-size: 13px;
+}
+@media (prefers-color-scheme: dark) {
+  .pp-root {
+    --pp-surface: #21252b;
+    --pp-surface-2: #1a1e23;
+    --pp-border: #3d444d;
+    --pp-text: #e6edf3;
+    --pp-muted: #9198a1;
+    --pp-accent: #4493f8;
+    --pp-accent-emphasis: #2f81f7;
+    --pp-accent-weak: #17233a;
+    --pp-success: #3fb950;
+    --pp-danger: #f85149;
+    --pp-warn: #d29922;
+    --pp-btn-hover: #2a3038;
+    --pp-focus-ring: rgba(68, 147, 248, .25);
+    --pp-ok-bg: rgba(63, 185, 80, .16);
+    --pp-warn-bg: rgba(210, 153, 34, .16);
+  }
+}
+
+/* ---------- 卡片（模块容器） ---------- */
+.pp-root .pp-card {
+  background: var(--pp-surface);
+  border: 1px solid var(--pp-border);
+  border-radius: 10px;
+  padding: 13px 16px 15px;
+  margin: 0 0 14px;
+}
+.pp-root .pp-card-icon {
+  width: 22px; height: 22px; border-radius: 6px; flex: none;
+  background: var(--pp-accent-weak); color: var(--pp-accent);
+  font-size: 12px; line-height: 22px; text-align: center;
+  display: inline-block; margin-right: 7px; vertical-align: -5px;
+}
+.pp-root .pp-card-title { font-size: 13.5px; font-weight: 600; color: var(--pp-text); }
+.pp-root .pp-card-desc { font-size: 11.5px; color: var(--pp-muted); margin-top: 3px; }
+
+/* ---------- 子分区（卡片内的功能分组） ---------- */
+.pp-root .pp-sub { border-top: 1px solid var(--pp-border); margin-top: 14px; padding-top: 11px; }
+.pp-root .pp-sub-title { font-size: 12.5px; font-weight: 600; color: var(--pp-text); }
+.pp-root .pp-sub-desc { font-size: 11.5px; color: var(--pp-muted); margin-top: 2px; margin-bottom: 4px; }
+
+/* ---------- 行与栅格 ---------- */
+.pp-root .pp-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.pp-root .pp-row-tight { margin-top: 6px; }
+.pp-root .pp-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.pp-root .pp-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 10px; }
+.pp-root .pp-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pp-root .pp-label { font-size: 12.5px; color: var(--pp-text); }
+.pp-root .pp-hint { font-size: 11.5px; color: var(--pp-muted); line-height: 1.5; }
+.pp-root .pp-check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--pp-text); margin-top: 8px; }
+.pp-root .pp-check input { margin: 0; }
+
+/* ---------- 控件 ---------- */
+.pp-root .pp-input, .pp-root .pp-select {
+  padding: 4px 8px; font-size: 12.5px; font-family: inherit;
+  border: 1px solid var(--pp-border); border-radius: 6px;
+  background: var(--pp-surface-2); color: var(--pp-text); min-width: 0;
+}
+.pp-root .pp-input:focus, .pp-root .pp-select:focus, .pp-root .pp-textarea:focus {
+  outline: none; border-color: var(--pp-accent); box-shadow: 0 0 0 3px var(--pp-focus-ring);
+}
+.pp-root .pp-textarea {
+  padding: 5px 8px; font-size: 12.5px; font-family: inherit; width: 100%;
+  box-sizing: border-box; resize: vertical;
+  border: 1px solid var(--pp-border); border-radius: 6px;
+  background: var(--pp-surface-2); color: var(--pp-text);
+}
+.pp-root .pp-grow { flex: 1; }
+.pp-root .pp-btn {
+  padding: 3px 12px; font-size: 12.5px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--pp-border); background: var(--pp-surface); color: var(--pp-text);
+}
+.pp-root .pp-btn:hover:not(:disabled) { background: var(--pp-btn-hover); }
+.pp-root .pp-btn-primary { background: var(--pp-accent); border-color: var(--pp-accent); color: #ffffff; }
+.pp-root .pp-btn-primary:hover:not(:disabled) { background: var(--pp-accent-emphasis); }
+.pp-root .pp-btn-sm { padding: 2px 10px; font-size: 12px; }
+.pp-root .pp-btn:disabled { opacity: .5; cursor: default; }
+.pp-root .pp-btn-eye { padding: 3px 8px; }
+.pp-root .pp-link { color: var(--pp-accent); cursor: pointer; font-size: 12.5px; }
+.pp-root .pp-link:hover { text-decoration: underline; }
+.pp-root .pp-msg { font-size: 12px; color: var(--pp-muted); }
+
+/* ---------- 徽标 / 账号卡 ---------- */
+.pp-root .pp-pill {
+  font-size: 11px; padding: 1px 8px; border-radius: 99px; white-space: nowrap;
+}
+.pp-root .pp-pill-ok { background: var(--pp-ok-bg); color: var(--pp-success); }
+.pp-root .pp-pill-warn { background: var(--pp-warn-bg); color: var(--pp-warn); }
+.pp-root .pp-avatar {
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  background: var(--pp-accent); color: #ffffff;
+  font-size: 16px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pp-root .pp-account-name { font-size: 14px; color: var(--pp-text); }
+.pp-root .pp-account-email { font-size: 12px; color: var(--pp-muted); }
+.pp-root .pp-account-meta { font-size: 12px; color: var(--pp-muted); margin-top: 8px; line-height: 1.7; }
+
+/* ---------- 模型通道 ---------- */
+.pp-root .pp-ch-status { font-size: 12.5px; color: var(--pp-muted); min-height: 16px; }
+.pp-root .pp-ch-list { margin-top: 8px; }
+.pp-root .pp-ch-row {
+  border: 1px solid var(--pp-border); border-radius: 8px;
+  padding: 8px 10px; display: flex; align-items: center; gap: 10px;
+  background: var(--pp-surface-2);
+}
+.pp-root .pp-ch-head { display: flex; align-items: center; gap: 6px; }
+.pp-root .pp-ch-name { font-weight: 700; font-size: 13px; color: var(--pp-text); }
+.pp-root .pp-ch-sub {
+  font-size: 11.5px; color: var(--pp-muted); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pp-root .pp-ch-modelcap { font-size: 10.5px; color: var(--pp-muted); text-align: center; margin-top: 1px; }
+.pp-root .pp-form { border-top: 1px dashed var(--pp-border); margin-top: 12px; padding-top: 12px; }
+.pp-root .pp-chip {
+  font-size: 12px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--pp-border); background: var(--pp-surface-2); color: var(--pp-text);
+}
+.pp-root .pp-chip-on {
+  border-color: var(--pp-accent); background: var(--pp-accent-weak);
+  color: var(--pp-accent); font-weight: 600;
+}
+.pp-root .pp-chip-x { cursor: pointer; color: var(--pp-danger); font-weight: 700; margin-left: 4px; }

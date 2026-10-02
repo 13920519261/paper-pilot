@@ -1,8 +1,10 @@
 // 0.14.0: 账号系统 + AI 模型通道管理
 // 账号服务器（登录/鉴权/官方模型网关同源）；会话令牌存数据目录 JSON，不进 pref
-// 官方账号服务器（公开服务：自助注册 https://pp.xinglintools.top/register）
-// 自建后台的用户可改回 http://127.0.0.1:8000（server/account-server.js）
+// 0.15.0 起官方账号服务器地址内置固定（https://pp.xinglintools.top）：
+// 设置界面不再提供服务器入口，也不开放自建后台；本 pref 仅作高级覆盖用（about:config）
 pref("extensions.zotero.paperpilot.accountServerUrl", "https://pp.xinglintools.top");
+// 0.15.0 一次性迁移标记：清除指向本地的旧自建后台地址（执行一次后置 true）
+pref("extensions.zotero.paperpilot.accountServerMigrated15", false);
 // 模型通道注册表 {channels:[{id,name,provider,baseUrl,apiKey,model,models,extraBody,timeoutMs}],active}
 // 官方通道(official)的 baseUrl/apiKey 由账号系统运行时注入，不落盘
 pref("extensions.zotero.paperpilot.aiChannels", "");
@@ -19,6 +21,8 @@ pref("extensions.zotero.paperpilot.aiFullTextMaxChars", 16000);
 pref("extensions.zotero.paperpilot.rankColumnEnabled", true);
 pref("extensions.zotero.paperpilot.rankDataPath", "");
 // 0.5.0 新增：easyScholar 在线期刊等级（离线 JSON 数据仍为优先兜底）
+// 0.15.0：内置官方默认 SecretKey（rank-column.js ES_OFFICIAL_KEY，开箱即用）；
+// 本 pref 留空 = 使用内置官方 Key；填入自定义值则优先于内置 Key（用户自有额度）
 pref("extensions.zotero.paperpilot.easyScholarEnabled", true);
 pref("extensions.zotero.paperpilot.easyScholarKey", "");
 // 0.5.0 新增：AI 配置快照(0.14.0 起由模型通道体系取代，仅作迁移数据源)
@@ -40,6 +44,8 @@ pref("extensions.zotero.paperpilot.readerPopupAutoTranslate", false);
 pref("extensions.zotero.paperpilot.readerPopupTargetLang", "中文");
 pref("extensions.zotero.paperpilot.readerPopupStream", true);
 pref("extensions.zotero.paperpilot.readerPopupWriteBack", true);
+// 0.15.0 新增：浮窗结果区字号缩放（"0.85"/"1"/"1.15"/"1.3"/"1.5"，字符串存法同 aiTemperature）
+pref("extensions.zotero.paperpilot.readerPopupFontScale", "1");
 // 每日 AI 请求计数（格式：YYYY-MM-DD:次数），设置面板只读展示
 pref("extensions.zotero.paperpilot.readerPopupDailyCount", "");
 // 0.11.0 新增：阅读状态 / 全文对照翻译 / 笔记模板 / 附件命名 / Unpaywall / Anki

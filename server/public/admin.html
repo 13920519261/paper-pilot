@@ -101,12 +101,13 @@
       <div class="statusline">
         <div class="item"><span class="k">活动通道</span><span class="v" id="ch-active">—</span></div>
         <div class="item"><span class="k">默认模型</span><span class="v" id="ch-model">—</span></div>
+        <div class="item"><span class="k">对外上线</span><span class="v" id="ch-pub">全部</span></div>
         <div class="item"><span class="k">通道总数</span><span class="v" id="ch-total">0</span></div>
         <div class="item"><span class="k">注册用户</span><span class="v" id="ch-users">0</span></div>
       </div>
       <p class="hint" style="margin:10px 0 0">
         官方网关把登录用户的请求转发到「活动通道」上游；<code>auto</code> 模型自动映射为通道默认模型。
-        插件端默认地址 <code>http://127.0.0.1:8000</code>，无需任何改动。
+        插件端固定连接官方地址 <code>https://pp.xinglintools.top</code>（公网部署后自动生效）。
       </p>
       <div style="display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap">
         <span style="font-size:13px;color:var(--muted)">官方默认模型（活动通道 auto 映射）</span>
@@ -115,6 +116,22 @@
         <button class="btn" onclick="refreshActiveModels()">📡 拉取模型列表</button>
         <button class="btn primary" onclick="setDefaultModel()">设为默认</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>对外上线模型（0.15.0）</h2>
+      <p class="hint" style="margin:0 0 10px">
+        控制官方 AI 模型实际对外发布的数量与范围：插件端 <code>/v1/models</code> 只返回勾选的模型，调用未上线模型将被拒绝。
+        <b>一个都不勾 = 全部上线</b>（沿用旧行为）；<code>auto</code> 恒定可用（映射官方默认模型）——支持小步快跑，先上 1-2 个再逐步放开。
+      </p>
+      <div class="chips" id="pub-chips"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <input id="pub-add" placeholder="手动填入模型名，回车加入清单" style="width:260px">
+        <button class="btn" onclick="pullPubCandidates()">📡 从活动通道拉取候选</button>
+        <button class="btn primary" onclick="savePublished()">保存上线清单</button>
+        <button class="btn danger" onclick="clearPublished()">全部上线（清空限制）</button>
+      </div>
+      <div class="msg" id="pub-msg"></div>
     </div>
 
     <div class="card">
@@ -291,6 +308,75 @@ function setDefaultModel() {
     } else msg('ch-msg', '✗ ' + (r.error || '失败'), false);
   });
 }
+
+/* ---------------- 对外上线模型（0.15.0） ---------------- */
+var published = [], pubCandidates = [];
+function unionPub() {
+  var all = [];
+  pubCandidates.concat(published).forEach(function (m) {
+    if (m && all.indexOf(m) < 0) all.push(m);
+  });
+  return all;
+}
+function renderPubChips() {
+  var box = $('pub-chips');
+  box.textContent = '';
+  var all = unionPub();
+  if (!all.length) {
+    var span = document.createElement('span');
+    span.className = 'hint';
+    span.textContent = '暂无候选——点「从活动通道拉取候选」，或在下方输入框手动填入模型名';
+    box.appendChild(span);
+    return;
+  }
+  all.forEach(function (m) {
+    var on = published.indexOf(m) >= 0;
+    var chip = document.createElement('span');
+    chip.className = 'chip' + (on ? ' on' : '');
+    chip.textContent = m;
+    chip.title = on ? '已上线——点击下线' : '未上线——点击上线';
+    chip.onclick = function () {
+      var i = published.indexOf(m);
+      if (i >= 0) published.splice(i, 1); else published.push(m);
+      renderPubChips();
+    };
+    box.appendChild(chip);
+  });
+}
+$('pub-add').addEventListener('keydown', function (ev) {
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  var v = $('pub-add').value.trim();
+  if (!v) return;
+  if (pubCandidates.indexOf(v) < 0) pubCandidates.push(v);
+  if (published.indexOf(v) < 0) published.push(v);
+  $('pub-add').value = '';
+  renderPubChips();
+});
+function pullPubCandidates() {
+  if (!activeChannelId) return msg('pub-msg', '请先设置活动通道', false);
+  msg('pub-msg', '正在拉取活动通道的模型列表…');
+  api('GET', '/api/admin/channels/' + activeChannelId + '/models').then(function (r) {
+    if (!r.ok) return msg('pub-msg', '✗ ' + (r.error || '拉取失败'), false);
+    pubCandidates = r.models.slice();
+    renderPubChips();
+    msg('pub-msg', '✓ 拉到 ' + r.models.length + ' 个候选——勾选要上线的模型后保存', true);
+  });
+}
+function savePublished() {
+  api('PUT', '/api/admin/channels/published', { models: published }).then(function (r) {
+    if (!r.ok) return msg('pub-msg', '✗ ' + (r.error || '保存失败'), false);
+    msg('pub-msg', published.length
+      ? '✓ 已上线 ' + published.length + ' 个模型：' + published.join('、') + '（auto 恒可用）'
+      : '✓ 上线清单为空——已恢复全部上线', true);
+    loadChannels();
+  });
+}
+function clearPublished() {
+  if (!confirm('恢复「全部上线」？/v1/models 将返回活动通道的全部模型。')) return;
+  published = [];
+  savePublished();
+}
 function loadChannels() {
   return api('GET', '/api/admin/channels').then(function (r) {
     if (!r.ok) { msg('ch-msg', r.error || '加载失败'); return; }
@@ -302,6 +388,10 @@ function loadChannels() {
     activeChannelId = active ? active.id : null;
     syncDefModelList(active ? active.models : [], active && active.model && active.model !== 'auto' ? active.model : '');
     $('ch-defmodel').value = active && active.model && active.model !== 'auto' ? active.model : '';
+    pubCandidates = active ? (active.models || []).slice() : [];
+    published = (r.publishedModels || []).slice();
+    renderPubChips();
+    $('ch-pub').textContent = published.length ? published.length + ' 个' : '全部';
     $('ch-active').innerHTML = active
       ? '<span class="dot on"></span>' + esc(active.name)
       : '<span class="dot warn"></span>未设置（官方调用将返回 503）';

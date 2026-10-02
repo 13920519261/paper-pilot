@@ -1,5 +1,6 @@
-/* PaperPilot 账号系统（0.14.0 新增）
- * - 邮箱密码登录 PaperPilot 账号服务器（默认本地网关，可在设置修改）
+/* PaperPilot 账号系统（0.14.0 新增，0.15.0 收口服务器入口）
+ * - 邮箱密码登录 PaperPilot 官方账号服务器（地址内置固定，设置界面不再提供
+ *   服务器入口——官方服务统一由 https://pp.xinglintools.top 提供，不开放自建后台）
  * - 会话持久化：Zotero 数据目录 paperpilot-account.json（IOUtils 原子写 + 0600，
  *   不进 prefs——prefs.js 明文且易被配置同步工具带走；密码永不落盘）
  * - 登录过期：本地 expiresAt 判断 + 服务端 401 双保险；任何官方模型调用
@@ -24,7 +25,8 @@ var Account = {
   _listeners: [],
   _restoring: false,
 
-  SERVER_DEFAULT: "http://127.0.0.1:8000",
+  // 官方账号服务器（0.15.0 起内置固定，设置界面不提供服务器入口，不开放自建后台）
+  SERVER_DEFAULT: "https://pp.xinglintools.top",
 
   /** 账号服务器根地址（无末尾斜杠）。网关 = server + /v1 */
   serverUrl() {
@@ -276,7 +278,7 @@ var Account = {
       return err;
     }
     if (/CONNECTION_REFUSED|connection refused/i.test(msg)) {
-      const err = new Error("无法连接账号服务器（" + server + "）——本地网关未启动，或地址在设置中改错");
+      const err = new Error("无法连接官方账号服务器（" + server + "）——请检查网络连接后重试");
       err.network = true;
       return err;
     }

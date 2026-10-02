@@ -5,277 +5,350 @@
 <!-- Zotero 7+ 绑定方式：控件直接写完整 pref key（preference="extensions.zotero.xxx.yyy"），
      设置窗口自动经 Zotero.Prefs 双向同步；不要再放 <preferences><preference> 元素（Z10 已废弃，
      仅剩兼容 shim 且会刷警告） -->
+<!-- 0.15.0 设置界面重构：参考 GitHub Primer / VS Code 设置页的卡片式视觉语言——
+     每个功能模块一张卡片（标题 + 说明 + 表单行），条目数据列等强相关模块合并为
+     卡片内子分区，层次 = 卡片 > 子分区 > 行。样式在 prefs.css（经 register 的
+     stylesheets 参数随面板加载——官方推荐通道），配色经 CSS 变量随系统明暗主题切换；
+     全部选择器以 .pp- 前缀收在 .pp-root 作用域内，不泄漏到设置窗口其他面板。 -->
 <vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
       xmlns:html="http://www.w3.org/1999/xhtml"
-      style="padding:12px;overflow-y:auto;" flex="1">
+      class="pp-root" style="padding:12px;overflow-y:auto;" flex="1">
 
-  <!-- 0.14.0：账号系统（登录后免费使用官方模型） -->
-  <groupbox>
-    <caption label="PaperPilot 账号（登录后免费使用官方 AI 模型）"/>
-    <vbox style="padding:6px;">
-      <!-- 未登录：登录表单 -->
-      <vbox id="pp-login-view">
-        <label value="登录账号即可免费使用官方模型；没有账号点「注册账号」（浏览器打开官方注册页）。"/>
-        <label value="邮箱"/>
-        <html:input type="text" id="pp-login-email" style="width:100%;" placeholder="you@example.com"/>
-        <label value="密码"/>
-        <html:input type="password" id="pp-login-password" style="width:100%;"
-                    placeholder="登录密码（只用于登录请求，不会保存）"/>
-        <hbox style="margin-top:6px;align-items:center;gap:10px;">
-          <html:button id="pp-login-btn" style="padding:4px 16px;">登录</html:button>
-          <html:span id="pp-register-link"
-                     style="color:#0969da;cursor:pointer;text-decoration:underline;font-size:12.5px;">注册账号</html:span>
-          <html:span id="pp-forgot-link"
-                     style="color:#0969da;cursor:pointer;text-decoration:underline;font-size:12.5px;">忘记密码？</html:span>
-          <html:span id="pp-login-result" style="color:#888;font-size:12.5px;"></html:span>
-        </hbox>
-        <label value="账号服务器（官方公网，一般无需修改；自建后台填 http://127.0.0.1:8000；默认掩码显示防窥屏）" style="margin-top:8px;"/>
-        <hbox style="align-items:center;gap:6px;">
-          <html:input type="password" preference="extensions.zotero.paperpilot.accountServerUrl" id="pp-account-server"
-                      style="flex:1;" placeholder="https://pp.xinglintools.top"/>
-          <html:button id="pp-account-server-eye" style="padding:2px 8px;" title="显示/隐藏服务器地址">👁</html:button>
-        </hbox>
-      </vbox>
+  <!-- ============ 1 · PaperPilot 账号 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">👤</html:span><html:span class="pp-card-title">PaperPilot 账号</html:span></html:div>
+    <html:div class="pp-card-desc">登录后免费使用官方 AI 模型；登录状态本地持久化，会话过期自动提醒</html:div>
+    <html:div class="pp-card-body">
+      <!-- 未登录：登录表单（0.15.0 起不再提供服务器地址入口，固定连接官方服务） -->
+      <html:div id="pp-login-view">
+        <html:div class="pp-hint" style="margin-top:10px;">登录账号即可免费使用官方模型；没有账号点「注册账号」（浏览器打开官方注册页）。</html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">邮箱</html:label>
+            <html:input type="text" id="pp-login-email" class="pp-input" placeholder="you@example.com"/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">密码</html:label>
+            <html:input type="password" id="pp-login-password" class="pp-input"
+                        placeholder="登录密码（只用于登录请求，不会保存）"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-row">
+          <html:button id="pp-login-btn" class="pp-btn pp-btn-primary">登录</html:button>
+          <html:span id="pp-register-link" class="pp-link">注册账号</html:span>
+          <html:span id="pp-forgot-link" class="pp-link">忘记密码？</html:span>
+          <html:span id="pp-login-result" class="pp-msg"></html:span>
+        </html:div>
+      </html:div>
       <!-- 已登录：账号卡片 -->
-      <vbox id="pp-account-view" style="display:none;">
-        <hbox style="align-items:center;gap:10px;">
-          <html:div id="pp-account-badge"
-                    style="width:36px;height:36px;border-radius:50%;background:#6698ff;color:#fff;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center;">P</html:div>
-          <vbox flex="1">
-            <html:b id="pp-account-name" style="font-size:14px;"></html:b>
-            <html:span id="pp-account-email" style="color:#888;font-size:12px;"></html:span>
-          </vbox>
-        </hbox>
-        <html:div id="pp-account-meta" style="color:#666;font-size:12px;margin-top:6px;line-height:1.7;"></html:div>
-        <hbox style="margin-top:6px;align-items:center;gap:8px;">
-          <label value="官方模型"/>
-          <html:select id="pp-account-official-model" style="min-width:180px;"></html:select>
-        </hbox>
-        <hbox style="margin-top:8px;align-items:center;gap:8px;">
-          <html:button id="pp-account-refresh" style="padding:4px 12px;">刷新状态</html:button>
-          <html:button id="pp-logout-btn" style="padding:4px 12px;">退出登录</html:button>
-          <html:span id="pp-account-result" style="color:#888;font-size:12.5px;"></html:span>
-        </hbox>
-      </vbox>
-    </vbox>
-  </groupbox>
+      <html:div id="pp-account-view" style="display:none;">
+        <html:div class="pp-row" style="margin-top:12px;">
+          <html:div id="pp-account-badge" class="pp-avatar">P</html:div>
+          <html:div class="pp-field">
+            <html:b id="pp-account-name" class="pp-account-name"></html:b>
+            <html:span id="pp-account-email" class="pp-account-email"></html:span>
+          </html:div>
+        </html:div>
+        <html:div id="pp-account-meta" class="pp-account-meta"></html:div>
+        <html:div class="pp-row">
+          <html:span class="pp-label">官方模型</html:span>
+          <html:select id="pp-account-official-model" class="pp-select" style="min-width:180px;"></html:select>
+          <html:button id="pp-account-refresh" class="pp-btn pp-btn-sm">刷新状态</html:button>
+          <html:button id="pp-logout-btn" class="pp-btn pp-btn-sm">退出登录</html:button>
+          <html:span id="pp-account-result" class="pp-msg"></html:span>
+        </html:div>
+      </html:div>
+    </html:div>
+  </html:div>
 
-  <!-- 0.14.0：AI 模型通道管理（移植自 AI 带教中心的通道面板，多套配置一键切换） -->
-  <groupbox>
-    <caption label="AI 模型通道（多套配置，一键切换；活动通道供全部 AI 功能使用）"/>
-    <vbox style="padding:6px;">
-      <html:div id="pp-ch-status" style="font-size:12.5px;color:#666;"></html:div>
-      <label value="每行的模型下拉框 = 该通道当前调用的模型（改了立即生效，无需保存）；「切换」= 选择活动通道（全部 AI 功能经此通道）。"
-             style="font-size:11.5px;color:#888;margin-top:2px;"/>
-      <hbox style="align-items:center;gap:6px;margin-top:2px;">
+  <!-- ============ 2 · AI 模型通道 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">🔌</html:span><html:span class="pp-card-title">AI 模型通道</html:span></html:div>
+    <html:div class="pp-card-desc">多套配置一键切换；「活动通道」供全部 AI 功能使用。官方通道登录即用，也可接入自己的 OpenAI 兼容接口</html:div>
+    <html:div class="pp-card-body">
+      <html:div id="pp-ch-status" class="pp-ch-status" style="margin-top:10px;"></html:div>
+      <html:div class="pp-hint">每行的模型下拉框 = 该通道当前调用的模型（改动立即生效，无需保存）；「切换」= 设为活动通道（全部 AI 功能经此通道）。</html:div>
+      <html:label class="pp-check">
         <html:input type="checkbox" id="pp-ch-show-url"/>
-        <label value="显示完整接口地址（默认掩码隐藏，防窥屏）" control="pp-ch-show-url" style="font-size:11.5px;color:#888;"/>
-      </hbox>
-      <vbox id="pp-ch-list" style="margin-top:6px;gap:6px;"></vbox>
-      <hbox style="margin-top:8px;">
-        <html:button id="pp-ch-add" style="padding:4px 14px;">＋ 新增通道</html:button>
-      </hbox>
+        <html:span>显示完整接口地址（默认掩码隐藏，防窥屏）</html:span>
+      </html:label>
+      <vbox id="pp-ch-list" class="pp-ch-list" style="gap:6px;"></vbox>
+      <html:div class="pp-row">
+        <html:button id="pp-ch-add" class="pp-btn">＋ 新增通道</html:button>
+      </html:div>
       <!-- 通道编辑表单（新增/参数） -->
-      <vbox id="pp-ch-form" style="display:none;margin-top:12px;border-top:1px dashed #ccc;padding-top:12px;gap:4px;">
-        <label value="厂商预设（选择后自动填充接口地址与建议模型）"/>
-        <html:select id="pp-mf-provider" style="width:100%;"></html:select>
-        <html:div id="pp-mf-provider-note" style="color:#888;font-size:11.5px;"></html:div>
-        <label value="通道 id（小写字母/数字/连字符，创建后不可改）"/>
-        <html:input type="text" id="pp-mf-id" placeholder="如 deepseek-main" style="width:100%;"/>
-        <label value="名称"/>
-        <html:input type="text" id="pp-mf-name" placeholder="如 DeepSeek 日常通道" style="width:100%;"/>
-        <label value="接口地址 baseUrl（OpenAI 兼容 /v1）"/>
-        <html:input type="text" id="pp-mf-baseUrl" placeholder="https://api.deepseek.com/v1" style="width:100%;"/>
-        <label value="API Key（编辑时留空 = 保持原密钥不变）"/>
-        <hbox style="gap:6px;">
-          <html:input type="password" id="pp-mf-apiKey" placeholder="sk-..." style="flex:1;"/>
-          <html:button id="pp-mf-detect" style="padding:4px 10px;white-space:nowrap;"
-                       title="按密钥/接口地址自动识别厂商并拉取模型列表">🔍 检测</html:button>
-        </hbox>
-        <html:div id="pp-mf-detect-result" style="font-size:12px;min-height:14px;"></html:div>
-        <label value="模型列表（上游拉取或手动添加；点击模型名 = 设为默认模型）"/>
-        <html:div id="pp-mf-models" style="display:flex;flex-wrap:wrap;gap:4px;"></html:div>
-        <hbox style="gap:6px;">
-          <html:input type="text" id="pp-mf-model-add" placeholder="添加模型名（如 glm-4.5 / ep-xxx）" style="flex:1;"/>
-          <html:button id="pp-mf-models-add" style="padding:4px 10px;">＋ 添加</html:button>
-          <html:button id="pp-mf-models-fetch" style="padding:4px 10px;white-space:nowrap;"
+      <html:div id="pp-ch-form" class="pp-form" style="display:none;">
+        <html:div class="pp-field">
+          <html:label class="pp-label">厂商预设（选择后自动填充接口地址与建议模型）</html:label>
+          <html:select id="pp-mf-provider" class="pp-select pp-grow"></html:select>
+        </html:div>
+        <html:div id="pp-mf-provider-note" class="pp-hint"></html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">通道 id</html:label>
+            <html:input type="text" id="pp-mf-id" class="pp-input" placeholder="小写字母/数字/连字符，创建后不可改"/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">名称</html:label>
+            <html:input type="text" id="pp-mf-name" class="pp-input" placeholder="如 DeepSeek 日常通道"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">接口地址 baseUrl（OpenAI 兼容 /v1）</html:label>
+          <html:input type="text" id="pp-mf-baseUrl" class="pp-input" placeholder="https://api.deepseek.com/v1"/>
+        </html:div>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">API Key（编辑时留空 = 保持原密钥不变）</html:label>
+          <html:div class="pp-row" style="margin-top:0;">
+            <html:input type="password" id="pp-mf-apiKey" class="pp-input pp-grow" placeholder="sk-..."/>
+            <html:button id="pp-mf-detect" class="pp-btn pp-btn-sm"
+                         title="按密钥/接口地址自动识别厂商并拉取模型列表">🔍 检测</html:button>
+          </html:div>
+          <html:div id="pp-mf-detect-result" class="pp-hint" style="min-height:14px;"></html:div>
+        </html:div>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">模型列表（上游拉取或手动添加；点击模型名 = 设为默认模型）</html:label>
+          <html:div id="pp-mf-models" style="display:flex;flex-wrap:wrap;gap:4px;"></html:div>
+        </html:div>
+        <html:div class="pp-row" style="margin-top:6px;">
+          <html:input type="text" id="pp-mf-model-add" class="pp-input pp-grow" placeholder="添加模型名（如 glm-4.5 / ep-xxx）"/>
+          <html:button id="pp-mf-models-add" class="pp-btn pp-btn-sm">＋ 添加</html:button>
+          <html:button id="pp-mf-models-fetch" class="pp-btn pp-btn-sm"
                        title="用当前接口地址与密钥拉取上游模型">📡 拉取</html:button>
-        </hbox>
-        <label value="默认模型 model（点击上方模型名即选用；也可填自定义名）"/>
-        <html:input type="text" id="pp-mf-model" placeholder="auto / deepseek-chat / glm-4.5 ..." style="width:100%;"/>
-        <label value="附加请求参数 extraBody（JSON，如推理档/温度覆盖）"/>
-        <html:textarea id="pp-mf-extraBody" rows="2" style="width:100%;" placeholder='{"reasoning_effort":"low"}'/>
-        <label value="探活超时（毫秒，正式对话不受此限制）"/>
-        <html:input type="number" id="pp-mf-timeoutMs" placeholder="12000" style="width:140px;"/>
-        <hbox style="gap:8px;margin-top:6px;">
-          <html:button id="pp-mf-save" style="flex:1;padding:6px;">保存通道</html:button>
-          <html:button id="pp-mf-cancel" style="flex:1;padding:6px;">取消</html:button>
-        </hbox>
-        <html:div id="pp-mf-err" style="color:#c0392b;font-size:12px;min-height:14px;"></html:div>
-      </vbox>
-      <html:div id="pp-ch-test-result" style="font-size:12px;margin-top:6px;min-height:14px;"></html:div>
-    </vbox>
-  </groupbox>
+        </html:div>
+        <html:div class="pp-grid2" style="margin-top:10px;">
+          <html:div class="pp-field">
+            <html:label class="pp-label">默认模型 model</html:label>
+            <html:input type="text" id="pp-mf-model" class="pp-input" placeholder="auto / deepseek-chat / glm-4.5 ..."/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">探活超时（毫秒，正式对话不受此限）</html:label>
+            <html:input type="number" id="pp-mf-timeoutMs" class="pp-input" placeholder="12000"/>
+          </html:div>
+        </html:div>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">附加请求参数 extraBody（JSON，如推理档/温度覆盖）</html:label>
+          <html:textarea id="pp-mf-extraBody" class="pp-textarea" rows="2" placeholder='{"reasoning_effort":"low"}'/>
+        </html:div>
+        <html:div class="pp-row">
+          <html:button id="pp-mf-save" class="pp-btn pp-btn-primary pp-grow">保存通道</html:button>
+          <html:button id="pp-mf-cancel" class="pp-btn pp-grow">取消</html:button>
+        </html:div>
+        <html:div id="pp-mf-err" class="pp-msg" style="color:var(--pp-danger);min-height:14px;"></html:div>
+      </html:div>
+      <html:div id="pp-ch-test-result" class="pp-msg" style="margin-top:6px;min-height:14px;"></html:div>
+    </html:div>
+  </html:div>
 
-  <!-- 0.14.0：全局 AI 参数（作用于活动通道） -->
-  <groupbox>
-    <caption label="AI 参数（应用于活动通道）"/>
-    <vbox style="padding:6px;">
-      <hbox style="gap:16px;align-items:flex-end;">
-        <vbox>
-          <label value="最大输出 tokens"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.aiMaxTokens" style="width:140px;"/>
-        </vbox>
-        <vbox>
-          <label value="温度（0-2，越低越稳定）"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.aiTemperature" style="width:140px;"
+  <!-- ============ 3 · AI 参数 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">🎛️</html:span><html:span class="pp-card-title">AI 参数</html:span></html:div>
+    <html:div class="pp-card-desc">全局参数，应用于当前活动通道</html:div>
+    <html:div class="pp-card-body">
+      <html:div class="pp-grid3">
+        <html:div class="pp-field">
+          <html:label class="pp-label">最大输出 tokens</html:label>
+          <html:input type="number" preference="extensions.zotero.paperpilot.aiMaxTokens" class="pp-input"/>
+        </html:div>
+        <html:div class="pp-field">
+          <html:label class="pp-label">温度（0-2，越低越稳定）</html:label>
+          <html:input type="number" preference="extensions.zotero.paperpilot.aiTemperature" class="pp-input"
                       min="0" max="2" step="0.1"/>
-        </vbox>
-        <vbox>
-          <label value="送入 AI 的全文最大字符数（超长截断）"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.aiFullTextMaxChars" style="width:140px;"/>
-        </vbox>
-      </hbox>
-      <label value="System Prompt"/>
-      <html:textarea preference="extensions.zotero.paperpilot.aiSystemPrompt" rows="4" style="width:100%;"/>
-    </vbox>
-  </groupbox>
+        </html:div>
+        <html:div class="pp-field">
+          <html:label class="pp-label">送入 AI 的全文最大字符数</html:label>
+          <html:input type="number" preference="extensions.zotero.paperpilot.aiFullTextMaxChars" class="pp-input"/>
+        </html:div>
+      </html:div>
+      <html:div class="pp-hint" style="margin-top:4px;">超长全文在送入前截断，避免撑爆上下文窗口</html:div>
+      <html:div class="pp-field" style="margin-top:10px;">
+        <html:label class="pp-label">System Prompt</html:label>
+        <html:textarea preference="extensions.zotero.paperpilot.aiSystemPrompt" class="pp-textarea" rows="4"/>
+      </html:div>
+    </html:div>
+  </html:div>
 
-
-  <groupbox>
-    <caption label="期刊分区列（easyScholar 在线 + 离线数据兜底）"/>
-    <vbox style="padding:6px;">
-      <hbox>
-        <html:input type="checkbox" preference="extensions.zotero.paperpilot.rankColumnEnabled" id="pp-rank-enabled"/>
-        <label value="启用期刊分区列（即时生效）" control="pp-rank-enabled"/>
-      </hbox>
-      <hbox>
-        <html:input type="checkbox" preference="extensions.zotero.paperpilot.easyScholarEnabled" id="pp-es-enabled"/>
-        <label value="启用 easyScholar 在线查询（JCR 分区 / 影响因子 / 中科院分区）" control="pp-es-enabled"/>
-      </hbox>
-      <label value="easyScholar secretKey（默认掩码显示）"/>
-      <hbox style="align-items:center;gap:6px;">
-        <html:input type="password" preference="extensions.zotero.paperpilot.easyScholarKey" id="pp-es-key" style="flex:1;"/>
-        <html:button id="pp-es-key-eye" style="padding:2px 8px;" title="显示/隐藏密钥">👁</html:button>
-        <html:button id="pp-es-clear" style="padding:4px 10px;">清空查询缓存</html:button>
-        <html:span id="pp-es-stats" style="color:#888;"></html:span>
-      </hbox>
-      <label value="自定义分区数据 JSON 路径（留空使用内置示例数据，优先级高于在线查询）"/>
-      <hbox style="align-items:center;gap:6px;">
-        <html:input type="text" preference="extensions.zotero.paperpilot.rankDataPath" id="pp-rank-path-input"
-                    style="flex:1;" placeholder="D:\data\journal-rank.json"/>
-        <html:button id="pp-rank-browse" style="padding:4px 12px;">浏览…</html:button>
-      </hbox>
-    </vbox>
-  </groupbox>
-
-  <groupbox>
-    <caption label="被引量列（Semantic Scholar）"/>
-    <vbox style="padding:6px;">
-      <hbox>
-        <html:input type="checkbox" preference="extensions.zotero.paperpilot.citationColumnEnabled" id="pp-cite-enabled"/>
-        <label value="启用被引量列（即时生效，右键条目列表表头勾选显示）" control="pp-cite-enabled"/>
-      </hbox>
-      <hbox>
-        <html:input type="checkbox" preference="extensions.zotero.paperpilot.s2TitleSearch" id="pp-s2-title"/>
-        <label value="无 DOI 的条目按标题检索兜底（较慢，可能误匹配）" control="pp-s2-title"/>
-      </hbox>
-      <label value="Semantic Scholar API Key（可留空；申请 https://www.semanticscholar.org/product/api 提速；默认掩码显示）"/>
-      <hbox style="align-items:center;gap:6px;">
-        <html:input type="password" preference="extensions.zotero.paperpilot.s2ApiKey" id="pp-s2-key" style="flex:1;"/>
-        <html:button id="pp-s2-key-eye" style="padding:2px 8px;" title="显示/隐藏密钥">👁</html:button>
-        <html:button id="pp-s2-clear" style="padding:4px 10px;">清空查询缓存</html:button>
-        <html:span id="pp-s2-stats" style="color:#888;"></html:span>
-      </hbox>
-    </vbox>
-  </groupbox>
-
-  <groupbox>
-    <caption label="规则打标（无 AI 依赖，按条件自动打标签）"/>
-    <vbox style="padding:6px;">
-      <hbox>
-        <html:input type="checkbox" preference="extensions.zotero.paperpilot.ruleTagAutoOnNew" id="pp-ruletag-auto"/>
-        <label value="新条目入库时自动应用规则（右键菜单「规则打标」可随时手动应用）" control="pp-ruletag-auto"/>
-      </hbox>
-      <label value="规则（每行一条：标签 | 字段 | 操作 | 值）"/>
-      <html:textarea preference="extensions.zotero.paperpilot.ruleTagRules" rows="6" style="width:100%;"/>
-    </vbox>
-  </groupbox>
-
-  <groupbox>
-    <caption label="阅读器划词浮窗（翻译 / 解读 / 追问）"/>
-    <vbox style="padding:6px;">
-      <hbox>
+  <!-- ============ 4 · 阅读器划词浮窗 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">💬</html:span><html:span class="pp-card-title">阅读器划词浮窗</html:span></html:div>
+    <html:div class="pp-card-desc">PDF 阅读器内选中文字即弹浮窗：翻译 / 解读 / 追问</html:div>
+    <html:div class="pp-card-body">
+      <html:label class="pp-check">
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupEnabled" id="pp-popup-enabled"/>
-        <label value="启用 PDF 阅读器划词浮窗" control="pp-popup-enabled"/>
-      </hbox>
-      <hbox>
+        <html:span>启用划词浮窗</html:span>
+      </html:label>
+      <html:label class="pp-check">
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupAutoTranslate" id="pp-popup-auto"/>
-        <label value="划词即自动翻译（无需点击，带限流与去重）" control="pp-popup-auto"/>
-      </hbox>
-      <hbox>
+        <html:span>划词即自动翻译（无需点击，带限流与去重）</html:span>
+      </html:label>
+      <html:label class="pp-check">
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupStream" id="pp-popup-stream"/>
-        <label value="流式输出（逐字显示；网关不支持时自动降级）" control="pp-popup-stream"/>
-      </hbox>
-      <hbox>
+        <html:span>流式输出（逐字显示；网关不支持时自动降级）</html:span>
+      </html:label>
+      <html:label class="pp-check">
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readerPopupWriteBack" id="pp-popup-writeback"/>
-        <label value="允许把译文/解读写入高亮批注（在批注上划词时显示按钮）" control="pp-popup-writeback"/>
-      </hbox>
-      <hbox style="align-items:center;gap:8px;">
-        <label value="翻译目标语言"/>
-        <html:select preference="extensions.zotero.paperpilot.readerPopupTargetLang" id="pp-popup-lang">
+        <html:span>允许把译文/解读写入高亮批注（在批注上划词时显示按钮）</html:span>
+      </html:label>
+      <html:div class="pp-row">
+        <html:span class="pp-label">翻译目标语言</html:span>
+        <html:select preference="extensions.zotero.paperpilot.readerPopupTargetLang" id="pp-popup-lang" class="pp-select">
           <html:option value="中文">中文</html:option>
           <html:option value="English">English</html:option>
           <html:option value="日本語">日本語</html:option>
         </html:select>
-      </hbox>
-    </vbox>
-  </groupbox>
+      </html:div>
+      <html:div class="pp-hint" style="margin-top:8px;">0.15.0：浮窗已支持 A−/A+ 字号缩放（自动记住）、结果区展开/收起、生成中随时「停止」。</html:div>
+    </html:div>
+  </html:div>
 
-  <groupbox>
-    <caption label="AI 功能"/>
-    <vbox style="padding:6px;">
-      <label value="自定义 Prompt（每行一条，格式：名称=提示词）"/>
-      <html:textarea preference="extensions.zotero.paperpilot.customPrompts" rows="3" style="width:100%;"
-                     placeholder="周报生成=请把这篇论文的要点整理成周报条目"/>
-      <hbox style="gap:16px;align-items:flex-end;">
-        <vbox>
-          <label value="文献矩阵一次最多处理篇数"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.matrixMaxItems" style="width:120px;"/>
-        </vbox>
-        <vbox>
-          <label value="AI 打标签每次建议个数"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.autoTagMax" style="width:120px;"/>
-        </vbox>
-      </hbox>
-    </vbox>
-  </groupbox>
+  <!-- ============ 5 · 条目数据列 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">📊</html:span><html:span class="pp-card-title">条目数据列</html:span></html:div>
+    <html:div class="pp-card-desc">在条目列表显示期刊分区与被引量两列；右键列表表头可勾选显示</html:div>
+    <html:div class="pp-card-body">
 
-  <groupbox>
-    <caption label="增强功能（阅读状态 / 附件命名 / 全文翻译 / 制卡）"/>
-    <vbox style="padding:6px;">
-      <hbox>
+      <!-- 5.1 期刊分区 -->
+      <html:div class="pp-sub" style="border-top:none;margin-top:2px;padding-top:0;">
+        <html:div class="pp-sub-title">期刊分区（easyScholar 在线 + 离线数据兜底）</html:div>
+        <html:div class="pp-sub-desc">优先级：自定义 JSON &gt; 内置数据 &gt; easyScholar 在线查询</html:div>
+        <html:label class="pp-check">
+          <html:input type="checkbox" preference="extensions.zotero.paperpilot.rankColumnEnabled" id="pp-rank-enabled"/>
+          <html:span>启用期刊分区列（即时生效）</html:span>
+        </html:label>
+        <html:label class="pp-check">
+          <html:input type="checkbox" preference="extensions.zotero.paperpilot.easyScholarEnabled" id="pp-es-enabled"/>
+          <html:span>启用 easyScholar 在线查询（JCR 分区 / 影响因子 / 中科院分区）</html:span>
+        </html:label>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">自定义 SecretKey（可选）</html:label>
+          <html:div class="pp-row" style="margin-top:0;">
+            <html:input type="password" preference="extensions.zotero.paperpilot.easyScholarKey" id="pp-es-key"
+                        class="pp-input pp-grow" placeholder="留空使用内置官方 SecretKey（开箱即用）"/>
+            <html:button id="pp-es-key-eye" class="pp-btn pp-btn-eye" title="显示/隐藏密钥">👁</html:button>
+            <html:button id="pp-es-clear" class="pp-btn pp-btn-sm">清空查询缓存</html:button>
+            <html:span id="pp-es-stats" class="pp-hint"></html:span>
+          </html:div>
+          <html:div class="pp-hint">0.15.0 起内置官方默认 SecretKey，无需申请即可用；填入自己的 Key 则优先走你的自有额度（easyscholar.cn 注册获取）</html:div>
+        </html:div>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">自定义分区数据 JSON 路径</html:label>
+          <html:div class="pp-row" style="margin-top:0;">
+            <html:input type="text" preference="extensions.zotero.paperpilot.rankDataPath" id="pp-rank-path-input"
+                        class="pp-input pp-grow" placeholder="留空使用内置示例数据，优先级高于在线查询"/>
+            <html:button id="pp-rank-browse" class="pp-btn pp-btn-sm">浏览…</html:button>
+          </html:div>
+        </html:div>
+      </html:div>
+
+      <!-- 5.2 被引量 -->
+      <html:div class="pp-sub">
+        <html:div class="pp-sub-title">被引量（Semantic Scholar）</html:div>
+        <html:div class="pp-sub-desc">数据缓存 24 小时；右键菜单「重新抓取被引量」可手动刷新所选条目</html:div>
+        <html:label class="pp-check">
+          <html:input type="checkbox" preference="extensions.zotero.paperpilot.citationColumnEnabled" id="pp-cite-enabled"/>
+          <html:span>启用被引量列（即时生效，右键条目列表表头勾选显示）</html:span>
+        </html:label>
+        <html:label class="pp-check">
+          <html:input type="checkbox" preference="extensions.zotero.paperpilot.s2TitleSearch" id="pp-s2-title"/>
+          <html:span>无 DOI 的条目按标题检索兜底（较慢，可能误匹配）</html:span>
+        </html:label>
+        <html:div class="pp-field" style="margin-top:10px;">
+          <html:label class="pp-label">Semantic Scholar API Key（可留空）</html:label>
+          <html:div class="pp-row" style="margin-top:0;">
+            <html:input type="password" preference="extensions.zotero.paperpilot.s2ApiKey" id="pp-s2-key"
+                        class="pp-input pp-grow" placeholder="默认掩码显示，防窥屏"/>
+            <html:button id="pp-s2-key-eye" class="pp-btn pp-btn-eye" title="显示/隐藏密钥">👁</html:button>
+            <html:button id="pp-s2-clear" class="pp-btn pp-btn-sm">清空查询缓存</html:button>
+            <html:span id="pp-s2-stats" class="pp-hint"></html:span>
+          </html:div>
+          <html:div class="pp-hint">申请地址 https://www.semanticscholar.org/product/api ，配置后速度更快</html:div>
+        </html:div>
+      </html:div>
+
+    </html:div>
+  </html:div>
+
+  <!-- ============ 6 · 规则打标与 AI 功能 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">🏷️</html:span><html:span class="pp-card-title">规则打标与 AI 功能</html:span></html:div>
+    <html:div class="pp-card-desc">无 AI 依赖的规则打标 + AI 功能的通用参数</html:div>
+    <html:div class="pp-card-body">
+
+      <!-- 6.1 规则打标 -->
+      <html:div class="pp-sub" style="border-top:none;margin-top:2px;padding-top:0;">
+        <html:div class="pp-sub-title">规则打标（按条件自动打标签）</html:div>
+        <html:div class="pp-sub-desc">每行一条规则：标签 | 字段 | 操作 | 值（// 开头为注释）</html:div>
+        <html:label class="pp-check">
+          <html:input type="checkbox" preference="extensions.zotero.paperpilot.ruleTagAutoOnNew" id="pp-ruletag-auto"/>
+          <html:span>新条目入库时自动应用规则（右键菜单「规则打标」可随时手动应用）</html:span>
+        </html:label>
+        <html:div class="pp-field" style="margin-top:8px;">
+          <html:textarea preference="extensions.zotero.paperpilot.ruleTagRules" class="pp-textarea" rows="6"
+                         placeholder="例：#方法/机器学习 | abstractNote | contains | machine learning"/>
+        </html:div>
+      </html:div>
+
+      <!-- 6.2 AI 功能 -->
+      <html:div class="pp-sub">
+        <html:div class="pp-sub-title">AI 功能参数</html:div>
+        <html:div class="pp-sub-desc">自定义 Prompt 供 AI 问答侧栏与工作台使用</html:div>
+        <html:div class="pp-field" style="margin-top:6px;">
+          <html:label class="pp-label">自定义 Prompt（每行一条，格式：名称=提示词）</html:label>
+          <html:textarea preference="extensions.zotero.paperpilot.customPrompts" class="pp-textarea" rows="3"
+                         placeholder="周报生成=请把这篇论文的要点整理成周报条目"/>
+        </html:div>
+        <html:div class="pp-grid2">
+          <html:div class="pp-field">
+            <html:label class="pp-label">文献矩阵一次最多处理篇数</html:label>
+            <html:input type="number" preference="extensions.zotero.paperpilot.matrixMaxItems" class="pp-input"/>
+          </html:div>
+          <html:div class="pp-field">
+            <html:label class="pp-label">AI 打标签每次建议个数</html:label>
+            <html:input type="number" preference="extensions.zotero.paperpilot.autoTagMax" class="pp-input"/>
+          </html:div>
+        </html:div>
+      </html:div>
+
+    </html:div>
+  </html:div>
+
+  <!-- ============ 7 · 增强功能 ============ -->
+  <html:div class="pp-card">
+    <html:div><html:span class="pp-card-icon">🧩</html:span><html:span class="pp-card-title">增强功能</html:span></html:div>
+    <html:div class="pp-card-desc">阅读状态 / 附件命名 / 全文对照翻译 / Anki 制卡 / 笔记模板</html:div>
+    <html:div class="pp-card-body">
+      <html:label class="pp-check" style="margin-top:6px;">
         <html:input type="checkbox" preference="extensions.zotero.paperpilot.readingStateAutoUnread" id="pp-rs-auto"/>
-        <label value="新条目入库自动标记「未读」（打开 PDF 自动转为「在读」）" control="pp-rs-auto"/>
-      </hbox>
-      <label value="附件命名模板（变量：{author} {year} {title}）"/>
-      <html:input type="text" preference="extensions.zotero.paperpilot.attachNamePattern" style="width:100%;"/>
-      <hbox style="gap:16px;align-items:flex-end;margin-top:4px;">
-        <vbox>
-          <label value="全文对照翻译分段字符数"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.bilingualChunkChars" style="width:140px;"/>
-        </vbox>
-        <vbox>
-          <label value="Anki 制卡张数"/>
-          <html:input type="number" preference="extensions.zotero.paperpilot.ankiCardCount" style="width:140px;"/>
-        </vbox>
-      </hbox>
-      <label value="Unpaywall 邮箱（开放获取补全文用，可留空）"/>
-      <html:input type="text" preference="extensions.zotero.paperpilot.unpaywallEmail" style="width:100%;"
-                  placeholder="you@example.com"/>
-      <label value="自定义笔记模板（每行一条：名称=模板正文，换行用 \n；占位符 {{title}} {{creators}} {{year}} {{pub}} {{abstract}} {{annotations}} {{aiSummary}}）"/>
-      <html:textarea preference="extensions.zotero.paperpilot.noteTemplatesCustom" rows="3" style="width:100%;"
-                     placeholder="周报卡=## {{title}}\n本周进展：\n{{aiSummary}}"/>
-    </vbox>
-  </groupbox>
+        <html:span>新条目入库自动标记「未读」（打开 PDF 自动转为「在读」）</html:span>
+      </html:label>
+      <html:div class="pp-field" style="margin-top:10px;">
+        <html:label class="pp-label">附件命名模板</html:label>
+        <html:input type="text" preference="extensions.zotero.paperpilot.attachNamePattern" class="pp-input"
+                    placeholder="{author} - {year} - {title}"/>
+        <html:div class="pp-hint">可用变量：{author} {year} {title}；右键菜单「附件按规则重命名」执行</html:div>
+      </html:div>
+      <html:div class="pp-grid2">
+        <html:div class="pp-field">
+          <html:label class="pp-label">全文对照翻译分段字符数</html:label>
+          <html:input type="number" preference="extensions.zotero.paperpilot.bilingualChunkChars" class="pp-input"/>
+        </html:div>
+        <html:div class="pp-field">
+          <html:label class="pp-label">Anki 制卡张数</html:label>
+          <html:input type="number" preference="extensions.zotero.paperpilot.ankiCardCount" class="pp-input"/>
+        </html:div>
+      </html:div>
+      <html:div class="pp-field" style="margin-top:10px;">
+        <html:label class="pp-label">Unpaywall 邮箱（开放获取补全文用，可留空）</html:label>
+        <html:input type="text" preference="extensions.zotero.paperpilot.unpaywallEmail" class="pp-input"
+                    placeholder="you@example.com"/>
+      </html:div>
+      <html:div class="pp-field" style="margin-top:10px;">
+        <html:label class="pp-label">自定义笔记模板（每行一条：名称=模板正文，换行用 \n）</html:label>
+        <html:textarea preference="extensions.zotero.paperpilot.noteTemplatesCustom" class="pp-textarea" rows="3"
+                       placeholder="周报卡=## {{title}}\n本周进展：\n{{aiSummary}}"/>
+        <html:div class="pp-hint">占位符：{{title}} {{creators}} {{year}} {{pub}} {{abstract}} {{annotations}} {{aiSummary}}</html:div>
+      </html:div>
+    </html:div>
+  </html:div>
+
 </vbox>

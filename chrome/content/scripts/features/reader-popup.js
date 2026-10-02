@@ -1,10 +1,18 @@
-/* PaperPilot 阅读器划词浮窗 2.0（0.10.0 重构）
+/* PaperPilot 阅读器划词浮窗 2.0（0.10.0 重构；0.15.0 交互升级）
  * 官方 API：Zotero.Reader.registerEventListener("renderTextSelectionPopup", handler, pluginID)
  *
  * 能力：翻译 / 解读 / 追问（浮窗内多轮）；流式渲染（readerPopupStream 开关，
  * 网关不透传 SSE 时 AIClient 自动降级）；结果复制 / 重试 / 写入高亮批注；
  * 划词即自动翻译（readerPopupAutoTranslate，带去重+限流+长度护栏）；
  * 会话级结果缓存（重复划词零请求）；每日请求计数（readerPopupDailyCount）。
+ *
+ * 0.15.0 交互升级（针对"窗口太小、不支持缩放、整体粗糙"的全面整改）：
+ * - 窗口加宽 420→560px（小屏自动 min(560px,92vw)），结果区加高 260→300px
+ * - 字号缩放 A−/A+（五档 0.85–1.5，pref readerPopupFontScale 持久化）
+ * - 结果区一键展开/收起（展开至 60vh，会话内记忆展开状态）
+ * - 流式/非流式生成中均可「停止」（流式 abort，非流式本地丢弃）
+ * - 按钮统一样式（边框/圆角/hover/disabled），结果区细滚动条
+ * - <style> 随 box 挂载、随浮窗销毁，不残留 reader 文档
  */
 /* global Zotero, Prefs, AIClient, AIChat, AIChatPane, I18n */
 
@@ -23,6 +31,8 @@ var ReaderPopup = {
   // 自动翻译去重/限流
   _lastAutoKey: "",
   _lastAutoTime: 0,
+  // 0.15.0：结果区展开状态（会话内记忆，跨浮窗共享）
+  _expanded: false,
 
   register(pluginID) {
     if (this._handler) return;
@@ -135,47 +145,96 @@ var ReaderPopup = {
         return el;
       };
 
-      const box = mk("div",
-        "max-width:420px;padding:2px 4px;display:flex;flex-direction:column;gap:4px;" +
-        "font-size:12px;line-height:1.5;text-align:left;");
-
-      // 按钮行：翻译 / 解读 / 追问 + 选区预览
-      const row = mk("div", "display:flex;gap:6px;align-items:center;");
-      const mkBtn = (label) => {
-        const b = mk("button", "padding:1px 10px;font-size:12px;cursor:pointer;", label);
-        return b;
+      const mkClass = (tag, cls, label, css) => {
+        const el = mk(tag, css, label);
+        el.className = cls;
+        return el;
       };
+
+      // ---- 0.15.0 浮窗样式表（挂在 box 内，随浮窗一起销毁，不残留 reader 文档）----
+      const style = mk("style");
+      style.textContent =
+        ".pp-pop-btn{padding:2px 11px;font-size:12px;line-height:1.5;border-radius:4px;" +
+        "cursor:pointer;border:1px solid rgba(128,128,128,.45);background:transparent;" +
+        "color:inherit;white-space:nowrap;}" +
+        ".pp-pop-btn:hover:not(:disabled){background:rgba(128,128,128,.15);}" +
+        ".pp-pop-btn:disabled{opacity:.5;cursor:default;}" +
+        ".pp-pop-icon{padding:1px 7px;font-size:12px;border-radius:4px;cursor:pointer;" +
+        "border:1px solid transparent;background:transparent;color:inherit;" +
+        "line-height:1.5;white-space:nowrap;}" +
+        ".pp-pop-icon:hover:not(:disabled){border-color:rgba(128,128,128,.45);" +
+        "background:rgba(128,128,128,.12);}" +
+        ".pp-pop-icon:disabled{opacity:.45;cursor:default;}" +
+        ".pp-pop-result{white-space:pre-wrap;word-break:break-word;overflow-y:auto;" +
+        "border-top:1px solid rgba(128,128,128,.35);padding-top:6px;margin-top:2px;" +
+        "scrollbar-width:thin;}";
+
+      // ---- 字号缩放（五档 0.85–1.5，pref readerPopupFontScale 持久化）----
+      const SCALES = [0.85, 1, 1.15, 1.3, 1.5];
+      let scaleIdx = SCALES.indexOf(Number(Prefs.get("readerPopupFontScale", "1")) || 1);
+      if (scaleIdx < 0) scaleIdx = 1;
+
+      // 窗口：420→560px（小屏 min(560px,92vw) 自适应；结果区 260→300px，可展开至 60vh）
+      const box = mk("div",
+        "max-width:min(560px,92vw);padding:3px 4px 5px;display:flex;flex-direction:column;gap:5px;" +
+        "font-size:12.5px;line-height:1.55;text-align:left;");
+      box.appendChild(style);
+
+      // 按钮行：翻译 / 解读 / 追问 + 选区预览 + 工具（字号缩放 / 展开）
+      const row = mk("div", "display:flex;gap:6px;align-items:center;flex-wrap:wrap;");
+      const mkBtn = (label) => mkClass("button", "pp-pop-btn", label);
       const trBtn = mkBtn(I18n.t("popupTranslate"));
       const aiBtn = mkBtn(I18n.t("popupExplain"));
       const askBtn = mkBtn(I18n.t("popupAsk"));
       const src = mk("span",
-        "color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-        cleanText.slice(0, 40) + (cleanText.length > 40 ? "…" : ""));
+        "color:#888;flex:1;min-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" +
+        "font-size:11.5px;",
+        cleanText.slice(0, 50) + (cleanText.length > 50 ? "…" : ""));
+      const tools = mk("div", "display:flex;gap:2px;align-items:center;margin-left:auto;");
+      const zoomMinus = mkClass("button", "pp-pop-icon", "A−");
+      zoomMinus.title = I18n.t("popupZoomOut");
+      const zoomPlus = mkClass("button", "pp-pop-icon", "A+");
+      zoomPlus.title = I18n.t("popupZoomIn");
+      const expandBtn = mkClass("button", "pp-pop-icon", I18n.t("popupExpand"));
+      expandBtn.title = I18n.t("popupExpand");
+      tools.appendChild(zoomMinus);
+      tools.appendChild(zoomPlus);
+      tools.appendChild(expandBtn);
       row.appendChild(trBtn);
       row.appendChild(aiBtn);
       row.appendChild(askBtn);
       row.appendChild(src);
+      row.appendChild(tools);
 
       // 追问输入行（默认隐藏）
       const askRow = mk("div", "display:none;gap:6px;align-items:flex-end;");
       const askInput = mk("textarea",
-        "flex:1;resize:vertical;padding:3px 4px;font-size:12px;", null);
+        "flex:1;min-width:0;resize:vertical;padding:3px 5px;font-size:12.5px;", null);
       askInput.setAttribute("rows", "2");
       askInput.setAttribute("placeholder", I18n.t("popupAskPlaceholder"));
       const askSend = mkBtn(I18n.t("popupSend"));
       askRow.appendChild(askInput);
       askRow.appendChild(askSend);
 
-      // 结果区 + 操作行
-      const result = mk("div",
-        "display:none;white-space:pre-wrap;word-break:break-word;max-height:260px;" +
-        "overflow-y:auto;border-top:1px solid #8884;padding-top:4px;");
-      const actions = mk("div", "display:none;gap:6px;align-items:center;");
+      // 结果区（字号缩放 / 展开均作用于这里）
+      const result = mkClass("div", "pp-pop-result", null, "display:none;max-height:300px;");
+
+      // 停止行：仅生成中可见（流式 abort；非流式本地丢弃）
+      const stopRow = mk("div", "display:none;gap:8px;align-items:center;");
+      const stopBtn = mkBtn(I18n.t("popupStop"));
+      const stopHint = mk("span", "color:#888;font-size:11px;", I18n.t("popupBusyHint"));
+      stopRow.appendChild(stopBtn);
+      stopRow.appendChild(stopHint);
+
+      // 结果操作行
+      const actions = mk("div", "display:none;gap:6px;align-items:center;flex-wrap:wrap;");
       const copyBtn = mkBtn(I18n.t("popupCopy"));
       const retryBtn = mkBtn(I18n.t("popupRetry"));
       const wbBtn = mkBtn(I18n.t("popupWriteBack"));
       const paneBtn = mkBtn(I18n.t("popupContinuePane"));
-      const status = mk("span", "color:#888;font-size:11px;flex:1;");
+      const status = mk("span",
+        "color:#888;font-size:11.5px;flex:1;min-width:0;overflow:hidden;" +
+        "text-overflow:ellipsis;white-space:nowrap;");
       actions.appendChild(copyBtn);
       actions.appendChild(retryBtn);
       if (annotation && Prefs.get("readerPopupWriteBack", true)) {
@@ -187,13 +246,37 @@ var ReaderPopup = {
       box.appendChild(row);
       box.appendChild(askRow);
       box.appendChild(result);
+      box.appendChild(stopRow);
       box.appendChild(actions);
+
+      /* ----- 缩放 / 展开应用与事件 ----- */
+      const applyScale = () => {
+        result.style.fontSize = (12.5 * SCALES[scaleIdx]).toFixed(2) + "px";
+        result.style.lineHeight = SCALES[scaleIdx] >= 1.3 ? "1.55" : "1.65";
+        zoomMinus.disabled = scaleIdx <= 0;
+        zoomPlus.disabled = scaleIdx >= SCALES.length - 1;
+      };
+      const saveScale = () => {
+        applyScale();
+        try { Prefs.set("readerPopupFontScale", String(SCALES[scaleIdx])); } catch (e) { /* ignore */ }
+      };
+      const applyExpand = () => {
+        result.style.maxHeight = this._expanded ? "min(60vh,540px)" : "300px";
+        expandBtn.textContent = this._expanded ? I18n.t("popupCollapse") : I18n.t("popupExpand");
+        expandBtn.title = this._expanded ? I18n.t("popupCollapse") : I18n.t("popupExpand");
+      };
+      applyScale();
+      applyExpand();
+      zoomMinus.addEventListener("click", () => { if (scaleIdx > 0) { scaleIdx--; saveScale(); } });
+      zoomPlus.addEventListener("click", () => { if (scaleIdx < SCALES.length - 1) { scaleIdx++; saveScale(); } });
+      expandBtn.addEventListener("click", () => { this._expanded = !this._expanded; applyExpand(); });
 
       /* ----- 运行状态 ----- */
       let lastRun = null; // {kind:"translate"|"explain"|"ask", question?}
       let lastAnswer = "";
       let currentHandle = null;
       let busy = false;
+      let stopped = false; // 非流式停止：应答到达后丢弃不渲染
 
       const setBusy = (b) => {
         busy = b;
@@ -201,6 +284,7 @@ var ReaderPopup = {
       };
 
       const showError = (e) => {
+        stopRow.style.display = "none";
         if (!result.isConnected) return;
         if (e && e.message === "ABORTED") { result.style.display = "none"; return; }
         result.style.display = "block";
@@ -210,8 +294,10 @@ var ReaderPopup = {
       /** 统一执行：流式优先，结果就绪后显示操作行；返回最终答案（失败为 null） */
       const execute = async (messages, cacheKey) => {
         if (currentHandle) { try { currentHandle.abort(); } catch (e) { /* ignore */ } }
+        stopped = false;
         setBusy(true);
         result.style.display = "block";
+        stopRow.style.display = "flex";
         actions.style.display = "none";
         status.textContent = "";
 
@@ -221,6 +307,7 @@ var ReaderPopup = {
           if (hit !== undefined) {
             lastAnswer = hit;
             result.textContent = hit;
+            stopRow.style.display = "none";
             actions.style.display = "flex";
             status.textContent = "⚡cache";
             setBusy(false);
@@ -234,7 +321,7 @@ var ReaderPopup = {
 
         let acc = "";
         const onDelta = (chunk) => {
-          if (!result.isConnected) return;
+          if (!result.isConnected || stopped) return;
           if (!acc) result.textContent = "";
           acc += chunk;
           result.textContent = acc;
@@ -250,11 +337,14 @@ var ReaderPopup = {
           } else {
             answer = await AIClient.chat(messages);
             if (!result.isConnected) return null;
+            if (stopped) { result.style.display = "none"; stopRow.style.display = "none"; return null; }
             result.textContent = answer;
           }
+          if (stopped) { result.style.display = "none"; stopRow.style.display = "none"; return null; }
           lastAnswer = answer;
           if (cacheKey && answer) this._cacheSet(cacheKey, answer);
           if (result.isConnected) {
+            stopRow.style.display = "none";
             actions.style.display = "flex";
             if (count !== 500) status.textContent = "";
           }
@@ -268,6 +358,19 @@ var ReaderPopup = {
           setBusy(false);
         }
       };
+
+      // 停止：流式直接 abort（promise 以 ABORTED 拒绝→静默收起）；
+      // 非流式请求无 abort 能力，标记后应答到达即丢弃
+      stopBtn.addEventListener("click", () => {
+        stopped = true;
+        if (currentHandle) {
+          try { currentHandle.abort(); } catch (e) { /* ignore */ }
+        } else {
+          result.style.display = "none";
+          stopRow.style.display = "none";
+          setBusy(false);
+        }
+      });
 
       const runTask = (mode) => {
         lastRun = { kind: mode };

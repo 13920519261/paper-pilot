@@ -29,21 +29,21 @@
 
   function setText(id, msg, color) {
     const el = $(id);
-    if (el) { el.textContent = msg; el.style.color = color || "#888"; }
+    if (el) { el.textContent = msg; el.style.color = color || "var(--pp-muted)"; }
   }
 
   /* ---------- easyScholar ---------- */
 
   function refreshEsStats() {
     try {
-      setText("pp-es-stats", (zh ? "缓存条目：" : "Cached: ") + rankColumn().esCacheSize(), "#888");
+      setText("pp-es-stats", (zh ? "缓存条目：" : "Cached: ") + rankColumn().esCacheSize());
     } catch (e) { /* ignore */ }
   }
 
   async function onEsClear() {
     try { await rankColumn().esClearCache(); } catch (e) { /* ignore */ }
     refreshEsStats();
-    setText("pp-es-stats", txt.cacheCleared, "#1e7d32");
+    setText("pp-es-stats", txt.cacheCleared, "var(--pp-success)");
   }
 
   /* ---------- Semantic Scholar 被引量 ---------- */
@@ -52,14 +52,14 @@
 
   function refreshS2Stats() {
     try {
-      setText("pp-s2-stats", (zh ? "缓存条目：" : "Cached: ") + citationColumn().cacheSize(), "#888");
+      setText("pp-s2-stats", (zh ? "缓存条目：" : "Cached: ") + citationColumn().cacheSize());
     } catch (e) { /* ignore */ }
   }
 
   async function onS2Clear() {
     try { await citationColumn().clearCache(); } catch (e) { /* ignore */ }
     refreshS2Stats();
-    setText("pp-s2-stats", txt.cacheCleared, "#1e7d32");
+    setText("pp-s2-stats", txt.cacheCleared, "var(--pp-success)");
   }
 
   /* ---------- 分区数据文件选择 ---------- */
@@ -115,8 +115,8 @@
     bind("pp-es-clear", "click", onEsClear);
     bind("pp-s2-clear", "click", onS2Clear);
     bind("pp-rank-browse", "click", browseRankData);
-    // 敏感字段掩码切换（账号服务器 / easyScholar Key / S2 Key）
-    bindEye("pp-account-server", "pp-account-server-eye");
+    // 敏感字段掩码切换（easyScholar Key / S2 Key；
+    // 0.15.0 起账号服务器地址不再出现在设置界面——官方地址内置固定）
     bindEye("pp-es-key", "pp-es-key-eye");
     bindEye("pp-s2-key", "pp-s2-key-eye");
   }
