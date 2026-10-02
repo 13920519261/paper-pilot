@@ -77,6 +77,14 @@ pref("extensions.zotero.paperpilot.uiThemeCustom", "");
 // 借鉴 zotero-pdf-background（textLayer 半透明叠色 + 阅读器工具栏按钮）
 // 与 zotero-night（canvas invert 反色夜间模式）
 pref("extensions.zotero.paperpilot.pdfTheme", "default");
+// 0.17.0 壁纸语义重构：主题=配色+壁纸一体包
+// "theme"（默认）= 用主题包自带壁纸；"off" = 关闭壁纸纯色主题；"custom" = 自定义文件
+// （0.16.1 的 auto/内置壁纸 id/"" 由 UiTheme.migrateLegacy 一次性迁移，幂等）
+pref("extensions.zotero.paperpilot.uiWallpaper", "theme");
+// custom 壁纸的本地文件路径（图片 jpg/png/webp/gif/bmp 或视频 mp4/webm/mkv/mov）
+pref("extensions.zotero.paperpilot.uiWallpaperPath", "");
+// 壁纸可见度 10-90（越大面板越透、壁纸越明显；主题可带推荐值，用户滑条可覆盖）
+pref("extensions.zotero.paperpilot.uiWallpaperOpacity", 70);
 // 自定义 PDF 叠色：颜色 + 不透明度（5-60，百分整数；Mozilla pref 无浮点）
 pref("extensions.zotero.paperpilot.pdfThemeCustomColor", "#578f32");
 pref("extensions.zotero.paperpilot.pdfThemeCustomOpacity", 30);

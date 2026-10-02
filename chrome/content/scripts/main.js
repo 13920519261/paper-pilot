@@ -353,7 +353,7 @@ Zotero.PaperPilot = {
     // （FF140 实证：addObserver(..., weak=true) 直接抛错拖死 startup）。
     // 改用 Zotero.Prefs.registerObserver——Zotero 自己在主作用域持有单个
     // nsIObserver 再分发，按「完整 pref key」注册（无前缀监听，逐 key 注册）。
-    this._prefObserverSymbols = ["rankDataPath", "rankColumnEnabled", "easyScholarEnabled", "easyScholarKey", "citationColumnEnabled", "uiTheme", "uiThemeCustom", "pdfTheme", "pdfThemeCustomColor", "pdfThemeCustomOpacity"].map((key) =>
+    this._prefObserverSymbols = ["rankDataPath", "rankColumnEnabled", "easyScholarEnabled", "easyScholarKey", "citationColumnEnabled", "uiTheme", "uiThemeCustom", "uiWallpaper", "uiWallpaperPath", "uiWallpaperOpacity", "pdfTheme", "pdfThemeCustomColor", "pdfThemeCustomOpacity"].map((key) =>
       Zotero.Prefs.registerObserver(Prefs.PREFIX + key, () => {
         this._onPrefChanged(key).catch((e) => {
           try { Zotero.logError(e); } catch (_) { /* ignore */ }
@@ -384,8 +384,8 @@ Zotero.PaperPilot = {
       // 开关或密钥变化：清查找缓存并立即重绘（ES 结果按内容缓存，无需清空）
       try { RankColumn._lookupCache.clear(); } catch (e) { /* ignore */ }
       try { Zotero.ItemTreeManager.refreshColumns(); } catch (e) { /* ignore */ }
-    } else if (key === "uiTheme" || key === "uiThemeCustom") {
-      // 主题即时生效：设置面板/菜单任何一处改动，全部窗口立即换肤
+    } else if (key === "uiTheme" || key === "uiThemeCustom" || key === "uiWallpaper" || key === "uiWallpaperPath" || key === "uiWallpaperOpacity") {
+      // 主题/壁纸即时生效：设置面板/菜单任何一处改动，全部窗口立即换肤
       try { UiTheme.apply(); } catch (e) { /* ignore */ }
     } else if (key === "pdfTheme" || key === "pdfThemeCustomColor" || key === "pdfThemeCustomOpacity") {
       // PDF 阅读主题即时生效：重刷全部已打开 reader

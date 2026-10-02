@@ -220,37 +220,42 @@ var Menus = {
     }
   },
 
-  /** 工具菜单 → 外观主题 · 界面主题：radio 列表（"跟随 Zotero 原生" + 全部内置 + 自定义） */
+  /** 工具菜单 → 外观主题 · 界面主题：按分类嵌套（动漫/风景/动态），radio 单选 */
   _fillUiThemesMenu(doc, popup) {
     while (popup.firstChild) popup.removeChild(popup.firstChild);
     const current = String(Prefs.get("uiTheme", "") || "");
-    const mk = (label, id, checked) => {
+    const mk = (parent, label, id, checked, icon) => {
       const mi = this._xul(doc, "menuitem");
-      mi.setAttribute("label", label);
+      mi.setAttribute("label", (icon || "") + label);
       mi.setAttribute("type", "radio");
       if (checked) mi.setAttribute("checked", "true");
       mi.addEventListener("command", () => {
         try { UiTheme.setTheme(id); } catch (e) { Zotero.logError(e); }
       });
-      popup.appendChild(mi);
+      parent.appendChild(mi);
     };
-    mk(I18n.t("themeFollowNative"), "", current === "");
-    const groups = [
+    mk(popup, I18n.t("themeFollowNative"), "", current === "", "🍃 ");
+    const cats = [
       { key: "standard", label: I18n.t("themeGroupStandard") },
       { key: "anime", label: I18n.t("themeGroupAnime") },
+      { key: "scenery", label: I18n.t("themeGroupScenery") },
+      { key: "dynamic", label: I18n.t("themeGroupDynamic") },
     ];
-    for (const g of groups) {
-      const items = UiTheme.THEMES.filter((t) => t.tag === g.key);
+    for (const cat of cats) {
+      const items = UiTheme.THEMES.filter((t) => t.cat === cat.key);
       if (!items.length) continue;
-      popup.appendChild(this._xul(doc, "menuseparator"));
-      const head = this._xul(doc, "menuitem");
-      head.setAttribute("label", g.label);
-      head.setAttribute("disabled", "true");
-      popup.appendChild(head);
-      for (const t of items) mk((t.dark ? "🌙 " : "☀️ ") + t.name, t.id, current === t.id);
+      const sub = this._xul(doc, "menu");
+      sub.setAttribute("label", cat.label);
+      const subPopup = this._xul(doc, "menupopup");
+      sub.appendChild(subPopup);
+      for (const t of items) {
+        const icon = t.wp && t.wp.anim ? "⚡ " : (t.dark ? "🌙 " : "☀️ ");
+        mk(subPopup, t.name, t.id, current === t.id, icon);
+      }
+      popup.appendChild(sub);
     }
     popup.appendChild(this._xul(doc, "menuseparator"));
-    mk("🎨 " + I18n.t("themeCustom"), "custom", current === "custom");
+    mk(popup, I18n.t("themeCustom"), "custom", current === "custom", "🎨 ");
   },
 
   /** 工具菜单 → 外观主题 · PDF 阅读主题：radio 列表 */

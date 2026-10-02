@@ -353,14 +353,49 @@
   <!-- ============ 8 · 界面主题（0.16.0） ============ -->
   <html:div class="pp-card">
     <html:div><html:span class="pp-card-icon">🎨</html:span><html:span class="pp-card-title">界面主题</html:span></html:div>
-    <html:div class="pp-card-desc">整体更换 Zotero 界面配色（含设置窗口）；界面主题与 PDF 阅读主题可独立搭配</html:div>
+    <html:div class="pp-card-desc">主题 = 配色 + 壁纸一体包，点击卡片立即应用（记住选择，重启自动恢复）；界面主题与 PDF 阅读主题可独立搭配</html:div>
     <html:div class="pp-card-body">
-      <html:div id="pp-ui-theme-grid" class="pp-theme-grid"></html:div>
-      <html:div class="pp-hint" style="margin-top:8px;">☀️ = 浅色基调 · 🌙 = 深色基调 · 切换即时生效；「跟随原生」恢复 Zotero 自身外观设置</html:div>
+      <!-- 主题库（0.17.0 分类：动漫 / 风景 / 动态） -->
+      <html:div id="pp-ui-special" class="pp-theme-grid"></html:div>
+      <html:div class="pp-theme-cat">标准</html:div>
+      <html:div id="pp-cat-standard" class="pp-theme-grid"></html:div>
+      <html:div class="pp-theme-cat">动漫风</html:div>
+      <html:div id="pp-cat-anime" class="pp-theme-grid"></html:div>
+      <html:div class="pp-theme-cat">风景</html:div>
+      <html:div id="pp-cat-scenery" class="pp-theme-grid"></html:div>
+      <html:div class="pp-theme-cat">动态壁纸</html:div>
+      <html:div id="pp-cat-dynamic" class="pp-theme-grid"></html:div>
+      <html:div class="pp-hint" style="margin-top:8px;">☀️ = 浅色基调 · 🌙 = 深色基调 · ⚡ = 动态壁纸；面板随壁纸变半透明玻璃，设置窗口不含壁纸</html:div>
 
-      <!-- 8.1 自定义色板 -->
+      <!-- 8.1 外观参数 -->
       <html:div class="pp-sub">
-        <html:div class="pp-sub-title">自定义色板（选用「自定义色板」主题时生效）</html:div>
+        <html:div class="pp-sub-title">外观参数</html:div>
+        <html:div class="pp-sub-desc">壁纸模式与透明度即时生效；切换主题时会带上该主题的推荐可见度，可再手动微调</html:div>
+        <html:div class="pp-row" style="margin-top:8px;">
+          <html:span class="pp-label">壁纸模式</html:span>
+          <html:select id="pp-wp-mode" class="pp-select">
+            <html:option value="theme">跟随主题（用主题包自带壁纸）</html:option>
+            <html:option value="off">关闭壁纸（纯配色主题）</html:option>
+            <html:option value="custom">自定义文件（图片或视频）</html:option>
+          </html:select>
+        </html:div>
+        <html:div class="pp-row" style="margin-top:8px;">
+          <html:span class="pp-label">壁纸可见度</html:span>
+          <html:input type="range" id="pp-wp-opacity" min="10" max="90" step="5" style="flex:1;max-width:220px;"/>
+          <html:span id="pp-wp-opacity-label" class="pp-hint">70%</html:span>
+        </html:div>
+        <html:div id="pp-wp-custom-row" class="pp-row" style="margin-top:6px;display:none;">
+          <html:span class="pp-label">壁纸文件</html:span>
+          <html:input type="text" id="pp-wp-path" class="pp-input pp-grow" placeholder="本地图片或视频路径（jpg/png/mp4/webm…）"/>
+          <html:button id="pp-wp-browse" class="pp-btn pp-btn-sm">浏览…</html:button>
+        </html:div>
+        <html:div id="pp-wp-custom-preview" style="display:none;margin-top:8px;"></html:div>
+        <html:div class="pp-hint">自定义文件仅按路径引用（不复制入库）；视频以静音循环播放作为动态壁纸</html:div>
+      </html:div>
+
+      <!-- 8.2 自定义配色（自定义主题用） -->
+      <html:div class="pp-sub">
+        <html:div class="pp-sub-title">自定义配色（「自定义主题」卡片专用）</html:div>
         <html:div class="pp-sub-desc">只填核心角色，工具栏/标签栏/次级文字等由模块自动派生；深浅基调决定链接色等少数派生值</html:div>
         <html:div class="pp-grid2">
           <html:div class="pp-field">

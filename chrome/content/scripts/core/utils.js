@@ -135,9 +135,11 @@ var I18n = (() => {
     menuUiTheme: zh ? "界面主题" : "UI Theme",
     menuPdfTheme: zh ? "PDF 阅读主题" : "PDF Reading Theme",
     themeFollowNative: zh ? "跟随 Zotero 原生" : "Follow Zotero native",
-    themeGroupStandard: zh ? "— 标准系列 —" : "— Standard —",
-    themeGroupAnime: zh ? "— 动漫系列 —" : "— Anime —",
-    themeCustom: zh ? "自定义色板" : "Custom palette",
+    themeGroupStandard: zh ? "标准系列" : "Standard",
+    themeGroupAnime: zh ? "动漫风" : "Anime",
+    themeGroupScenery: zh ? "风景" : "Scenery",
+    themeGroupDynamic: zh ? "动态壁纸" : "Animated",
+    themeCustom: zh ? "自定义主题" : "Custom theme",
   };
   return {
     t(key) { return table[key] || key; },
