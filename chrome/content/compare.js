@@ -33,7 +33,6 @@
   let syncScroll = !(args.prefs && args.prefs.syncScroll === false);
   let syncZoom = !!(args.prefs && args.prefs.syncZoom);
   let activeIdx = -1;
-  let scrollGuard = false;
   let zoomGuard = false;
 
   /* ---------------- DOM 小工具 ---------------- */
@@ -239,7 +238,28 @@
     return null;
   }
 
-  /** 还原滚动能力（ReaderPreview 把 #viewerContainer 设成了 overflow:hidden） */
+  /* ---------------- 可滚动性（0.21.1 核心修正） ----------------
+   * 实测（Zotero 9.0.6 + 本功能自检）：
+   *   预览打开后 pdf.js 的 `scrollMode` 是 **3 = PAGE（单页模式）**，DOM 里只有
+   *   1 个 .page，`#viewerContainer` 的 scrollHeight≈clientHeight（20 页文档也只有
+   *   7px 滚动范围）——用户看到的就是「PDF 页面无法滚动」。
+   *   把 `scrollMode` 置回 **0 = VERTICAL（连续垂直）** 后，全部页参与布局，
+   *   滚动范围立刻变成正常值（实测 20 页 → scrollHeight 8242 / clientHeight 407）。
+   *   该赋值不会被阅读器改回去（实测 600ms 后仍为 0）。
+   * 所以这里做两件事：① 强制连续垂直；② 注入 CSS 解禁 overflow（ReaderPreview
+   * 把 #viewerContainer 设成 overflow:hidden，那是悬停预览「只看第一屏」的取舍）。
+   */
+
+  /** 注入/刷新面板内的可滚动样式（幂等且廉价：内容不变则不写 DOM） */
+  const VIEWER_CSS =
+    // overflow 简写 = 两轴 auto：竖向可滚，放大后横向也可滚（内容不会被裁掉）
+    "#viewerContainer{overflow:auto !important;" +
+    // 到边界不把滚动传给外层（对比窗口/另一面板），保证各面板互不干扰
+    "overscroll-behavior:contain !important;" +
+    // 显式允许触摸平移，触摸屏/触控板双指都能滚
+    "touch-action:pan-x pan-y !important;}" +
+    ".pdfViewer .page{border-radius:4px !important;}";
+
   function unclampViewer(v) {
     try {
       const d = v.win.document;
@@ -249,14 +269,24 @@
         s.id = "pp-cmp-viewer-style";
         (d.head || d.documentElement).appendChild(s);
       }
-      s.textContent =
-        "#viewerContainer{overflow:auto !important;}" +
-        ".pdfViewer .page{border-radius:4px !important;}";
+      if (s.textContent !== VIEWER_CSS) s.textContent = VIEWER_CSS;
     } catch (e) { /* ignore */ }
   }
 
-  function hookViewer(rec, v) {
+  /** 确保面板可正常滚动：连续垂直模式 + 解禁 overflow。
+   *  缩放会重建页面布局，故每次缩放后也要再确认一次。 */
+  function ensureScrollable(rec) {
+    const v = rec && rec.viewer;
+    if (!v) return;
+    try {
+      // 0 = pdf.js ScrollMode.VERTICAL；已是目标值时为 no-op（内部的 setter 会自行短路）
+      if (v.viewer.scrollMode !== 0) v.viewer.scrollMode = 0;
+    } catch (e) { /* ignore */ }
     unclampViewer(v);
+  }
+
+  function hookViewer(rec, v) {
+    ensureScrollable(rec);
     try {
       if (v.container) {
         rec._onScroll = () => onPaneScroll(rec);
@@ -272,6 +302,8 @@
         } catch (e) { /* ignore */ }
       });
       v.app.eventBus.on("scalechanging", () => onPaneScale(rec));
+      // 文档页布局完成后（首次 + 缩放后）再确认一次连续滚动
+      v.app.eventBus.on("pagesloaded", () => ensureScrollable(rec));
       rec._scaleEvtHooked = true;
     } catch (e) { /* eventBus 缺失时同步缩放降级为仅工具栏按钮生效 */ }
   }
@@ -295,6 +327,9 @@
         rec.viewer = v;
         hookViewer(rec, v);
         setPaneMessage(rec, "");
+        // 阅读器可能在文档就绪后再套一次自己的视图状态：延迟一拍再确认，
+        // 防止「打开时能滚、过一会儿又不能滚」。
+        setTimeout(() => ensureScrollable(rec), 800);
       } else {
         setPaneMessage(rec, T("compareViewUnavailable"));
       }
@@ -354,32 +389,52 @@
     });
   }
 
-  /* ---------------- 同步滚动 ---------------- */
+  /* ---------------- 同步滚动 ----------------
+   * 程序化滚动会打出「自己触发自己」的 scroll 事件，必须只吞掉这些回声。
+   * 旧实现用布尔 guard + rAF 释放：窗口被遮挡/最小化时 rAF 不触发，guard 会永久
+   * 卡住，之后所有同步静默失效。改成「每个滚动容器一个待吞计数」，不依赖帧回调；
+   * 再加 300ms 兜底清零，防止「赋的值没变→没有 scroll 事件」导致计数泄漏。 */
 
   function ratio(cur, total, view) {
     const max = Math.max(0, total - view);
     return max > 0 ? Math.min(1, Math.max(0, cur / max)) : 0;
   }
 
+  function markSkip(rec) {
+    const c = rec.viewer && rec.viewer.container;
+    if (!c) return;
+    c.__ppSkip = (c.__ppSkip || 0) + 1;
+    if (!c.__ppSkipTimer) {
+      c.__ppSkipTimer = setTimeout(() => { c.__ppSkip = 0; c.__ppSkipTimer = null; }, 300);
+    }
+  }
+
+  function takeSkip(container) {
+    if (!container) return false;
+    if (container.__ppSkip > 0) { container.__ppSkip--; return true; }
+    return false;
+  }
+
   function onPaneScroll(src) {
-    if (!syncScroll || scrollGuard) return;
     const sc = src.viewer && src.viewer.container;
     if (!sc) return;
+    if (takeSkip(sc)) return;      // 自己刚设的值引起的回声：吞掉，不扩散
+    if (!syncScroll) return;       // 关闭同步 = 各面板完全独立滚动
     const vr = ratio(sc.scrollTop, sc.scrollHeight, sc.clientHeight);
     const hr = ratio(sc.scrollLeft, sc.scrollWidth, sc.clientWidth);
-    scrollGuard = true;
     for (const p of panes) {
       if (p === src) continue;
       const t = p.viewer && p.viewer.container;
       if (!t) continue;
       try {
-        t.scrollTop = vr * Math.max(0, t.scrollHeight - t.clientHeight);
-        t.scrollLeft = hr * Math.max(0, t.scrollWidth - t.clientWidth);
+        const top = vr * Math.max(0, t.scrollHeight - t.clientHeight);
+        const left = hr * Math.max(0, t.scrollWidth - t.clientWidth);
+        if (Math.abs(t.scrollTop - top) <= 0.5 && Math.abs(t.scrollLeft - left) <= 0.5) continue;
+        markSkip(p);
+        t.scrollTop = top;
+        t.scrollLeft = left;
       } catch (e) { /* ignore */ }
     }
-    // 释放放 rAF 之后：滚动事件是连续流，单帧窗口足够避免自反馈
-    try { requestAnimationFrame(() => { scrollGuard = false; }); }
-    catch (e) { setTimeout(() => { scrollGuard = false; }, 30); }
   }
 
   /* ---------------- 同步缩放 ---------------- */
@@ -400,7 +455,9 @@
     setTimeout(() => { zoomGuard = false; }, 80);
   }
 
-  /** 缩放：同步开时作用于全部面板，否则只作用于当前面板 */
+  /** 缩放：同步开时作用于全部面板，否则只作用于当前面板。
+   *  缩放会重建页面布局（scrollHeight 变化），故之后再确认一次
+   *  「连续垂直 + 可滚」——保证放大后滚动范围跟着更新。 */
   function zoom(kind) {
     const targets = syncZoom ? panes.slice() : [panes[activeIdx >= 0 ? activeIdx : 0]].filter(Boolean);
     if (!targets.length) {
@@ -419,6 +476,8 @@
           v.viewer.currentScaleValue = String(Math.min(6, Math.max(0.2, next)));
         }
       } catch (e) { /* ignore */ }
+      // 布局是异步的：稍后再确认一次，确保放大后的滚动范围立刻可用
+      setTimeout(() => ensureScrollable(p), 150);
     }
   }
 
@@ -656,6 +715,99 @@
           }),
         });
       }, 200);
+    });
+  };
+
+  /** 滚动结构探针（排障用）：回答「到底有没有内容可滚、真正的滚动容器是谁」。
+   *  只看 overflow 是不够的——overflow:auto 但 scrollHeight≈clientHeight 时
+   *  用户看到的就是「滚不动」。 */
+  window.ppCompareScrollProbe = function () {
+    const facts = panes.map((p, i) => {
+      const out = { pane: i + 1, attID: p.attID, hasViewer: !!p.viewer };
+      if (!p.viewer) return out;
+      const v = p.viewer;
+      try {
+        const sc = v.container;
+        const cs = sc ? v.win.getComputedStyle(sc) : null;
+        out.scrollMode = v.viewer.scrollMode;          // 0=连续垂直，3=单页(滚不动)
+        out.pageEls = v.win.document.querySelectorAll(".page").length;
+        out.clientHeight = sc ? sc.clientHeight : -1;
+        out.scrollHeight = sc ? sc.scrollHeight : -1;
+        out.maxScroll = sc ? Math.max(0, sc.scrollHeight - sc.clientHeight) : -1;
+        out.overflowY = cs ? cs.overflowY : "?";
+        out.overscroll = cs ? cs.overscrollBehaviorY : "?";
+        out.scaleValue = v.viewer.currentScaleValue;
+      } catch (e) { out.err = String(e && e.message); }
+      return out;
+    });
+
+    // A) 同步滚动开：滚面板1，其余应跟到同一比例
+    // B) 同步滚动关：其余必须完全不动（面板间互不干扰）
+    const fire = (c) => {
+      try {
+        const ev = c.ownerDocument.createEvent("Event");
+        ev.initEvent("scroll", false, false);
+        c.dispatchEvent(ev);
+      } catch (e) { /* ignore */ }
+    };
+
+    return new Promise((resolve) => {
+      const first = panes.find((p) => p.viewer && p.viewer.container);
+      if (!first) { resolve({ facts, sync: null }); return; }
+      const sc = first.viewer.container;
+      const others = () => panes.filter((p) => p !== first && p.viewer && p.viewer.container);
+
+      // 滚轮能不能滚，取决于面板中心点上「最顶层」的元素是否把事件交给滚动容器。
+      // 用 elementFromPoint 直接看命中谁（比派发 untrusted 事件可靠：合成事件
+      // 不会触发浏览器默认滚动行为）。
+      let hit = null;
+      try {
+        const d = first.viewer.win.document;
+        const el = d.elementFromPoint(Math.round(sc.clientWidth / 2), Math.round(sc.clientHeight / 2));
+        hit = el ? { tag: el.tagName, id: el.id || "", cls: String(el.className || "").slice(0, 60), inScroller: sc.contains(el) } : null;
+      } catch (e) { hit = "ERR:" + (e && e.message); }
+
+      const wasOn = syncScroll;
+      syncScroll = true;
+      sc.scrollTop = Math.round(Math.max(0, sc.scrollHeight - sc.clientHeight) * 0.5);
+      fire(sc);
+
+      setTimeout(() => {
+        const onRatio = others().map((p) => {
+          const c = p.viewer.container;
+          const m = Math.max(0, c.scrollHeight - c.clientHeight);
+          return m > 0 ? Number((c.scrollTop / m).toFixed(3)) : 0;
+        });
+
+        syncScroll = false;
+        const beforeOff = others().map((p) => p.viewer.container.scrollTop);
+        sc.scrollTop = 0;
+        fire(sc);
+
+        setTimeout(() => {
+          const offAfter = others().map((p) => p.viewer.container.scrollTop);
+          syncScroll = wasOn;
+
+          // C) 缩放后滚动范围是否跟着更新（用户明确要求）
+          const zBefore = { scale: Number(first.viewer.viewer.currentScale.toFixed(4)), max: Math.max(0, sc.scrollHeight - sc.clientHeight) };
+          zoom("in");
+          setTimeout(() => {
+            const zAfter = {
+              scale: Number(first.viewer.viewer.currentScale.toFixed(4)),
+              max: Math.max(0, sc.scrollHeight - sc.clientHeight),
+              scrollMode: first.viewer.viewer.scrollMode,
+              pageEls: first.viewer.win.document.querySelectorAll(".page").length,
+            };
+            resolve({
+              facts,
+              wheelHit: hit,
+              syncOn: { srcRatio: 0.5, othersRatios: onRatio },
+              syncOff: { othersBefore: beforeOff, othersAfter: offAfter, moved: offAfter.some((v, i) => v !== beforeOff[i]) },
+              zoom: { before: zBefore, after: zAfter, maxGrew: zAfter.max > zBefore.max },
+            });
+          }, 900);
+        }, 250);
+      }, 250);
     });
   };
 

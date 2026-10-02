@@ -219,13 +219,13 @@ var PdfCompare = {
       await this._diag("selfTest: snapshot threw: " + (e && e.message));
     }
     await this._diag("selfTest snapshot: " + JSON.stringify(snap));
-    let sync = null;
     try {
-      if (typeof win.ppCompareSyncProbe === "function") sync = await win.ppCompareSyncProbe();
+      if (typeof win.ppCompareScrollProbe === "function") {
+        await this._diag("selfTest scrollProbe: " + JSON.stringify(await win.ppCompareScrollProbe()));
+      }
     } catch (e) {
-      await this._diag("selfTest: sync probe threw: " + (e && e.message));
+      await this._diag("selfTest: scroll probe threw: " + (e && e.message));
     }
-    await this._diag("selfTest syncProbe: " + JSON.stringify(sync));
     try { win.close(); } catch (e) { /* ignore */ }
     return snap || [];
   },
