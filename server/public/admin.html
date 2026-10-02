@@ -108,6 +108,7 @@
     <button id="tab-channels" class="on" onclick="switchTab('channels')">模型通道</button>
     <button id="tab-users" onclick="switchTab('users')">账号管理</button>
     <button id="tab-membership" onclick="switchTab('membership')">会员管理</button>
+    <button id="tab-audit" onclick="switchTab('audit')">审计日志</button>
   </div>
 
   <!-- ============ 模型通道 ============ -->
@@ -312,6 +313,37 @@
       <div class="msg" id="p-msg"></div>
     </div>
   </section>
+
+  <!-- ============ 审计日志（服务端 1.4.4） ============ -->
+  <section id="pane-audit" style="display:none">
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">管理操作审计</h2>
+        <div>
+          <button class="btn" onclick="exportAuditCSV()">导出 CSV</button>
+          <button class="btn" onclick="loadAudit()">刷新</button>
+        </div></div>
+      <p class="hint" style="margin:0 0 12px">
+        记录所有管理写操作（核销 / 改价 / 删用户 / 回滚 / 改配置…）的时间、对象、来源与前后值，
+        一行一条 JSON（<code>server/data/audit.log</code>，本地文件，不进 git）。
+        <b>密钥与密码永不写入</b>，激活码也不记码值本身（它就是凭据）。超过 2MB 自动轮转成 <code>audit.log.1</code>。
+      </p>
+      <div class="grid2">
+        <div class="field"><label>只看某类操作</label><select id="a-action"></select></div>
+        <div class="field"><label>对象包含（邮箱 / 订单号 / 条目 id）</label>
+          <input id="a-target" style="width:240px" onkeydown="if(event.key==='Enter')loadAudit()"></div>
+      </div>
+      <div class="toolbar"><span class="hint" id="a-stat"></span>
+        <button class="btn" onclick="loadAudit()">应用筛选</button></div>
+      <table id="audit-table">
+        <thead><tr>
+          <th style="width:150px">时间</th><th style="width:130px">操作</th><th style="width:170px">对象</th>
+          <th style="width:100px">来源</th><th>说明 / 前后值</th><th style="width:72px">结果</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="audit-empty" style="display:none">暂无审计记录</div>
+    </div>
+  </section>
 </main>
 
 <!-- 通道 新增/编辑 弹窗 -->
@@ -446,17 +478,95 @@ function switchTab(t) {
   $('tab-channels').classList.toggle('on', t === 'channels');
   $('tab-users').classList.toggle('on', t === 'users');
   $('tab-membership').classList.toggle('on', t === 'membership');
+  $('tab-audit').classList.toggle('on', t === 'audit');
   $('pane-channels').style.display = t === 'channels' ? '' : 'none';
   $('pane-users').style.display = t === 'users' ? '' : 'none';
   $('pane-membership').style.display = t === 'membership' ? '' : 'none';
+  $('pane-audit').style.display = t === 'audit' ? '' : 'none';
   if (location.hash !== '#' + t) location.hash = t;
   if (t === 'users') loadUsers();
   if (t === 'membership') loadMembership();
+  if (t === 'audit') loadAudit();
 }
 window.addEventListener('hashchange', function () {
   var h = location.hash.replace('#', '');
-  if (h === 'users' || h === 'channels' || h === 'membership') switchTab(h);
+  if (h === 'users' || h === 'channels' || h === 'membership' || h === 'audit') switchTab(h);
 });
+
+/* ---------------- 审计日志（服务端 1.4.4） ---------------- */
+
+function shortJson(v) {
+  try { var s = JSON.stringify(v); return s.length > 90 ? s.slice(0, 90) + '…' : s; } catch (e) { return ''; }
+}
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+function loadAudit() {
+  var p = ['limit=200'];
+  var a = $('a-action').value;
+  var t = $('a-target').value.trim();
+  if (a) p.push('action=' + encodeURIComponent(a));
+  if (t) p.push('target=' + encodeURIComponent(t));
+  api('GET', '/api/admin/audit?' + p.join('&')).then(function (r) {
+    if (!r.ok) { $('a-stat').textContent = r.error || '读取失败'; return; }
+    // 动作下拉：首次填充（保留当前选中），选项文案用服务端给的中文名
+    var sel = $('a-action');
+    if (!sel.options.length && r.actions) {
+      var all = document.createElement('option'); all.value = ''; all.textContent = '全部操作';
+      sel.appendChild(all);
+      Object.keys(r.actions).forEach(function (k) {
+        var o = document.createElement('option'); o.value = k;
+        o.textContent = r.actions[k] + '（' + k + '）';
+        sel.appendChild(o);
+      });
+    }
+    var tb = $('audit-table').querySelector('tbody');
+    tb.textContent = '';
+    $('audit-empty').style.display = r.items.length ? 'none' : '';
+    r.items.forEach(function (e) {
+      var tr = document.createElement('tr');
+      var parts = [];
+      if (e.note) parts.push(e.note);
+      if (e.before && e.after) parts.push('前 ' + shortJson(e.before) + ' → 后 ' + shortJson(e.after));
+      else if (e.after) parts.push(shortJson(e.after));
+      else if (e.before) parts.push('前 ' + shortJson(e.before));
+      tr.innerHTML =
+        '<td class="mono">' + esc(String(e.at).replace('T', ' ').slice(0, 19)) + '</td>' +
+        '<td>' + esc(e.actionText || e.action) + '</td>' +
+        '<td class="mono">' + esc(e.target || '—') + '</td>' +
+        '<td class="mono">' + esc(e.ip || '—') + '</td>' +
+        '<td style="word-break:break-all">' + esc(parts.join('；')) + '</td>' +
+        '<td style="white-space:nowrap">' + (e.ok === false ? '<span class="badge red">失败</span>'
+          : '<span class="badge green">成功</span>') + '</td>';
+      tb.appendChild(tr);
+    });
+    var s = r.stats || {};
+    $('a-stat').textContent = '显示 ' + r.items.length + ' 条 · 日志体积 ' + fmtBytes(s.bytes)
+      + (s.archiveBytes ? '（历史 ' + fmtBytes(s.archiveBytes) + '）' : '')
+      + ' · 上限 ' + fmtBytes(s.maxBytes);
+  });
+}
+function exportAuditCSV() {
+  api('GET', '/api/admin/audit?limit=2000').then(function (r) {
+    if (!r.ok) return alert(r.error || '导出失败');
+    var lines = [['时间', '操作', '动作代码', '对象', '来源IP', '结果', '说明', '前值', '后值'].map(csvCell).join(',')];
+    (r.items || []).forEach(function (e) {
+      lines.push([e.at, e.actionText || e.action, e.action, e.target, e.ip,
+        e.ok === false ? '失败' : '成功', e.note,
+        e.before ? JSON.stringify(e.before) : '', e.after ? JSON.stringify(e.after) : ''].map(csvCell).join(','));
+    });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'paperpilot-audit-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { try { URL.revokeObjectURL(a.href); a.remove(); } catch (e) { /* ignore */ } }, 0);
+  });
+}
 
 /* ---------------- 通道 ---------------- */
 var activeChannelId = null;
@@ -1022,7 +1132,8 @@ function renderPlanForm() {
 }
 
 function fulfillOrder(id) {
-  if (!confirm('确认已收到该订单款项并核销？将立即为下单账号开通/叠加会员。')) return;
+  // 二次确认带上订单号：核销即开通，点错行会直接给错账号开会员（操作会写入审计日志）
+  if (!confirm('确认核销订单 ' + id + '？\n将立即为该订单的下单账号开通/叠加会员。')) return;
   api('POST', '/api/admin/orders/' + id + '/fulfill', {}).then(function (r) {
     if (!r.ok) return msg('mb-order-msg', '✗ ' + (r.error || '核销失败'), false);
     msg('mb-order-msg', '✓ 已核销 ' + id + '，' + (r.user ? r.user.email : '') + ' 会员到期 '
@@ -1341,7 +1452,7 @@ api('GET', '/api/admin/providers').then(function (r) {
 });
 loadChannels();
 toggleInitMonths();
-if (location.hash === '#users' || location.hash === '#membership') switchTab(location.hash.slice(1));
+if (['#users', '#membership', '#audit'].indexOf(location.hash) >= 0) switchTab(location.hash.slice(1));
 </script>
 </body>
 </html>

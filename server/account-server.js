@@ -10,7 +10,7 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.3，插件 0.24.4；Free / Pro 两档 + 价格表，全部配置化）：
+ * 会员域（服务端 1.4.4，插件 0.24.4；Free / Pro 两档 + 价格表，全部配置化）：
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
  *   GET  /api/auth/me               Bearer → user 内附带 usage:{today,limit,last7,days[30]}
@@ -79,6 +79,7 @@ const membership = require('./lib/membership');
 const backup = require('./lib/backup');
 const alerts = require('./lib/alerts');
 const lockout = require('./lib/lockout');
+const audit = require('./lib/audit');
 const mail = require('./lib/mail');
 
 /* ---------------- 配置 ---------------- */
@@ -839,6 +840,23 @@ function snapshot(reason, opts) {
   }
 }
 
+/**
+ * 记一条管理操作审计（1.4.4）。**写入失败绝不影响主流程** —— 审计是留痕，不是前置条件；
+ * 但也不能静默：失败时至少往 console 日志留一行。
+ */
+function auditLog(req, action, opts) {
+  const o = opts || {};
+  try {
+    const r = audit.append(DATA_DIR, {
+      action, target: o.target, before: o.before, after: o.after, note: o.note,
+      ip: req ? clientIp(req) : '', ok: o.ok === false ? false : true,
+    });
+    if (!r.ok) log('audit write failed:', r.error);
+  } catch (e) {
+    log('audit write failed:', e && e.message);
+  }
+}
+
 /** 回滚后把内存 store 换成磁盘内容（否则会继续用回滚前的旧数据对外服务） */
 function reloadStores() {
   const before = { users: usersStore.data.users.length, orders: membershipStore.data.orders.length };
@@ -1083,7 +1101,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.3',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.4',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -1104,6 +1122,9 @@ const server = http.createServer(async (req, res) => {
         backlogOverdue: backlogNow().over,
         snapshots: backup.list(DATA_DIR).length,
         lastSnapshotAt: (backup.latest(DATA_DIR) || {}).at || null,
+        // 1.4.4 审计：日志体积（后台据此判断是否需要查看/归档）
+        auditBytes: audit.stats(DATA_DIR).bytes,
+        auditArchiveBytes: audit.stats(DATA_DIR).archiveBytes,
       });
     }
 
@@ -1399,7 +1420,10 @@ const server = http.createServer(async (req, res) => {
           try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
           snapshot('users-change', { note: '新建用户：' + String(input && input.email || '') });
           const r = await adminCreateUser(input);
-          return r.error ? json(res, 400, { ok: false, error: r.error }) : json(res, 200, { ok: true, user: r.user });
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          auditLog(req, 'user.create', { target: r.user.email,
+            after: { plan: r.user.plan, planRaw: r.user.planRaw, expiresAt: r.user.expiresAt, status: r.user.status } });
+          return json(res, 200, { ok: true, user: r.user });
         }
       }
       let m = url.match(/^\/api\/admin\/users\/([a-zA-Z0-9-]+)$/);
@@ -1409,14 +1433,23 @@ const server = http.createServer(async (req, res) => {
           let input;
           try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
           snapshot('users-change', { note: '修改用户：' + id });
+          const pre = findUserById(id);
           const r = adminUpdateUser(id, input);
-          return r.error ? json(res, 404, { ok: false, error: r.error }) : json(res, 200, { ok: true, user: r.user });
+          if (r.error) return json(res, 404, { ok: false, error: r.error });
+          auditLog(req, 'user.update', { target: r.user.email,
+            before: pre ? { nickname: pre.nickname, plan: pre.plan, expiresAt: pre.expiresAt, dailyLimit: pre.dailyLimit } : null,
+            after: { nickname: r.user.nickname, plan: r.user.planRaw, expiresAt: r.user.expiresAt, dailyLimit: r.user.dailyLimit } });
+          return json(res, 200, { ok: true, user: r.user });
         }
         if (method === 'DELETE') {
           const idx = usersStore.data.users.findIndex((u) => u.id === id);
           if (idx < 0) return json(res, 404, { ok: false, error: '用户不存在' });
           snapshot('users-change', { note: '删除用户：' + usersStore.data.users[idx].email });
-          log('user deleted:', usersStore.data.users[idx].email);
+          const victim = usersStore.data.users[idx];
+          log('user deleted:', victim.email);
+          auditLog(req, 'user.delete', { target: victim.email,
+            before: { plan: victim.plan, status: victim.status,
+              membership: (victim.membership && victim.membership.plan) || null } });
           usersStore.data.users.splice(idx, 1);
           for (const [tok, rec] of Object.entries(usersStore.data.tokens || {})) {
             if (rec && rec.userId === id) delete usersStore.data.tokens[tok];
@@ -1442,6 +1475,7 @@ const server = http.createServer(async (req, res) => {
         lockout.reset(user);
         usersStore.save();
         log('password reset:', user.email);
+        auditLog(req, 'user.password', { target: user.email, note: '同时吊销该账号全部登录令牌并解除锁定' });
         return json(res, 200, { ok: true });
       }
       // 1.4.2：一键解锁（连续失败被临时锁定的账号）
@@ -1453,6 +1487,7 @@ const server = http.createServer(async (req, res) => {
         lockout.unlock(user);
         usersStore.save();
         log('account unlocked:', user.email, '(was failCount=' + st.failCount + ')');
+        auditLog(req, 'user.unlock', { target: user.email, before: { failCount: st.failCount, locked: st.locked } });
         return json(res, 200, { ok: true, user: userAdminOut(user),
           note: st.locked ? '已解除锁定' : '该账号当前未被锁定（已顺带清零失败计数）' });
       }
@@ -1477,8 +1512,9 @@ const server = http.createServer(async (req, res) => {
           if (!input.id) id = slug(input.name || input.provider || '', 'ch');
           while (channelsStore.data.channels.some((c) => c && c.id === id)) id = id + '-2';
           const r = upsertChannel(Object.assign({}, input, { id }));
-          return r.error ? json(res, 400, { ok: false, error: r.error })
-            : json(res, 200, { ok: true, channel: channelOut(r.channel) });
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          auditLog(req, 'channel.create', { target: r.channel.id, after: channelOut(r.channel) });
+          return json(res, 200, { ok: true, channel: channelOut(r.channel) });
         }
       }
       if (url === '/api/admin/channels/active' && method === 'PUT') {
@@ -1491,6 +1527,7 @@ const server = http.createServer(async (req, res) => {
         channelsStore.data.active = id;
         channelsStore.save();
         log('active channel ->', id);
+        auditLog(req, 'channel.active', { target: id });
         return json(res, 200, { ok: true, active: id });
       }
       // 0.15.0 对外上线模型清单：{ models: [...] }（空数组 = 恢复全部上线）
@@ -1502,6 +1539,7 @@ const server = http.createServer(async (req, res) => {
         channelsStore.data.publishedModels = list;
         channelsStore.save();
         log('published models ->', JSON.stringify(list));
+        auditLog(req, 'channel.published', { target: list.length + ' 个模型', after: { models: list } });
         return json(res, 200, { ok: true, publishedModels: list,
           note: list.length ? '仅上线清单内模型（auto 恒放行）' : '已恢复全部上线' });
       }
@@ -1521,13 +1559,16 @@ const server = http.createServer(async (req, res) => {
             return json(res, 404, { ok: false, error: '通道不存在' });
           }
           const r = upsertChannel(Object.assign({}, input, { id }));
-          return r.error ? json(res, 400, { ok: false, error: r.error })
-            : json(res, 200, { ok: true, channel: channelOut(r.channel) });
+          if (r.error) return json(res, 400, { ok: false, error: r.error });
+          auditLog(req, 'channel.update', { target: r.channel.id, after: channelOut(r.channel) });
+          return json(res, 200, { ok: true, channel: channelOut(r.channel) });
         }
         if (method === 'DELETE') {
           const idx = channelsStore.data.channels.findIndex((c) => c && c.id === id);
           if (idx < 0) return json(res, 404, { ok: false, error: '通道不存在' });
-          log('channel deleted:', channelsStore.data.channels[idx].name);
+          const chName = channelsStore.data.channels[idx].name;
+          log('channel deleted:', chName);
+          auditLog(req, 'channel.delete', { target: id, before: { name: chName } });
           channelsStore.data.channels.splice(idx, 1);
           if (channelsStore.data.active === id) channelsStore.data.active = null;
           channelsStore.save();
@@ -1612,6 +1653,9 @@ const server = http.createServer(async (req, res) => {
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
         log('price item created:', r.item.plan, r.item.months + 'm', '¥' + r.item.price);
+        auditLog(req, 'price.create', { target: r.item.id, after: { plan: r.item.plan, cycle: r.item.cycle,
+          months: r.item.months, price: r.item.price, effectiveFrom: r.item.effectiveFrom,
+          effectiveTo: r.item.effectiveTo, enabled: r.item.enabled, priority: r.item.priority } });
         return json(res, 200, { ok: true, warn: r.warn || '',
           item: membership.priceItemOut(membershipStore.data, r.item),
           plans: membership.plansForClient(membershipStore.data) });
@@ -1629,6 +1673,8 @@ const server = http.createServer(async (req, res) => {
           if (r.error) return json(res, 400, { ok: false, error: r.error });
           membershipStore.save();
           log('price item deleted:', pm[1], r.item.plan, r.item.months + 'm');
+          auditLog(req, 'price.delete', { target: pm[1], before: { plan: r.item.plan, months: r.item.months,
+            price: r.item.price, cycle: r.item.cycle } });
           return json(res, 200, { ok: true, plans: membership.plansForClient(doc) });
         }
         let input;
@@ -1652,6 +1698,11 @@ const server = http.createServer(async (req, res) => {
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
         log('price item updated:', r.item.id, r.item.plan, r.item.months + 'm', '¥' + r.item.price);
+        auditLog(req, 'price.update', { target: r.item.id,
+          before: { price: cur.price, months: cur.months, enabled: cur.enabled, priority: cur.priority,
+            effectiveFrom: cur.effectiveFrom, effectiveTo: cur.effectiveTo },
+          after: { price: r.item.price, months: r.item.months, enabled: r.item.enabled, priority: r.item.priority,
+            effectiveFrom: r.item.effectiveFrom, effectiveTo: r.item.effectiveTo } });
         return json(res, 200, { ok: true, warn: r.warn || '',
           item: membership.priceItemOut(doc, r.item),
           plans: membership.plansForClient(doc) });
@@ -1663,6 +1714,8 @@ const server = http.createServer(async (req, res) => {
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
         snapshot('membership-change', { note: '改套餐额度/收款配置' });
         const doc = membershipStore.data;
+        const cfgBefore = { plans: JSON.parse(JSON.stringify(doc.plans || {})),
+          pay: JSON.parse(JSON.stringify(doc.pay || {})) };
         if (input.plans && typeof input.plans === 'object') {
           for (const [pid, p] of Object.entries(input.plans)) {
             if (!doc.plans[pid] || !p || typeof p !== 'object') continue;
@@ -1704,6 +1757,8 @@ const server = http.createServer(async (req, res) => {
         }
         membershipStore.save();
         log('membership config updated');
+        auditLog(req, 'membership.config', { target: 'plans+pay',
+          before: cfgBefore, after: { plans: input.plans || null, pay: input.pay || null } });
         return json(res, 200, { ok: true, plans: membership.plansForClient(membershipStore.data) });
       }
 
@@ -1737,6 +1792,9 @@ const server = http.createServer(async (req, res) => {
           membershipStore.save();
           usersStore.save();
           log('order fulfilled:', order.id, user.email, order.plan, order.months + 'm');
+          auditLog(req, 'order.fulfill', { target: order.id, note: '下单账号 ' + user.email,
+            after: { plan: order.plan, months: order.months, amount: order.amount,
+              expiresAt: (user.membership && user.membership.expiresAt) || null } });
           return json(res, 200, {
             ok: true, order: membership.orderOut(membershipStore.data, order),
             archiveCode: membership.codeOut(r.code), user: userAdminOut(user),
@@ -1746,6 +1804,8 @@ const server = http.createServer(async (req, res) => {
         const r = membership.cancelOrder(membershipStore.data, order, { id: order.userId }, input.reason || '管理员取消');
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
+        auditLog(req, 'order.cancel', { target: order.id, note: String((input && input.reason) || '管理员取消'),
+          before: { status: 'claimed' }, after: { status: order.status } });
         return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, order) });
       }
 
@@ -1767,6 +1827,10 @@ const server = http.createServer(async (req, res) => {
           if (r.error) return json(res, 400, { ok: false, error: r.error });
           membershipStore.save();
           log('activation codes created:', r.codes.length, input.plan, input.months + 'm');
+          auditLog(req, 'code.create', { target: r.codes.length + ' 枚',
+            note: '不记录码值本身（激活码即凭据）',
+            after: { plan: input.plan, months: input.months, count: r.codes.length,
+              boundTo: input.boundTo || null, expiresAt: input.expiresAt || null, note: input.note || '' } });
           return json(res, 200, { ok: true, codes: r.codes });
         }
       }
@@ -1780,6 +1844,7 @@ const server = http.createServer(async (req, res) => {
         membershipStore.data.codes.splice(idx, 1);
         membershipStore.save();
         log('activation code revoked:', m[1]);
+        auditLog(req, 'code.revoke', { target: m[1], before: { status: 'unused' } });
         return json(res, 200, { ok: true });
       }
 
@@ -1797,6 +1862,8 @@ const server = http.createServer(async (req, res) => {
         });
         usersStore.save();
         log('membership granted by admin:', user.email, mp.plan, mp.expiresAt);
+        auditLog(req, 'user.membership', { target: user.email, note: input.note || '',
+          after: { plan: mp.plan, expiresAt: mp.expiresAt, daysLeft: mp.daysLeft } });
         return json(res, 200, { ok: true, membership: mp, user: userAdminOut(user) });
       }
 
@@ -1813,6 +1880,7 @@ const server = http.createServer(async (req, res) => {
         const r = backup.snapshot(DATA_DIR, 'manual', { note: input && input.note, force: true });
         const pr = backup.prune(DATA_DIR);
         log('manual snapshot:', r.snapshot && r.snapshot.id, 'pruned=' + pr.removed.length);
+        auditLog(req, 'backup.create', { target: (r.snapshot && r.snapshot.id) || '', note: (input && input.note) || '' });
         return json(res, 200, { ok: true, snapshot: r.snapshot, pruned: pr.removed });
       }
       let bm = url.match(/^\/api\/admin\/backups\/([A-Za-z0-9_-]+)(\/restore)?$/);
@@ -1821,6 +1889,7 @@ const server = http.createServer(async (req, res) => {
         if (!snap) return json(res, 404, { ok: false, error: '快照不存在' });
         fs.rmSync(path.join(backup.backupRoot(DATA_DIR), bm[1]), { recursive: true, force: true });
         log('snapshot deleted:', bm[1]);
+        auditLog(req, 'backup.delete', { target: bm[1], before: { at: snap.at, reason: snap.reason } });
         return json(res, 200, { ok: true });
       }
       if (bm && method === 'POST' && bm[2]) {
@@ -1835,12 +1904,15 @@ const server = http.createServer(async (req, res) => {
         if (r.error) return json(res, 404, { ok: false, error: r.error });
         if (r.mismatched && r.mismatched.length) {
           log('RESTORE HASH MISMATCH:', r.mismatched.join(','));
+          auditLog(req, 'backup.restore', { target: bm[1], ok: false,
+            note: '回滚后校验失败：' + r.mismatched.join('、'), after: { mismatched: r.mismatched } });
           return json(res, 500, { ok: false,
             error: '回滚后校验失败：' + r.mismatched.join('、')
               + '（已保留现场快照 ' + r.safety + '，请勿继续操作）', result: r });
         }
         const counts = reloadStores();
         log('restored from:', bm[1], 'safety=' + r.safety, JSON.stringify(counts));
+        auditLog(req, 'backup.restore', { target: bm[1], note: '现场快照 ' + r.safety, after: counts });
         return json(res, 200, { ok: true, result: r, counts });
       }
 
@@ -1853,7 +1925,20 @@ const server = http.createServer(async (req, res) => {
         let input = {};
         try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
         const r = await runAlertCheck({ force: true, dryRun: !!(input && input.dryRun) });
+        auditLog(req, 'alert.check', { after: { backlog: r.backlogCount, alerted: r.alerted, mailed: r.mailed } });
         return json(res, 200, { ok: true, result: r, alerts: alertStatus() });
+      }
+
+      /* ---- 管理操作审计（1.4.4） ---- */
+
+      if (url === '/api/admin/audit' && method === 'GET') {
+        const q = new URLSearchParams((req.url.split('?')[1] || ''));
+        const items = audit.list(DATA_DIR, {
+          limit: q.get('limit'), action: q.get('action') || '', target: q.get('target') || '',
+          ok: q.has('ok') ? q.get('ok') === '1' : undefined,
+          since: q.get('since') || '', until: q.get('until') || '',
+        }).map((e) => Object.assign({}, e, { actionText: audit.labelOf(e.action) }));
+        return json(res, 200, { ok: true, items, actions: audit.ACTIONS, stats: audit.stats(DATA_DIR) });
       }
     }
 

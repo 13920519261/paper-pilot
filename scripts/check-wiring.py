@@ -94,6 +94,8 @@ for m in re.finditer(r"url\.startsWith\('([^']+)'\)", srv):
     routes.add(m.group(1) + "*")
 
 for method, norm in sorted(calls):
+    # 查询串不参与路由匹配（调用方可能把 '?limit=…' 拼进路径）
+    norm = norm.split("?")[0]
     seg = norm.split("/api/")[-1]
     probe = "*" + seg
     hit = any(seg in r or (r.endswith("*") and seg.startswith(r[:-1])) or
@@ -166,6 +168,31 @@ ok("backlogCount" in srv and "snapshots" in srv and "lastSnapshotAt" in srv,
    "6.4 health 暴露积压与快照观测字段")
 ok("preflight" in io.open(os.path.join(ROOT, "scripts", "preflight.py"), encoding="utf-8").read(),
    "6.5 存在 scripts/preflight.py")
+
+# ---------- 6b. 管理操作审计（服务端 1.4.4）----------
+AUDIT_LIB = os.path.join(ROOT, "server", "lib", "audit.js")
+ok(os.path.exists(AUDIT_LIB), "6b.1 存在 server/lib/audit.js")
+audit_src = io.open(AUDIT_LIB, encoding="utf-8").read() if os.path.exists(AUDIT_LIB) else ""
+for fn in ["entry", "redact", "append", "list", "stats", "labelOf"]:
+    ok(re.search(r"(function %s\b|const %s\s*=)" % (fn, fn), audit_src) is not None,
+       "6b.2 audit.js 定义 %s()" % fn)
+ok("SECRET_KEY" in audit_src and "***" in audit_src, "6b.3 audit.js 有密钥脱敏")
+ok("/api/admin/audit" in srv, "6b.4 服务端有审计查询路由")
+audit_calls = len(re.findall(r"auditLog\(req,", srv))
+ok(audit_calls >= 20, "6b.5 管理写操作已接审计（%d 处）" % audit_calls)
+for a in ["'user.delete'", "'order.fulfill'", "'price.update'", "'backup.restore'", "'membership.config'"]:
+    ok(a in srv, "6b.6 覆盖动作 %s" % a)
+ok("auditBytes" in srv, "6b.7 health 暴露审计日志体积")
+
+# 三方 UI 都要能看审计：Web 管理页 + 启动器
+ok('id="tab-audit"' in html and 'id="pane-audit"' in html, "6b.8 Web 管理页有审计标签页与面板")
+ok("loadAudit" in html and "exportAuditCSV" in html, "6b.9 Web 管理页有加载与导出审计")
+ok('id="audit-table"' in html and 'id="a-action"' in html and 'id="a-target"' in html,
+   "6b.10 Web 管理页审计表格与筛选控件齐备")
+for fn in ["Refresh-Audit", "Get-AuditText", "Format-Bytes", "ConvertTo-ShortJson"]:
+    ok(fn in defs, "6b.11 launcher 定义 %s" % fn)
+ok("Refresh-Audit" in ps and "/api/admin/audit" in ps, "6b.12 launcher 审计页调用审计接口")
+ok(re.search(r"\$pgAudit\s*=", ps) is not None and "审计日志" in ps, "6b.13 launcher 有审计标签页")
 
 # ---------- 7. 插件设置面板：引用的元素 id 是否真的存在于 prefs.xhtml ----------
 # 这类失误的表现就是「点了没反应」——JS 里 $("pp-xxx") 拿到 null，静默什么都不做。

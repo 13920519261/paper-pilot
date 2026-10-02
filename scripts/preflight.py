@@ -100,6 +100,7 @@ NODE_SUITES = [
     ("用量趋势", "test/usage.test.js"),
     ("会员面板渲染", "test/membership-panel.test.js"),
     ("运维三件套", "test/server-ops.test.js"),
+    ("管理操作审计", "test/audit.test.js"),
     ("历史根因探针", "test/legacy-rootcause.probe.js"),
     ("全模块加载冒烟", "test/smoke-load.test.js"),
 ]

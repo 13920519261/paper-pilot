@@ -292,6 +292,44 @@ function Format-Dt([string]$s) {
   return $t
 }
 
+# 字节数 → 可读（1.4.4 审计日志体积）
+function Format-Bytes([object]$n) {
+  $v = 0.0
+  try { $v = [double]$n } catch { $v = 0 }
+  if ($v -lt 1024) { return ([string][int]$v + ' B') }
+  if ($v -lt 1048576) { return ([string][math]::Round($v / 1024, 1) + ' KB') }
+  return ([string][math]::Round($v / 1048576, 2) + ' MB')
+}
+
+# 审计条目里的 before/after 压缩成一行（太长会撑爆列表列宽）
+function ConvertTo-ShortJson([object]$o) {
+  if ($null -eq $o) { return '' }
+  $s = ''
+  try { $s = ($o | ConvertTo-Json -Compress -Depth 4) } catch { return '' }
+  if (-not $s) { return '' }
+  if ($s.Length -gt 90) { return $s.Substring(0, 90) + '…' }
+  return $s
+}
+
+# 审计动作中文名（与服务端 lib/audit.js 的 ACTIONS 对齐；未知动作原样返回）
+function Get-AuditText([string]$a) {
+  $map = @{
+    'user.create' = '新建用户'; 'user.update' = '修改用户'; 'user.password' = '重置密码'
+    'user.delete' = '删除用户'; 'user.unlock' = '解除登录锁定'; 'user.membership' = '开通/续期会员'
+    'price.create' = '新增价格条目'; 'price.update' = '修改价格条目'; 'price.delete' = '删除价格条目'
+    'membership.config' = '修改会员/收款配置'
+    'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'
+    'code.create' = '生成激活码'; 'code.revoke' = '作废激活码'
+    'backup.create' = '手动打快照'; 'backup.restore' = '回滚数据'; 'backup.delete' = '删除快照'
+    'alert.check' = '手动巡检积压告警'
+    'channel.create' = '新增模型通道'; 'channel.update' = '修改模型通道'
+    'channel.delete' = '删除模型通道'; 'channel.active' = '切换活动通道'
+    'channel.published' = '修改上线模型清单'
+  }
+  if ($map.ContainsKey($a)) { return $map[$a] }
+  return $a
+}
+
 # 订单状态 → 中文（0.23.0）
 function Get-OrderStatusText([string]$st) {
   if ($st -eq 'pending')   { return '待支付' }
@@ -1316,7 +1354,7 @@ function Show-PriceForm($parent, $editing) {
 function Show-MembershipManager {
   if (-not (Require-ServerRunning)) { return }
   $dlg = New-Object System.Windows.Forms.Form
-  $dlg.Text = '会员管理（订单 / 激活码 / 套餐配置）'
+  $dlg.Text = '会员管理（订单 / 激活码 / 价格与周期 / 套餐与收款 / 审计日志）'
   $dlg.ClientSize = New-Object System.Drawing.Size(900, 580)
   $dlg.StartPosition = 'CenterParent'
   $dlg.MinimizeBox = $false
@@ -1456,6 +1494,8 @@ function Show-MembershipManager {
     } catch {
       [System.Windows.Forms.MessageBox]::Show('加载会员数据失败：' + (Get-HttpErrorDetail $_), '错误', 'OK', 'Warning') | Out-Null
     }
+    # 审计页顺带刷新（同一套 /api/admin/audit；失败只在顶部提示，不打断其他页）
+    try { Refresh-Audit } catch { }
   }
 
   New-MbBtn $pgOrder '核销开通（叠加会员）' 8 420 170 {
@@ -1711,6 +1751,80 @@ function Show-MembershipManager {
   $lblPTip.SetBounds(16, 320, 830, 40)
   [void]$pgPlan.Controls.Add($lblPTip)
 
+  # ---------------- 页 5：审计日志（服务端 1.4.4） ----------------
+  # 记录所有管理写操作（核销/改价/删用户/回滚/改配置…）：时间、对象、来源、前后值。
+  # 密钥与密码永不写入；激活码也不记码值本身。同一套数据也能在 Web 管理页「审计日志」里看。
+  $pgAudit = New-Object System.Windows.Forms.TabPage
+  $pgAudit.Text = '审计日志'
+  [void]$tabs.TabPages.Add($pgAudit)
+
+  $lvA = New-Object System.Windows.Forms.ListView
+  $lvA.View = 'Details'; $lvA.FullRowSelect = $true; $lvA.HideSelection = $false
+  $lvA.SetBounds(8, 40, 848, 372)
+  [void]$lvA.Columns.Add('时间', 140)
+  [void]$lvA.Columns.Add('操作', 120)
+  [void]$lvA.Columns.Add('对象', 190)
+  [void]$lvA.Columns.Add('来源', 90)
+  [void]$lvA.Columns.Add('说明 / 前后值', 300)
+  [void]$pgAudit.Controls.Add($lvA)
+
+  $lblAF = New-Object System.Windows.Forms.Label
+  $lblAF.Text = '筛选'; $lblAF.SetBounds(10, 13, 34, 20)
+  [void]$pgAudit.Controls.Add($lblAF)
+  $cmbAAct = New-Object System.Windows.Forms.ComboBox
+  $cmbAAct.DropDownStyle = 'DropDownList'
+  $cmbAAct.SetBounds(46, 10, 240, 24)
+  [void]$cmbAAct.Items.Add('全部操作')
+  $cmbAAct.SelectedIndex = 0
+  [void]$pgAudit.Controls.Add($cmbAAct)
+  $txtATgt = New-Object System.Windows.Forms.TextBox
+  $txtATgt.SetBounds(296, 10, 240, 24)
+  [void]$pgAudit.Controls.Add($txtATgt)
+  $lblATip = New-Object System.Windows.Forms.Label
+  $lblATip.Text = '对象可填邮箱 / 订单号 / 条目 id'
+  $lblATip.ForeColor = [System.Drawing.Color]::DimGray
+  $lblATip.SetBounds(544, 13, 240, 20)
+  [void]$pgAudit.Controls.Add($lblATip)
+
+  function Refresh-Audit {
+    try {
+      $q = 'limit=200'
+      if ($cmbAAct.SelectedIndex -gt 0) { $q = $q + '&action=' + [uri]::EscapeDataString([string]$cmbAAct.SelectedItem) }
+      if ($txtATgt.Text.Trim()) { $q = $q + '&target=' + [uri]::EscapeDataString($txtATgt.Text.Trim()) }
+      $r = Invoke-AdminApi 'GET' ('/api/admin/audit?' + $q)
+      # 首次拉到动作表后填充下拉（保留当前选择）
+      if ($cmbAAct.Items.Count -le 1 -and $r.actions) {
+        foreach ($k in $r.actions.PSObject.Properties.Name) { [void]$cmbAAct.Items.Add($k) }
+      }
+      $lvA.Items.Clear()
+      foreach ($e in @($r.items)) {
+        $it = New-Object System.Windows.Forms.ListViewItem((Format-Dt ([string]$e.at)))
+        [void]$it.SubItems.Add((Get-AuditText ([string]$e.action)))
+        [void]$it.SubItems.Add([string]$e.target)
+        [void]$it.SubItems.Add([string]$e.ip)
+        $parts = @()
+        if ($e.note) { $parts += [string]$e.note }
+        if ($e.before -and $e.after) { $parts += ('前 ' + (ConvertTo-ShortJson $e.before) + ' → 后 ' + (ConvertTo-ShortJson $e.after)) }
+        elseif ($e.after) { $parts += (ConvertTo-ShortJson $e.after) }
+        elseif ($e.before) { $parts += ('前 ' + (ConvertTo-ShortJson $e.before)) }
+        [void]$it.SubItems.Add(($parts -join '；'))
+        [void]$lvA.Items.Add($it)
+      }
+      $st = $r.stats
+      $lblTop.Text = '审计日志 ' + @($r.items).Count + ' 条 · 体积 ' + (Format-Bytes $st.bytes) + ' / 上限 ' + (Format-Bytes $st.maxBytes)
+    } catch {
+      $lblTop.Text = '审计日志读取失败：' + (Get-HttpErrorDetail $_)
+    }
+  }
+  New-MbBtn $pgAudit '刷新' 300 416 70 { Refresh-Audit }
+  New-MbBtn $pgAudit '关闭' 760 416 96 { $dlg.Close() }
+
+  $lblATip2 = New-Object System.Windows.Forms.Label
+  $lblATip2.Text = '一行一条 JSON，落在 server\data\audit.log（本地文件，不进 git）；超过 2MB 自动轮转成 audit.log.1。'
+  $lblATip2.ForeColor = [System.Drawing.Color]::DimGray
+  $lblATip2.SetBounds(16, 446, 830, 20)
+  [void]$pgAudit.Controls.Add($lblATip2)
+
   Refresh-Membership
   [void]$dlg.ShowDialog($form)
   $dlg.Dispose()
@@ -1837,7 +1951,7 @@ $btnChPage = New-Btn $grpLlm '打开浏览器管理页' 226 64 208 {
 $grpUser = New-Group '账号管理' 314 96
 $btnReg = New-Btn $grpUser '注册账号' 10 24 208 { Show-RegisterUser }
 $btnUsers = New-Btn $grpUser '用户列表（会员/密码/删除）' 226 24 208 { Show-UserList }
-$btnMember = New-Btn $grpUser '会员管理（订单核销 / 激活码 / 套餐与收款）' 10 58 424 { Show-MembershipManager }
+$btnMember = New-Btn $grpUser '会员管理（订单核销 / 激活码 / 价格 / 收款 / 审计）' 10 58 424 { Show-MembershipManager }
 
 # 分组 4：维护
 $grpOps = New-Group '维护' 418 94

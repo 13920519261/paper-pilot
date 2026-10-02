@@ -325,6 +325,46 @@ function req(method, p, body, token) {
     ok(typeof health2.priceActive === 'number' && health2.priceActive === 3,
       'E19.1 health 反映生效价格数 = 3', health2.priceActive);
 
+    /* ---- 服务端 1.4.4：审计日志标签页（放在流程末尾，此时已积累多种管理操作） ---- */
+    await page.click('#tab-audit');
+    await page.waitForSelector('#audit-table tbody tr', { timeout: 5000 });
+    const auditRows = await page.locator('#audit-table tbody tr').count();
+    ok(auditRows >= 6, 'E20.1 审计页列出记录（核销/改价/套餐配置等）', auditRows);
+    const auditTxt = await page.textContent('#audit-table tbody');
+    ok(auditTxt.indexOf('127.0.0.1') >= 0, 'E20.2 审计行含来源 IP', auditTxt.slice(0, 140));
+    ok(/成功|失败/.test(auditTxt), 'E20.3 每行标了结果');
+    ok(auditTxt.indexOf('核销') >= 0, 'E20.4 有核销订单的记录');
+    const actOpts = await page.evaluate(() => document.getElementById('a-action').options.length);
+    ok(actOpts > 5, 'E20.5 操作类型下拉被填充', actOpts);
+    const statTxt = await page.textContent('#a-stat');
+    ok(/日志体积/.test(statTxt), 'E20.6 显示日志体积与上限', statTxt);
+
+    // 筛选：只看核销
+    await page.selectOption('#a-action', 'order.fulfill');
+    await page.click('button:has-text("应用筛选")');
+    await page.waitForTimeout(400);
+    const filtered = await page.locator('#audit-table tbody tr').count();
+    ok(filtered === 1 && filtered < auditRows, 'E20.7 按动作筛选只剩核销记录', { auditRows, filtered });
+    await page.selectOption('#a-action', '');
+    await page.click('button:has-text("应用筛选")');
+    await page.waitForTimeout(400);
+
+    const dl2 = page.waitForEvent('download', { timeout: 8000 });
+    await page.click('button:has-text("导出 CSV")');
+    const auditDl = await dl2;
+    ok(/^paperpilot-audit-\d{4}-\d{2}-\d{2}\.csv$/.test(auditDl.suggestedFilename()),
+      'E20.8 审计 CSV 文件名规范', auditDl.suggestedFilename());
+    const auditCsv = fs.readFileSync(await auditDl.path(), 'utf8');
+    ok(auditCsv.indexOf('时间,操作,动作代码') > 0, 'E20.9 审计 CSV 表头正确',
+      auditCsv.split(/\r?\n/)[0].slice(0, 60));
+    ok(auditCsv.indexOf('order.fulfill') > 0, 'E20.10 审计 CSV 含核销记录');
+    ok(auditCsv.indexOf('sk-') < 0 && auditCsv.indexOf('$2b$') < 0,
+      'E20.11 审计 CSV 不含密钥或密码散列片段');
+
+    const SHOT_AUDIT = path.join(os.tmpdir(), 'pp-admin-audit.png');
+    await page.screenshot({ path: SHOT_AUDIT, fullPage: true });
+    ok(true, 'E20.12 审计页截图: ' + SHOT_AUDIT);
+
     await page.click('#tab-membership');
     await page.waitForTimeout(400);
     await page.screenshot({ path: SHOT, fullPage: true });
