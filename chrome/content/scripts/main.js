@@ -1,7 +1,7 @@
 /* PaperPilot 主入口：装配各模块
  * 由 bootstrap.js 通过 Services.scriptloader 加载，共享 bootstrap 作用域
  */
-/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, _ppDiag */
+/* global Zotero, Services, Prefs, RankColumn, CitationColumn, S2Client, AIChatPane, GlancePane, Menus, ReaderPopup, AIProviders, Account, Channels, AIClient, AIChat, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ReadingState, AutoTag, Matrix, Annotations, CollectionStats, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, Prompts, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch, _ppDiag */
 
 Zotero.PaperPilot = {
   id: null,
@@ -55,6 +55,10 @@ Zotero.PaperPilot = {
       "features/oa-fetch.js",
       "features/anki-export.js",
       "features/lib-graph.js",
+      // 0.22.0 库内问答 / 标签治理 / 附件体检
+      "features/lib-search.js",
+      "features/tag-curator.js",
+      "features/attach-doctor.js",
       "features/ui-theme.js",
       "features/pdf-theme.js",
       "columns/rank-column.js",
@@ -113,6 +117,10 @@ Zotero.PaperPilot = {
     this.oaFetch = OAFetch;
     this.ankiExport = AnkiExport;
     this.libGraph = LibGraph;
+    // 0.22.0 库内问答 / 标签治理 / 附件体检（功能中心与 lib-ask 窗口经此访问）
+    this.libSearch = LibSearch;
+    this.tagCurator = TagCurator;
+    this.attachDoctor = AttachDoctor;
     // 0.13.0 工作台 2.0 需要：Prompt 技能库
     this.prompts = Prompts;
     // 0.16.0 主题系统：设置面板脚本经此访问主题库与切换接口

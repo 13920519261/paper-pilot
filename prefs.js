@@ -112,3 +112,7 @@ pref("extensions.zotero.paperpilot.compareSyncZoom", false);
 // 12 秒后把每个面板的加载结果（是否挂上 pdf.js 视图/页数/提示语）写进
 // paperpilot-boot.log ——「面板空白」这类静默失败靠它定位，验完请改回 false
 pref("extensions.zotero.paperpilot.compareSelfTest", false);
+// 0.22.0 新增：库内问答（候选上下文预算，字符数；超出后其余候选仅列标题）
+pref("extensions.zotero.paperpilot.libSearchContextChars", 12000);
+// 0.22.0 新增：库内问答默认候选上限（可被对话框内输入覆盖）
+pref("extensions.zotero.paperpilot.libSearchTopN", 8);

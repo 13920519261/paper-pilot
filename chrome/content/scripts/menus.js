@@ -1,5 +1,5 @@
 /* PaperPilot 菜单：工具菜单 + 条目右键子菜单 + 分类右键 */
-/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme, PdfCompare */
+/* global Zotero, Services, Prefs, AIChat, AIClient, I18n, Notes, Annotations, AutoTag, Matrix, CollectionStats, Channels, CitationColumn, RuleTag, CitationTrace, FakeCheck, SmartCleanup, MetaEnrich, ItemSel, BilingualTranslate, CNMeta, CNTranslators, CNFetch, CNVerify, ReadingState, NoteTemplates, AttachManager, MindMap, ReviewGen, MetaLint, OAFetch, AnkiExport, LibGraph, UiTheme, PdfTheme, PdfCompare, TagCurator, AttachDoctor, LibSearch */
 
 var Menus = {
   _nodes: [], // 记录注入的 DOM 节点，shutdown 时移除
@@ -34,6 +34,9 @@ var Menus = {
     if (toolsPopup) {
       const t0 = this._menuItem(doc, toolsPopup, "paperpilot-menu-hub", "menuHub",
         () => Zotero.PaperPilot.openHub());
+      // 0.22.0：库内问答——问整个文献库（library-wide，与条目选中无关）
+      const t0b = this._menuItem(doc, toolsPopup, "paperpilot-menu-lib-ask", "menuLibAsk",
+        () => LibSearch.openDialog());
       const t1 = this._menuItem(doc, toolsPopup, "paperpilot-menu-conn-test", "menuConnTest",
         () => this.testConnection());
       // AI 模型通道快速切换（popupshowing 时动态填充；0.14.0 取代配置快照菜单）
@@ -76,7 +79,7 @@ var Menus = {
       // 等开源插件也把外观入口放在视图侧）；视图菜单缺失时回退到工具菜单。
       const viewPopup = doc.getElementById("menu_ViewPopup");
       (viewPopup || toolsPopup).appendChild(themeMenu);
-      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu);
+      this._track(t0); this._track(t1); this._track(pmenu); this._track(t2); this._track(t3); this._track(t4); this._track(t5); this._track(themeMenu); this._track(t0b);
     }
 
     // ---- 条目右键：PaperPilot 子菜单 ----
@@ -164,6 +167,13 @@ var Menus = {
         () => OAFetch.runForSelected());
       this._menuItem(doc, popup, "paperpilot-itemmenu-attach-rename", "menuAttachRename",
         () => AttachManager.runForSelected());
+      // ---- 0.22.0 库健康/治理增强 ----
+      this._menuItem(doc, popup, "paperpilot-itemmenu-attach-doctor", "menuAttachDoctor",
+        () => AttachDoctor.run());
+      this._menuItem(doc, popup, "paperpilot-itemmenu-tag-curator", "menuTagCurator",
+        () => TagCurator.run(false));
+      this._menuItem(doc, popup, "paperpilot-itemmenu-tag-normalize", "menuTagNormalize",
+        () => TagCurator.run(true));
       popup.appendChild(this._xul(doc, "menuseparator"));
       this._menuItem(doc, popup, "paperpilot-itemmenu-state-unread", "menuStateUnread",
         () => ReadingState.markForSelected("未读"));

@@ -30,12 +30,21 @@
 
   const panes = [];        // 面板记录
   let layout = (args.prefs && args.prefs.layout) || "auto";
+  // 排障追踪：仅在自检开关打开时记录（PdfCompare 传 trace）
+  const TRACE = !!args.trace;
+  const traceLog = [];
+  const traceT0 = Date.now();
+  function trace(msg) {
+    if (!TRACE) return;
+    if (traceLog.length < 90) traceLog.push((Date.now() - traceT0) + "ms " + msg);
+  }
   // 默认「各滚各的」（0.21.2 起）：对比场景下两篇的页码/进度本就不一致，
   // 强制联动反而碍事；需要跟读时在工具栏勾「同步滚动」。
   let syncScroll = !!(args.prefs && args.prefs.syncScroll === true);
   let syncZoom = !!(args.prefs && args.prefs.syncZoom);
   let activeIdx = -1;
   let zoomGuard = false;
+  let lastResult = "";     // 结果条当前内容（复制按钮用）
 
   /* ---------------- DOM 小工具 ---------------- */
 
@@ -92,8 +101,20 @@
     const titleEl = html("div",
       "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" +
       "font-size:11.5px;color:var(--fill-primary,#222);", "");
-    const pageEl = html("span",
-      "flex:0 0 auto;font-size:11px;color:var(--fill-secondary,#666);white-space:nowrap;", "");
+
+    // 页码导航：◀ [输入框] / 总数 ▶（跳页只看滚动条太笨）
+    const prevBtn = html("button", "flex:0 0 auto;font-size:10px;padding:0 5px;line-height:1.4;");
+    prevBtn.textContent = "◀";
+    prevBtn.title = T("comparePrevPage");
+    const pageInput = html("input",
+      "flex:0 0 auto;width:38px;font-size:11px;padding:0 2px;text-align:center;");
+    pageInput.type = "text";
+    pageInput.title = T("compareJumpPageHint");
+    const pageTotal = html("span",
+      "flex:0 0 auto;font-size:11px;color:var(--fill-secondary,#666);white-space:nowrap;", "/ –");
+    const nextBtn = html("button", "flex:0 0 auto;font-size:10px;padding:0 5px;line-height:1.4;");
+    nextBtn.textContent = "▶";
+    nextBtn.title = T("compareNextPage");
 
     const openBtn = html("button",
       "flex:0 0 auto;font-size:11px;padding:0 7px;");
@@ -107,7 +128,10 @@
 
     header.appendChild(idxBadge);
     header.appendChild(titleEl);
-    header.appendChild(pageEl);
+    header.appendChild(prevBtn);
+    header.appendChild(pageInput);
+    header.appendChild(pageTotal);
+    header.appendChild(nextBtn);
     header.appendChild(openBtn);
     header.appendChild(closeBtn);
 
@@ -127,14 +151,18 @@
     const rec = {
       attID: pdf.id,
       title: pdf.title || "",
-      wrapper, header, browser, titleEl, pageEl, openBtn, closeBtn,
+      wrapper, header, browser, titleEl, openBtn, closeBtn,
+      pageInput, pageTotal, prevBtn, nextBtn, pageEl: pageInput,
       reader: null, viewer: null, loaded: false,
+      curPage: 1, curIntra: 0, pagesCount: 0, userScaleValue: null,
     };
     panes.push(rec);
 
     titleEl.textContent = paneTitle(rec);
+    pageInput.value = "1";
+    pageInput.disabled = true;
 
-    // 点面板任意处置为「当前面板」（焦点面板）——非同步缩放时只作用于它
+    // 点面板任意处置为「当前面板」（焦点面板）——非同步缩放/翻页只作用于它
     wrapper.addEventListener("mousedown", () => { setActive(rec); }, true);
     wrapper.addEventListener("focusin", () => { setActive(rec); }, true);
 
@@ -142,6 +170,16 @@
       try { Zotero.Reader.open(rec.attID); } catch (e) { /* ignore */ }
     });
     closeBtn.addEventListener("click", () => removePane(rec));
+    prevBtn.addEventListener("click", () => stepPage(rec, -1));
+    nextBtn.addEventListener("click", () => stepPage(rec, +1));
+    const doJump = () => {
+      const n = parseInt(String(pageInput.value).replace(/[^\d]/g, ""), 10);
+      if (n >= 1) gotoPage(rec, n);
+    };
+    pageInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); doJump(); }
+    });
+    pageInput.addEventListener("blur", () => { syncPageUi(rec); });
 
     stage().appendChild(wrapper);
     applyLayout();
@@ -166,8 +204,11 @@
   function removePane(rec) {
     const i = panes.indexOf(rec);
     if (i < 0) return;
+    try { if (rec._ro) rec._ro.disconnect(); } catch (e) { /* ignore */ }
+    for (const k of ["_ensureTimerA", "_ensureTimer", "_ensureTimer2"]) {
+      try { if (rec[k]) clearTimeout(rec[k]); } catch (e) { /* ignore */ }
+    }
     try { if (rec.reader && rec.reader.uninit) rec.reader.uninit(); } catch (e) { /* ignore */ }
-    try { if (rec.unsub) rec.unsub(); } catch (e) { /* ignore */ }
     try { rec.wrapper.remove(); } catch (e) { /* ignore */ }
     panes.splice(i, 1);
     if (activeIdx >= panes.length) activeIdx = panes.length - 1;
@@ -276,15 +317,60 @@
   }
 
   /** 确保面板可正常滚动：连续垂直模式 + 解禁 overflow。
-   *  缩放会重建页面布局，故每次缩放后也要再确认一次。 */
+   *  缩放/窗口尺寸变化都会重建页面布局，故每次都要再确认一次。 */
   function ensureScrollable(rec) {
     const v = rec && rec.viewer;
     if (!v) return;
+    let before = -1, after = -1;
     try {
-      // 0 = pdf.js ScrollMode.VERTICAL；已是目标值时为 no-op（内部的 setter 会自行短路）
+      before = v.viewer.scrollMode;
+      // 0 = pdf.js ScrollMode.VERTICAL；已是目标值时为 no-op（内部 setter 会自行短路）
       if (v.viewer.scrollMode !== 0) v.viewer.scrollMode = 0;
+      after = v.viewer.scrollMode;
     } catch (e) { /* ignore */ }
     unclampViewer(v);
+    // 阅读器在尺寸变化时会把 scale 打回 page-height：用户手动设过的固定缩放要还原
+    if (rec.userScaleValue) {
+      try {
+        if (String(v.viewer.currentScaleValue) !== rec.userScaleValue) {
+          v.viewer.currentScaleValue = rec.userScaleValue;
+        }
+      } catch (e) { /* ignore */ }
+    }
+    if (TRACE && (before !== after || before !== 0)) {
+      trace("ensureScrollable #" + (panes.indexOf(rec) + 1) + " scrollMode " + before + "->" + after +
+        " pageEls=" + pagesIn(rec) + " scale=" + scaleOf(rec));
+    }
+  }
+
+  function pagesIn(rec) {
+    try { return rec.viewer.win.document.querySelectorAll(".page").length; } catch (e) { return -1; }
+  }
+  function scaleOf(rec) {
+    try { return String(rec.viewer.viewer.currentScaleValue).slice(0, 10); } catch (e) { return "?"; }
+  }
+
+  /**
+   * 延迟兜底（0.21.3 关键修复）：
+   * 用户报「第一次打开能滚，全屏后滚不动」。实测最大化后
+   * `scrollMode` 0→3、`.page` 20→1、`maxScroll` 9435→7、scale 被打回 page-height
+   * ——**阅读器在窗口尺寸变化时会重套自己的视图状态**，而原来的三处兜底
+   * （pagesloaded／缩放后／开窗 800ms）都不覆盖 resize。
+   * 这里做两次延迟确认：300ms 抓住即时重套，1200ms 抓住滞后重套。
+   */
+  function scheduleEnsure(rec) {
+    try {
+      if (TRACE) {
+        trace("scheduleEnsure #" + (panes.indexOf(rec) + 1) + " (sm=" +
+          (rec.viewer ? rec.viewer.viewer.scrollMode : "-") + ")");
+      }// 三个时间点各试一次：120ms 抓「打回得早」的情况，400ms 抓常规，
+      // 1200ms 抓滞后重套。实测最大化后阅读器在 ~300ms 内完成重套，
+      // 120ms 这一拍常是 no-op，真正生效的是 400ms 那拍，故恢复 <700ms。
+      for (const [key, ms] of [["_ensureTimerA", 120], ["_ensureTimer", 400], ["_ensureTimer2", 1200]]) {
+        if (rec[key]) clearTimeout(rec[key]);
+        rec[key] = setTimeout(() => { rec[key] = null; ensureScrollable(rec); }, ms);
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function hookViewer(rec, v) {
@@ -299,15 +385,238 @@
       v.app.eventBus.on("updateviewarea", (ev) => {
         try {
           const loc = (ev && ev.location) || {};
-          const total = v.viewer.pagesCount || "?";
-          rec.pageEl.textContent = loc.pageNumber ? (loc.pageNumber + " / " + total) : "";
+          rec.pagesCount = v.viewer.pagesCount || 0;
+          rec.curPage = loc.pageNumber || 1;
+          rec.curIntra = intraPageFraction(rec);
+          syncPageUi(rec);
         } catch (e) { /* ignore */ }
-      });
-      v.app.eventBus.on("scalechanging", () => onPaneScale(rec));
+      });      v.app.eventBus.on("scalechanging", () => onPaneScale(rec));
       // 文档页布局完成后（首次 + 缩放后）再确认一次连续滚动
-      v.app.eventBus.on("pagesloaded", () => ensureScrollable(rec));
+      v.app.eventBus.on("pagesloaded", () => scheduleEnsure(rec));
+      // ★ 被外力改回单页模式（resize 时阅读器重套状态）时立刻拉回，
+      //   事件驱动、无轮询；我们把它设回 0 时 mode===0 会提前返回，不会自激。
+      v.app.eventBus.on("scrollmodechanged", (ev) => {
+        const m = ev && ev.mode;
+        trace("scrollmodechanged mode=" + m);
+        if (m === 0 || m === undefined) return;
+        scheduleEnsure(rec);
+      });
       rec._scaleEvtHooked = true;
-    } catch (e) { /* eventBus 缺失时同步缩放降级为仅工具栏按钮生效 */ }
+      trace("eventBus hooks #" + (panes.indexOf(rec) + 1));
+    } catch (e) { /* eventBus 缺失时同步缩放降级为仅工具栏按钮生效 */ trace("eventBus hook ERR " + (e && e.message)); }
+    // 尺寸变化兜底：面板盒子或整个窗口变化都覆盖（最大化/还原/拖拽/切布局）
+    try {
+      const RO = window.ResizeObserver || ResizeObserver;
+      if (RO) {
+        rec._ro = new RO(() => { trace("ResizeObserver #" + (panes.indexOf(rec) + 1)); scheduleEnsure(rec); });
+        rec._ro.observe(rec.browser);
+        trace("ResizeObserver observed #" + (panes.indexOf(rec) + 1));
+      } else trace("no ResizeObserver");
+    } catch (e) { trace("RO ERR " + (e && e.message)); }
+    try {
+      v.win.addEventListener("resize", () => { trace("viewer resize #" + (panes.indexOf(rec) + 1)); scheduleEnsure(rec); });
+    } catch (e) { /* ignore */ }
+  }
+
+  /* ---------------- 页码：几何 / 导航 / 跟随 ---------------- */
+
+  /** 某个页元素相对滚动容器内容顶部的偏移（跨隔间用 rect 差值，最稳） */
+  function pageOffsetTop(pageEl, container) {
+    try {
+      return (pageEl.getBoundingClientRect().top - container.getBoundingClientRect().top) + container.scrollTop;
+    } catch (e) { return null; }
+  }
+
+  function pageElByNumber(rec, n) {
+    try {
+      return rec.viewer.win.document.querySelector('.page[data-page-number="' + n + '"]');
+    } catch (e) { return null; }
+  }
+
+  /** 当前阅读位置：顶页页码 + 页内比例（0~1）。
+   *  ⚠️ 不能用 `pdfViewer.currentPageNumber`：它由 pdf.js 自己的 scroll 处理器更新，
+   *  轮到我们时可能还是旧值（程序化滚动 / 事件排队时实测滞后，会把对齐算到错的页）。
+   *  这里改成**几何二分**求「最后一个顶边 ≤ scrollTop 的页」——页偏移随页码单调递增，
+   *  永远拿到即时值，且是 O(log n)，千页文档也不卡。 */
+  function currentPosition(rec) {
+    const v = rec && rec.viewer;
+    if (!v || !v.container) return null;
+    const total = rec.pagesCount || 0;
+    const st = v.container.scrollTop;
+    const at = (n) => {
+      const el = pageElByNumber(rec, n);
+      if (!el) return null;
+      const top = pageOffsetTop(el, v.container);
+      if (top === null) return null;
+      return { el, top, h: el.offsetHeight || 1 };
+    };
+    let page = 0;
+    let info = null;
+    if (total > 0) {
+      let lo = 1, hi = total, bestN = 0, bestI = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const cur = at(mid);
+        if (!cur) break;               // 页元素还没布局出来：放弃二分，退回 hint
+        if (cur.top <= st) { bestN = mid; bestI = cur; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      if (bestN) { page = bestN; info = bestI; }
+    }
+    if (!page) { page = rec.curPage || 1; info = at(page); }
+    const intra = info ? Math.min(1, Math.max(0, (st - info.top) / info.h)) : 0;
+    return { page, intra };
+  }
+
+  /** 当前页内滚动了多少（0~1） */
+  function intraPageFraction(rec) {
+    const pos = currentPosition(rec);
+    return pos ? pos.intra : 0;
+  }
+
+  /** 滚到指定页 + 页内比例（0~1）；页码越界自动收敛到该面板的合法范围 */
+  function gotoPage(rec, n, intra) {
+    const v = rec && rec.viewer;
+    if (!v || !v.container) return false;
+    const total = rec.pagesCount || v.viewer.pagesCount || 0;
+    if (!total) return false;
+    let want = Math.round(n);
+    if (!isFinite(want)) return false;
+    want = Math.min(total, Math.max(1, want));
+    const el = pageElByNumber(rec, want);
+    if (!el) {
+      // 页元素还没布局出来（懒加载）：退回 pdf.js 的页码接口
+      try { v.viewer.currentPageNumber = want; } catch (e) { /* ignore */ }
+      return false;
+    }
+    const top = pageOffsetTop(el, v.container);
+    if (top === null) return false;
+    const target = Math.max(0, Math.round(top + (Number(intra) || 0) * (el.offsetHeight || 0)));
+    if (Math.abs(v.container.scrollTop - target) < 1) return true;
+    markSkip(rec);
+    v.container.scrollTop = target;
+    // pdf.js 的 currentPageNumber 会随滚动自行更新，无需手动写
+    rec.curPage = want;
+    syncPageUi(rec);
+    return true;
+  }
+
+  function stepPage(rec, delta) {
+    if (!rec.viewer) { setStatus(T("compareNotReady")); return; }
+    gotoPage(rec, (rec.curPage || 1) + delta, 0);
+    setActive(rec);
+  }
+
+  /** 页码 UI 与实际状态对齐（输入框在用户编辑时不覆盖） */
+  function syncPageUi(rec) {
+    try {
+      if (!rec.pageInput) return;
+      const total = rec.pagesCount || 0;
+      if (document.activeElement !== rec.pageInput) rec.pageInput.value = String(rec.curPage || 1);
+      rec.pageInput.disabled = !total;
+      rec.pageTotal.textContent = "/ " + (total || "–");
+      if (rec.prevBtn) rec.prevBtn.disabled = (rec.curPage || 1) <= 1;
+      if (rec.nextBtn) rec.nextBtn.disabled = total > 0 && (rec.curPage || 1) >= total;
+    } catch (e) { /* ignore */ }
+  }
+
+  /** 「对齐到当前页」：所有面板跳到当前聚焦面板的页码（+同样的页内位置） */
+  function alignToActive() {
+    const src = panes[activeIdx >= 0 ? activeIdx : 0];
+    if (!src || !src.viewer) { setStatus(T("compareNotReady")); return; }
+    const page = src.curPage || 1;
+    const intra = intraPageFraction(src);
+    let n = 0;
+    for (const p of panes) {
+      if (p === src || !p.viewer) continue;
+      if (gotoPage(p, page, intra)) n++;
+    }
+    setStatus(T("compareAligned").replace("%n", String(page)).replace("%c", String(n)));
+  }
+
+  /* ---------------- 页面文本（补偿预览无文本层） ---------------- */
+
+  /** 把参数克隆到 pdf.js 所在隔间。
+   *  `getPageData` 内部会把参数结构化克隆给 worker；从 chrome 隔间直接传普通对象
+   *  会报 "The object could not be cloned."（实测踩过），必须 cloneInto 过去。 */
+  function contentArg(obj, win, dbg) {
+    const Cu = (typeof Components !== "undefined" && Components && Components.utils) || null;
+    if (!Cu || !Cu.cloneInto) { if (dbg) dbg.argHow = "raw(no Cu)"; return obj; }
+    const scopes = [];
+    try { if (win && win.wrappedJSObject) scopes.push(win.wrappedJSObject); } catch (e) { /* ignore */ }
+    try { if (win) scopes.push(win); } catch (e) { /* ignore */ }
+    for (const s of scopes) {
+      try {
+        const a = Cu.cloneInto(obj, s);
+        if (dbg) dbg.argHow = "cloneInto";
+        return a;
+      } catch (e) {
+        if (dbg && !dbg.cloneErr) dbg.cloneErr = String(e && e.message);
+      }
+    }
+    if (dbg) dbg.argHow = "raw(fallback)";
+    return obj;
+  }
+
+  /** 取某页文本。预览没有文本层（textLayerMode=0，不能划词/复制/搜索），
+   *  这是硬约束下唯一能拿回文字的口子。走 Zotero 给 pdf.js 打的补丁接口
+   *  `pdfDocument.getPageData({pageIndex})` → `{ chars }`（阅读器朗读功能同款），
+   *  字符对象字段：`c` / `ignorable` / `spaceAfter` / `lineBreakAfter` / `paragraphBreakAfter`。
+   *  实测标准 `getTextContent` 在本机是 undefined（Xray 包裹），故仅作兜底。 */
+  async function pageText(rec, pageNo, dbg) {
+    const app = rec && rec.viewer && rec.viewer.app;
+    const win = rec && rec.viewer && rec.viewer.win;
+    if (dbg) {
+      dbg.hasApp = !!app;
+      try { dbg.hasPdfDoc = !!(app && app.pdfDocument); } catch (e) { dbg.hasPdfDoc = "ERR"; }
+      try { dbg.getPageDataType = app && app.pdfDocument && typeof app.pdfDocument.getPageData; } catch (e) { dbg.getPageDataType = "ERR:" + e.message; }
+    }
+    if (!app || !app.pdfDocument) return "";
+    const total = rec.pagesCount || app.pdfViewer.pagesCount || 0;
+    const n = Math.min(total || 1, Math.max(1, Math.round(pageNo || 1)));
+    if (dbg) dbg.pageNo = n;
+
+    try {
+      if (typeof app.pdfDocument.getPageData === "function") {
+        const arg = contentArg({ pageIndex: n - 1 }, win, dbg);
+        const data = await app.pdfDocument.getPageData(arg);
+        if (dbg) {
+          try { dbg.dataKeys = data ? Object.getOwnPropertyNames(data).slice(0, 12) : null; } catch (e) { dbg.dataKeys = "ERR"; }
+        }
+        const chars = data && data.chars;
+        if (dbg) { try { dbg.charsLen = chars ? chars.length : -1; } catch (e) { dbg.charsLen = "ERR"; } }
+        if (dbg && chars && chars.length) {
+          try { dbg.charSample = JSON.stringify(chars[0]).slice(0, 120); } catch (e) { dbg.charSample = "ERR"; }
+        }
+        if (chars && chars.length) {
+          let out = "";
+          for (let i = 0; i < chars.length; i++) {
+            const ch = chars[i];
+            if (!ch || ch.ignorable || !ch.c) continue;
+            out += ch.c;
+            if (ch.paragraphBreakAfter || ch.lineBreakAfter) out += "\n";
+            else if (ch.spaceAfter) out += " ";
+          }
+          const cleaned = out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+            .replace(/[ \t]{2,}/g, " ").trim();
+          if (cleaned) return cleaned;
+        }
+      }
+    } catch (e) { if (dbg) dbg.getPageDataErr = String(e && e.message); trace("getPageData ERR " + (e && e.message)); }
+
+    // 兜底：标准 pdf.js 文本层接口
+    const page = await app.pdfDocument.getPage(n);
+    if (typeof page.getTextContent !== "function") {
+      if (dbg) dbg.pageGetTextContentType = typeof page.getTextContent;
+      return "";
+    }
+    const tc = await page.getTextContent();
+    let out = "";
+    for (const it of tc.items) {
+      if (it.str) out += it.str;
+      if (it.hasEOL) out += "\n";
+    }
+    return out.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   async function loadPane(rec) {
@@ -392,10 +701,14 @@
   }
 
   /* ---------------- 同步滚动 ----------------
-   * 程序化滚动会打出「自己触发自己」的 scroll 事件，必须只吞掉这些回声。
-   * 旧实现用布尔 guard + rAF 释放：窗口被遮挡/最小化时 rAF 不触发，guard 会永久
-   * 卡住，之后所有同步静默失效。改成「每个滚动容器一个待吞计数」，不依赖帧回调；
-   * 再加 300ms 兜底清零，防止「赋的值没变→没有 scroll 事件」导致计数泄漏。 */
+   * 对齐方式（0.21.3 起）：**按「页码 + 页内比例」**，而不是整体滚动百分比。
+   *   百分比映射在页数差得多时完全错位（20 页 vs 6 页，第 3 页会对到别人第 1 页）；
+   *   按页码对齐才是「对比同一篇论文的两个版本」时用户期望的行为。
+   *   只有在拿不到页几何信息时才回落为百分比映射。
+   * 回声抑制：程序化滚动会打出「自己触发自己」的 scroll 事件，必须只吞掉这些回声。
+   *   旧实现用布尔 guard + rAF 释放——窗口被遮挡/最小化时 rAF 不触发，guard 会永久
+   *   卡住，之后所有同步静默失效。改成「每个滚动容器一个待吞计数」，不依赖帧回调；
+   *   再加 300ms 兜底清零，防止「赋的值没变→没有 scroll 事件」导致计数泄漏。 */
 
   function ratio(cur, total, view) {
     const max = Math.max(0, total - view);
@@ -421,7 +734,10 @@
     const sc = src.viewer && src.viewer.container;
     if (!sc) return;
     if (takeSkip(sc)) return;      // 自己刚设的值引起的回声：吞掉，不扩散
+    const pos = currentPosition(src);
+    if (pos) { src.curPage = pos.page; src.curIntra = pos.intra; syncPageUi(src); }
     if (!syncScroll) return;       // 关闭同步 = 各面板完全独立滚动
+
     const vr = ratio(sc.scrollTop, sc.scrollHeight, sc.clientHeight);
     const hr = ratio(sc.scrollLeft, sc.scrollWidth, sc.clientWidth);
     for (const p of panes) {
@@ -429,6 +745,13 @@
       const t = p.viewer && p.viewer.container;
       if (!t) continue;
       try {
+        // 主路径：按页码 + 页内比例对齐
+        if (pos && gotoPage(p, pos.page, pos.intra)) {
+          const left = hr * Math.max(0, t.scrollWidth - t.clientWidth);
+          if (Math.abs(t.scrollLeft - left) > 0.5) { markSkip(p); t.scrollLeft = left; }
+          continue;
+        }
+        // 回落：整体滚动百分比
         const top = vr * Math.max(0, t.scrollHeight - t.clientHeight);
         const left = hr * Math.max(0, t.scrollWidth - t.clientWidth);
         if (Math.abs(t.scrollTop - top) <= 0.5 && Math.abs(t.scrollLeft - left) <= 0.5) continue;
@@ -472,14 +795,22 @@
       try {
         if (kind === "fit") {
           v.viewer.currentScaleValue = "page-width";
+        } else if (kind === "100") {
+          v.viewer.currentScaleValue = "1";
         } else {
           const cur = Number(v.viewer.currentScale) || 1;
           const next = kind === "in" ? cur * 1.2 : cur / 1.2;
           v.viewer.currentScaleValue = String(Math.min(6, Math.max(0.2, next)));
         }
       } catch (e) { /* ignore */ }
+      // 记住用户显式设过的固定缩放：窗口尺寸变化时阅读器会把它打回 page-height，
+      // ensureScrollable 会把这个值还原（"全屏后我放大的倍数没了"也是个坑）
+      try {
+        const now = String(v.viewer.currentScaleValue);
+        p.userScaleValue = (now === "page-width" || now === "page-height" || now === "auto") ? null : now;
+      } catch (e) { /* ignore */ }
       // 布局是异步的：稍后再确认一次，确保放大后的滚动范围立刻可用
-      setTimeout(() => ensureScrollable(p), 150);
+      scheduleEnsure(p);
     }
   }
 
@@ -512,6 +843,75 @@
     } finally {
       adding = false;
     }
+  }
+
+  /* ---------------- 文本结果条（复制 / 翻译本页） ---------------- */
+
+  function showResult(title, body) {
+    try {
+      lastResult = body || "";
+      $("pp-cmp-result-title").textContent = title || "";
+      $("pp-cmp-result-body").textContent = body || "";
+      $("pp-cmp-result").style.display = "flex";
+    } catch (e) { /* ignore */ }
+  }
+
+  function hideResult() {
+    try { $("pp-cmp-result").style.display = "none"; } catch (e) { /* ignore */ }
+  }
+
+  function activePane() {
+    return panes[activeIdx >= 0 ? activeIdx : 0] || null;
+  }
+
+  /** 取当前面板当前页的文本（补偿预览无文本层：不能划词/复制/搜索） */
+  async function copyActivePageText() {
+    const rec = activePane();
+    if (!rec || !rec.viewer) { setStatus(T("compareNotReady")); return; }
+    const page = rec.curPage || 1;
+    setStatus(T("compareExtracting"));
+    try {
+      const text = await pageText(rec, page);
+      if (!text) { setStatus(T("comparePageTextEmpty")); return; }
+      try { Zotero.Utilities.Internal.copyText(text); } catch (e) { /* 复制失败仍展示 */ }
+      showResult(T("comparePageTextTitle")
+        .replace("%p", String(page)).replace("%t", String(rec.pagesCount || "?")), text);
+      setStatus(T("comparePageTextCopied").replace("%n", String(text.length)));
+    } catch (e) {
+      setStatus(T("compareLoadFailed") + " " + shortErr(e));
+    }
+  }
+
+  /** 本页对照翻译：走已有的 AIClient 链路（由 bootstrap 侧注入 translateText） */
+  async function translateActivePage() {
+    const rec = activePane();
+    if (!rec || !rec.viewer) { setStatus(T("compareNotReady")); return; }
+    if (typeof args.aiStatus === "function" && args.aiStatus() !== "ok") {
+      showResult(T("compareTranslateTitle"), (args.aiGuidance && args.aiGuidance()) || T("popupNoAi"));
+      setStatus(T("comparePageTextTitle").replace("%p", "AI").replace("%t", ""));
+      return;
+    }
+    if (typeof args.translateText !== "function") return;
+    const page = rec.curPage || 1;
+    setStatus(T("compareTranslating"));
+    try {
+      const text = await pageText(rec, page);
+      if (!text) { setStatus(T("comparePageTextEmpty")); return; }
+      const clipped = text.length > 6000 ? text.slice(0, 6000) : text;
+      const out = await args.translateText(clipped);
+      showResult(T("compareTranslateTitle")
+        .replace("%p", String(page)).replace("%t", String(rec.pagesCount || "?")) +
+        (text.length > clipped.length ? T("compareTruncated") : ""), out);
+      setStatus("");
+    } catch (e) {
+      showResult(T("compareTranslateTitle").replace("%p", String(page)).replace("%t", ""),
+        I18nErr(e));
+      setStatus(T("compareLoadFailed") + " " + shortErr(e));
+    }
+  }
+
+  function I18nErr(e) {
+    return T("errPrefix") + ((e && e.message) || e);
   }
 
   /* ---------------- 工具栏接线 ---------------- */
@@ -566,7 +966,15 @@
     bindBtn("pp-cmp-zoom-out", "−", T("compareZoomOut"), () => zoom("out"));
     bindBtn("pp-cmp-zoom-fit", zh ? "适宽" : "Fit", T("compareZoomFit"), () => zoom("fit"));
     bindBtn("pp-cmp-zoom-in", "+", T("compareZoomIn"), () => zoom("in"));
+    bindBtn("pp-cmp-zoom-100", "100%", T("compareZoom100"), () => zoom("100"));
+    bindBtn("pp-cmp-align", T("compareAlign"), T("compareAlignHint"), alignToActive);
+    bindBtn("pp-cmp-copy-page", T("compareCopyPage"), T("compareCopyPageHint"), copyActivePageText);
+    bindBtn("pp-cmp-translate-page", T("compareTranslatePage"), T("compareTranslatePageHint"), translateActivePage);
     bindBtn("pp-cmp-add", T("compareAddSelected"), T("compareAddSelectedHint"), addFromSelection);
+    bindBtn("pp-cmp-result-copy", T("popupCopy"), "", () => {
+      try { if (lastResult) Zotero.Utilities.Internal.copyText(lastResult); } catch (e) { /* ignore */ }
+    });
+    bindBtn("pp-cmp-result-close", "✕", T("compareClose"), hideResult);
 
     document.title = T("compareWindowTitle");
     updateCount();
@@ -579,6 +987,13 @@
       setStatus(T("compareApiUnavailable"));
       return;
     }
+    // 窗口自身尺寸变化（最大化/还原/拖拽）→ 所有面板延迟复核可滚动性
+    try {
+      window.addEventListener("resize", () => {
+        trace("window resize");
+        for (const p of panes) scheduleEnsure(p);
+      });
+    } catch (e) { /* ignore */ }
     wireToolbar();
     const initial = (args.panes || []).slice();
     if (!initial.length) {
@@ -618,7 +1033,8 @@
         hasViewer: !!p.viewer,
         pages: p.viewer ? (p.viewer.viewer.pagesCount || 0) : 0,
         scale: p.viewer ? p.viewer.viewer.currentScale : 0,
-        pageLabel: p.pageEl ? p.pageEl.textContent : "",
+        pageLabel: p.pageInput ? p.pageInput.value : "",
+        curPage: p.curPage || 0,
         message: p._msgEl ? p._msgEl.textContent : "",
         layout: { left: p.wrapper.style.left, top: p.wrapper.style.top, width: p.wrapper.style.width, height: p.wrapper.style.height },
         diag: d,
@@ -724,7 +1140,7 @@
    *  只看 overflow 是不够的——overflow:auto 但 scrollHeight≈clientHeight 时
    *  用户看到的就是「滚不动」。 */
   window.ppCompareScrollProbe = function () {
-    const facts = panes.map((p, i) => {
+    const paneFacts = (p, i) => {
       const out = { pane: i + 1, attID: p.attID, hasViewer: !!p.viewer };
       if (!p.viewer) return out;
       const v = p.viewer;
@@ -741,7 +1157,9 @@
         out.scaleValue = v.viewer.currentScaleValue;
       } catch (e) { out.err = String(e && e.message); }
       return out;
-    });
+    };
+
+    const facts = panes.map((p, i) => paneFacts(p, i));
 
     // A) 同步滚动开：滚面板1，其余应跟到同一比例
     // B) 同步滚动关：其余必须完全不动（面板间互不干扰）
@@ -802,18 +1220,90 @@
               scrollMode: first.viewer.viewer.scrollMode,
               pageEls: first.viewer.win.document.querySelectorAll(".page").length,
             };
-            resolve({
-              defaults,
-              facts,
-              wheelHit: hit,
-              syncOn: { srcRatio: 0.5, othersRatios: onRatio },
-              syncOff: { othersBefore: beforeOff, othersAfter: offAfter, moved: offAfter.some((v, i) => v !== beforeOff[i]) },
-              zoom: { before: zBefore, after: zAfter, maxGrew: zAfter.max > zBefore.max },
-            });
+
+            // D) 尺寸变化（模拟最大化 / 全屏）后可滚动性是否还在
+            //    —— 用户报的正是「第一次打开能滚，全屏后滚不动」。
+            //    这里做时间序列采样，看清「什么时候被打回单页、什么时候被拉回来」。
+            const resized = { before: paneFacts(first, 0), samples: [] };
+            try { window.maximize(); } catch (e) { resized.maxErr = String(e && e.message); }
+            const t0 = Date.now();
+            const iv = setInterval(() => {
+              resized.samples.push({
+                t: Date.now() - t0,
+                sm: first.viewer.viewer.scrollMode,
+                pe: first.viewer.win.document.querySelectorAll(".page").length,
+                max: Math.max(0, first.viewer.container.scrollHeight - first.viewer.container.clientHeight),
+                scale: String(first.viewer.viewer.currentScaleValue).slice(0, 8),
+              });
+              if (resized.samples.length >= 16) {
+                clearInterval(iv);
+                resized.after = paneFacts(first, 0);
+                try { window.restore(); } catch (e) { /* ignore */ }
+                resolve({
+                  defaults,
+                  facts,
+                  wheelHit: hit,
+                  syncOn: { srcRatio: 0.5, othersRatios: onRatio },
+                  syncOff: { othersBefore: beforeOff, othersAfter: offAfter, moved: offAfter.some((v, i) => v !== beforeOff[i]) },
+                  zoom: { before: zBefore, after: zAfter, maxGrew: zAfter.max > zBefore.max },
+                  onResize: resized,
+                  trace: traceLog,
+                });
+              }
+            }, 200);
           }, 900);
         }, 250);
       }, 250);
     });
+  };
+
+  /* 页码导航 / 文本提取探针（排障 + 自检用）：验证 ①②③ 三条在真实阅读器里成立 */
+  window.ppCompareNavProbe = async function () {
+    const out = { panes: panes.length };
+    const first = panes[0];
+    const second = panes[1];
+    if (!first || !first.viewer) { out.err = "pane1 not ready"; return out; }
+    // 前一探针会把窗口最大化再还原，布局在收敛中——先等它稳定，否则
+    // 滚动位置会被 pdf.js 的重排带偏，测出来的对齐结果不可信
+    await delay(1500);
+
+    // ② 页码导航：跳到第 3 页
+    out.beforePage = first.curPage;
+    const jumped = gotoPage(first, 3, 0);
+    await delay(400);
+    out.jumpOk = jumped;
+    out.afterJumpPage = first.curPage;
+    out.afterJumpScrollTop = first.viewer.container.scrollTop;
+    out.afterJumpInput = first.pageInput ? first.pageInput.value : null;
+    // 越界应收敛到最后一页而不是乱跳
+    gotoPage(first, 99999, 0);
+    await delay(300);
+    out.clampPage = first.curPage;
+    out.totalPages = first.pagesCount;
+    // 回到顶部
+    gotoPage(first, 1, 0);
+    await delay(300);
+
+    // ① 按页码对齐：把面板1 停在某页，再让所有面板对齐过去
+    gotoPage(first, Math.min(4, first.pagesCount || 4), 0.25);
+    await delay(350);
+    out.activePos = currentPosition(first);
+    alignToActive();
+    await delay(500);
+    out.aligned = panes.map((p) => ({ pane: panes.indexOf(p) + 1, curPage: p.curPage, pos: currentPosition(p) }));
+
+    // ③ 文本提取（绕开 textLayer）
+    const dbg = {};
+    out.textDbg = dbg;
+    try {
+      const t = await pageText(first, first.curPage || 1, dbg);
+      out.textLen = t.length;
+      out.textSample = t.slice(0, 80).replace(/\s+/g, " ");
+    } catch (e) { out.textErr = String(e && e.message); }
+
+    // ① 同步开关关闭时对齐按钮仍应生效（它是显式动作，不受开关约束）
+    out.syncScrollDefault = syncScroll;
+    return out;
   };
 
   window.addEventListener("unload", () => {

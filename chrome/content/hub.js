@@ -28,6 +28,15 @@
         ],
       },
       {
+        id: "search", icon: "🧭",
+        title: zh ? "检索与发现" : "Search & Discovery",
+        desc: zh ? "跨整个库的检索与问答（不再局限于当前这一篇）" : "Ask and search across the whole library",
+        features: [
+          { t: zh ? "库内问答（问整个库）" : "Ask the library", d: zh ? "用一句话提问，自动检索候选文献（标题/标签/摘要+全文复核）后由 AI 依据候选作答，带 [n] 引用编号" : "Natural-language Q&A across your library with [n] citations", run: () => PP.libSearch.openDialog() },
+          { t: zh ? "库内检索（只看候选）" : "Retrieve only", d: zh ? "只要候选文献列表与命中片段，不调用 AI（可在对话框内关闭 AI 回答）" : "Candidate list only, no AI call", run: () => PP.libSearch.openDialog() },
+        ],
+      },
+      {
         id: "notes", icon: "🗒",
         title: zh ? "笔记与卡片" : "Notes & Cards",
         desc: zh ? "读完后的知识沉淀：笔记、模板、记忆卡片" : "Knowledge capture after reading",
@@ -69,6 +78,7 @@
           { t: zh ? "粘贴文献列表核验" : "Verify pasted list", d: zh ? "粘贴一段参考文献列表逐条核验真伪" : "Verify a pasted reference list", run: () => PP.fakeCheck.openPasteDialog() },
           { t: zh ? "开放获取补全文" : "Find OA full text", d: zh ? "Unpaywall 合法渠道为有 DOI 条目补 PDF" : "Attach OA PDFs via Unpaywall", run: () => PP.oaFetch.runForSelected() },
           { t: zh ? "附件按规则重命名" : "Rename attachments", d: zh ? "按 作者-年份-标题 模板统一附件文件名" : "Rename PDFs by pattern", run: () => PP.attachManager.runForSelected() },
+          { t: zh ? "附件体检（断链/重复/扫描件）" : "Attachment doctor", d: zh ? "扫描无附件、文件丢失、同父重复、无文本层 PDF（AI 读不了）、存储孤儿文件，出报告不打标签不删文件" : "Scan missing/duplicate/scanned attachments and storage orphans", run: () => PP.attachDoctor.run() },
         ],
       },
       {
@@ -78,6 +88,8 @@
         features: [
           { t: zh ? "AI 自动打标签" : "AI auto tag", d: zh ? "LLM 按内容建议标签" : "LLM-suggested tags", run: () => PP.autoTag.runForSelected() },
           { t: zh ? "规则打标" : "Rule tag", d: zh ? "按自定义条件规则批量打标签" : "Conditional rule tagging", run: () => PP.ruleTag.runForSelected() },
+          { t: zh ? "标签治理（扫描变体）" : "Tag curator (scan)", d: zh ? "找出同一含义的多种写法（大小写/全半角/空格连字符）、罕见标签与层级缺失，只出报告不改数据" : "Find variant/rare/missing-parent tags (read-only)", run: () => PP.tagCurator.run(false) },
+          { t: zh ? "标签归一（执行合并）" : "Normalize tags", d: zh ? "按扫描结果把变体合并到主体写法，执行前弹确认框，不可自动撤销" : "Merge tag variants into the main spelling (confirm required)", run: () => PP.tagCurator.run(true) },
           { t: zh ? "标记为「未读」" : "Mark unread", d: zh ? "阅读状态三态互斥（未读/在读/已读）" : "Mutually exclusive states", run: () => PP.readingState.markForSelected("未读") },
           { t: zh ? "标记为「在读」" : "Mark reading", d: zh ? "打开 PDF 也会自动从「未读」转为「在读」" : "Auto-updated when opening PDF", run: () => PP.readingState.markForSelected("在读") },
           { t: zh ? "标记为「已读」" : "Mark done", d: zh ? "读完后归档状态" : "Finished state", run: () => PP.readingState.markForSelected("已读") },

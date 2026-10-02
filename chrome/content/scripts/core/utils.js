@@ -191,6 +191,33 @@ var I18n = (() => {
     compareLimitReached: zh ? "最多同时对比 %n 篇（可在设置中调整上限）" : "Up to %n panes",
     compareDuplicated: zh ? "该 PDF 已在对比窗口中" : "That PDF is already in the window",
     compareNoFocus: zh ? "请先点击一个面板再缩放" : "Click a pane first, then zoom",
+    // ---- 0.21.3 对比窗口：页码导航 / 按页码同步 / 页面文本 ----
+    comparePrevPage: zh ? "上一页" : "Previous page",
+    compareNextPage: zh ? "下一页" : "Next page",
+    compareJumpPageHint: zh ? "输入页码后回车跳转" : "Type a page number and press Enter",
+    compareNotReady: zh ? "该面板还没加载完成" : "This pane is not ready yet",
+    compareAlign: zh ? "对齐到当前页" : "Align to page",
+    compareAlignHint: zh
+      ? "让所有面板跳到当前面板所在的页码（对比同一篇论文的不同版本时最有用）"
+      : "Jump every pane to the current pane's page",
+    compareAligned: zh ? "已对齐到第 %n 页（%c 个面板）" : "Aligned to page %n (%c panes)",
+    compareZoom100: zh ? "全部恢复 100%" : "Reset all to 100%",
+    compareCopyPage: zh ? "复制本页文本" : "Copy page text",
+    compareCopyPageHint: zh
+      ? "取当前面板当前页的文字到剪贴板（预览无文本层，不能用鼠标选字，故提供此按钮）"
+      : "Copy the current page's text (preview has no text layer, so selection is unavailable)",
+    compareExtracting: zh ? "正在提取文字…" : "Extracting text…",
+    comparePageTextEmpty: zh ? "本页没有可提取的文字（可能是扫描件，需先 OCR）" : "No extractable text on this page (scanned PDF? OCR it first)",
+    comparePageTextTitle: zh ? "第 %p 页文本 ／ 共 %t 页" : "Page %p of %t — text",
+    comparePageTextCopied: zh ? "已复制 %n 个字符" : "Copied %n characters",
+    compareTranslatePage: zh ? "翻译本页" : "Translate page",
+    compareTranslatePageHint: zh
+      ? "把当前面板当前页的文字交给 AI 翻译，结果在下方对照区显示"
+      : "Translate the current page with AI; the result shows below",
+    compareTranslateTitle: zh ? "第 %p 页译文 ／ 共 %t 页" : "Page %p of %t — translation",
+    compareTranslating: zh ? "正在翻译本页…" : "Translating page…",
+    compareTruncated: zh ? "（本页文字较长，已截断前 6000 字）" : " (page text was truncated to 6000 chars)",
+    compareClose: zh ? "关闭" : "Close",
     // ---- 0.21.0 划词浮窗：AI 未就绪不再静默（此前连按钮都不出现）----
     popupNoAi: zh
       ? "AI 不可用：未登录官方模型且未配置自己的模型通道。"
@@ -202,6 +229,11 @@ var I18n = (() => {
     chatNoKeyConfigured: zh
       ? "当前模型通道缺少 API Key：请在 设置 → PaperPilot → AI 模型通道 中补全"
       : "The active channel has no API key — fill it in under Settings → PaperPilot → AI Channels",
+    // ---- 0.22.0 库内问答 / 标签治理 / 附件体检 ----
+    menuLibAsk: zh ? "库内问答（问整个文献库）…" : "Ask the Library (whole library)…",
+    menuAttachDoctor: zh ? "附件体检（断链/重复/扫描件/孤儿文件）" : "Attachment Doctor (broken/dup/scanned)",
+    menuTagCurator: zh ? "标签治理（扫描变体，只读）" : "Tag Curator (scan, read-only)",
+    menuTagNormalize: zh ? "标签归一（执行合并，需确认）" : "Normalize Tags (merge, confirm)",
   };
   return {
     t(key) { return table[key] || key; },
