@@ -120,6 +120,7 @@
         <div class="item"><span class="k">活动通道</span><span class="v" id="ch-active">—</span></div>
         <div class="item"><span class="k">默认模型</span><span class="v" id="ch-model">—</span></div>
         <div class="item"><span class="k">对外上线</span><span class="v" id="ch-pub">全部</span></div>
+        <div class="item"><span class="k">高级模型</span><span class="v" id="ch-ht">无分级</span></div>
         <div class="item"><span class="k">通道总数</span><span class="v" id="ch-total">0</span></div>
         <div class="item"><span class="k">注册用户</span><span class="v" id="ch-users">0</span></div>
       </div>
@@ -150,6 +151,23 @@
         <button class="btn danger" onclick="clearPublished()">全部上线（清空限制）</button>
       </div>
       <div class="msg" id="pub-msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>高级模型（需套餐）</h2>
+      <p class="hint" style="margin:0 0 10px">
+        从「对外上线」的模型里挑出<b>只对专业版开放</b>的（推理档 / 长上下文等成本高的）。
+        未勾选的都是免费模型；<b>一个都不勾 = 不做分级，全部免费</b>。
+        <code>auto</code>（映射官方默认模型）<b>恒定免费</b>——它是所有用户的兜底入口，配了也不生效。
+        新用户在试用期内不受此限制（试用天数在「会员管理 → 套餐额度与收款」里配）。
+      </p>
+      <div class="chips" id="ht-chips"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <button class="btn primary" onclick="saveHighTier()">保存分级</button>
+        <button class="btn danger" onclick="clearHighTier()">取消分级（全部免费）</button>
+        <span class="hint">调用被拦下时返回 403，插件端据此引导升级</span>
+      </div>
+      <div class="msg" id="ht-msg"></div>
     </div>
 
     <div class="card">
@@ -303,6 +321,17 @@
         <div class="field"><label>免费版 · 每日额度（次）</label><input id="p-free-limit" type="number" min="0" style="width:140px"></div>
         <div class="field"><label>专业版 · 每日额度（次）</label><input id="p-pro-limit" type="number" min="0" style="width:140px"></div>
         <div class="field"><label>专业版 · 兜底月单价（¥）</label><input id="p-pro-price" type="number" min="0" style="width:140px"></div>
+        <div class="field"><label>新用户全模型试用（天，0 = 关闭）</label>
+          <input id="p-trial-days" type="number" min="0" max="365" style="width:140px">
+          <div class="hint" style="margin-top:4px">从注册时间起算；试用期内免费用户也能用「高级模型」，额度不变</div></div>
+        <div class="field"><label>高级模型可用性</label>
+          <div style="display:flex;gap:16px;align-items:center;padding-top:4px">
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+              <input type="checkbox" id="p-free-hi"> 免费版</label>
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+              <input type="checkbox" id="p-pro-hi"> 专业版</label>
+          </div>
+          <div class="hint" style="margin-top:4px">需配合上方「高级模型」清单；清单为空时此项无效果</div></div>
         <div class="field"><label>收款渠道名</label><input id="p-pay-channel" placeholder="微信收款码" style="width:180px"></div>
         <div class="field wide"><label>收款码图片地址（可空）</label>
           <input id="p-pay-qr" placeholder="https://…/qr.png" style="width:100%"></div>
@@ -312,7 +341,7 @@
           <input id="p-pay-note" placeholder="扫码支付后点「我已完成支付」，管理员核销后自动开通" style="width:100%"></div>
       </div>
       <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
-        <button class="btn primary" onclick="savePlans()">保存配置</button>
+        <button id="p-plan-save" class="btn primary" onclick="savePlans()">保存配置</button>
         <span class="price-preview" id="p-preview"></span>
       </div>
       <div class="msg" id="p-msg"></div>
@@ -753,6 +782,68 @@ function setDefaultModel() {
   });
 }
 
+/* ---------------- 高级模型分级（1.4.9） ---------------- */
+var highTier = [];
+/** 可选集合 = 上线清单（为空表示全部上线 → 用候选全集） */
+function highTierUniverse() {
+  var base = published.length ? published : unionPub();
+  var all = base.slice();
+  highTier.forEach(function (m) { if (all.indexOf(m) < 0) all.push(m); });
+  return all;
+}
+function renderHighChips() {
+  var box = $('ht-chips');
+  if (!box) return;
+  box.textContent = '';
+  var base = published.length ? published : unionPub();
+  if (!base.length) {
+    var span = document.createElement('span');
+    span.className = 'hint';
+    span.textContent = '先在上方配置「对外上线模型」，再从其中挑出需要专业版的模型';
+    box.appendChild(span);
+    return;
+  }
+  highTierUniverse().forEach(function (m) {
+    var on = highTier.indexOf(m) >= 0;
+    var chip = document.createElement('span');
+    chip.className = 'chip' + (on ? ' on' : '');
+    chip.textContent = m;
+    if (m === 'auto') {
+      chip.title = 'auto 恒免费（映射官方默认模型），配了也不生效';
+      chip.style.opacity = '0.45';
+    } else {
+      chip.title = on ? '需专业版——点击改为免费' : '免费——点击改为需专业版';
+    }
+    chip.onclick = function () {
+      if (m === 'auto') return msg('ht-msg', 'auto 恒定免费（它是全体用户的兜底入口），不接受分级', false);
+      var i = highTier.indexOf(m);
+      if (i >= 0) highTier.splice(i, 1); else highTier.push(m);
+      renderHighChips();
+    };
+    box.appendChild(chip);
+  });
+}
+function saveHighTier() {
+  api('PUT', '/api/admin/channels/high-tier', { models: highTier }).then(function (r) {
+    if (!r.ok) return msg('ht-msg', '✗ ' + (r.error || '保存失败'), false);
+    highTier = (r.highTierModels || []).slice();
+    renderHighChips();
+    var t = highTier.length
+      ? '✓ 已设 ' + highTier.length + ' 个模型为「需专业版」：' + highTier.join('、')
+      : '✓ 已取消分级——全部上线模型免费';
+    if (r.outsidePublished && r.outsidePublished.length) {
+      t += '；注意 ' + r.outsidePublished.join('、') + ' 不在上线清单内，暂不生效';
+    }
+    msg('ht-msg', t, true);
+    loadChannels();
+  });
+}
+function clearHighTier() {
+  if (!confirm('取消模型分级？全部上线模型将对所有用户免费开放。')) return;
+  highTier = [];
+  saveHighTier();
+}
+
 /* ---------------- 对外上线模型（0.15.0） ---------------- */
 var published = [], pubCandidates = [];
 function unionPub() {
@@ -786,6 +877,7 @@ function renderPubChips() {
     };
     box.appendChild(chip);
   });
+  renderHighChips();   // 可选集合随上线清单变化 —— 联动刷新
 }
 $('pub-add').addEventListener('keydown', function (ev) {
   if (ev.key !== 'Enter') return;
@@ -834,8 +926,10 @@ function loadChannels() {
     $('ch-defmodel').value = active && active.model && active.model !== 'auto' ? active.model : '';
     pubCandidates = active ? (active.models || []).slice() : [];
     published = (r.publishedModels || []).slice();
+    highTier = (r.highTierModels || []).slice();
     renderPubChips();
     $('ch-pub').textContent = published.length ? published.length + ' 个' : '全部';
+    $('ch-ht').textContent = highTier.length ? highTier.length + ' 个需 Pro' : '无分级';
     $('ch-active').innerHTML = active
       ? '<span class="dot on"></span>' + esc(active.name)
       : '<span class="dot warn"></span>未设置（官方调用将返回 503）';
@@ -1448,7 +1542,7 @@ function delUser(id, email) {
 /* ---------------- 会员管理（0.23.0） ---------------- */
 
 var mb = { orders: [], codes: [], plans: null, counts: {},
-  priceItems: [], cycles: [], pricePlans: [] };
+  priceItems: [], cycles: [], pricePlans: [], ai: { trialDays: 0 } };
 var grantTarget = null;
 var ORDER_STATUS = { pending: '待支付', claimed: '待核销', fulfilled: '已开通',
   cancelled: '已取消', expired: '已过期' };
@@ -1465,6 +1559,7 @@ function loadMembership() {
     mb.orders = r.orders || [];
     mb.codes = r.codes || [];
     mb.plans = r.plans || null;
+    mb.ai = r.ai || { trialDays: 0 };      // 1.4.9 新用户全模型试用天数
     mb.counts = r.counts || {};
     $('mb-k-review').textContent = mb.counts.awaitingReview || 0;
     $('mb-k-unused').textContent = mb.counts.codesUnused || 0;
@@ -1543,9 +1638,15 @@ function renderPlanForm() {
   if (!mb.plans) return;
   var byId = {};
   (mb.plans.plans || []).forEach(function (p) { byId[p.id] = p; });
-  if (byId.Free) $('p-free-limit').value = byId.Free.dailyLimit;
+  if (byId.Free) {
+    $('p-free-limit').value = byId.Free.dailyLimit;
+    $('p-free-hi').checked = !!byId.Free.highTierModels;
+  }
+  // 试用天数来自 mb.ai（**不是 r**：本函数没有 r 作用域，写成 r.ai 会抛 ReferenceError）
+  if ($('p-trial-days')) $('p-trial-days').value = (mb.ai && mb.ai.trialDays) || 0;
   if (byId.Pro) {
     $('p-pro-limit').value = byId.Pro.dailyLimit;
+    $('p-pro-hi').checked = !!byId.Pro.highTierModels;
     $('p-pro-price').value = byId.Pro.price;
   }
   var pay = mb.plans.pay || {};
@@ -1709,14 +1810,18 @@ function savePlans() {
       note: $('p-pay-note').value.trim(),
     },
   };
-  body.plans.Free = { dailyLimit: Number($('p-free-limit').value) || 0 };
+  body.plans.Free = { dailyLimit: Number($('p-free-limit').value) || 0,
+    highTierModels: !!$('p-free-hi').checked };
+  body.ai = { trialDays: Math.max(0, Math.min(365, Number($('p-trial-days').value) || 0)) };
   body.plans.Pro = {
     dailyLimit: Number($('p-pro-limit').value) || 0,
+    highTierModels: !!$('p-pro-hi').checked,
     price: Number($('p-pro-price').value) || 0,
   };
   api('PUT', '/api/admin/membership', body).then(function (r) {
     if (!r.ok) return msg('p-msg', '✗ ' + (r.error || '保存失败'), false);
     mb.plans = r.plans;
+    if (r.ai) mb.ai = r.ai;   // 服务端回传夹取后的值，避免客户端再实现一遍规则
     renderPlanForm();
     msg('p-msg', '✓ 已保存并即时生效（插件端下次拉取即更新）', true);
   });

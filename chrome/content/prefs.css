@@ -335,3 +335,14 @@
 .pp-root .pp-dev-meta { font-size: 11px; color: var(--pp-muted); }
 .pp-root .pp-dev-act { display: flex; gap: 10px; flex: 0 0 auto; }
 .pp-root .pp-link-danger { color: var(--pp-danger); }
+
+/* ---------- 套餐 AI 能力说明（0.24.8：试用 / 高级模型） ---------- */
+.pp-root .pp-ai-tier {
+  margin-top: 8px; padding: 7px 10px; border-radius: 6px;
+  font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--pp-border); background: var(--pp-surface-2); color: var(--pp-text);
+  white-space: pre-wrap; word-break: break-word;
+}
+.pp-root .pp-ai-tier-trial {
+  border-color: var(--pp-warn); background: var(--pp-warn-bg); color: var(--pp-warn);
+}

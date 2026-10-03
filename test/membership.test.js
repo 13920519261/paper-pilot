@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-membership-'));
-const PORT = 18000 + Math.floor(Math.random() * 1200);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 process.env.PP_DATA_DIR = DATA_DIR;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY; // 邮件关闭 → 注册直接激活，测试不依赖外网
@@ -59,7 +59,8 @@ const DAY = 86400e3;
 function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / DAY); }
 
 (async () => {
-  await new Promise((res) => server.listen(PORT, '127.0.0.1', res));
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  PORT = server.address().port;
 
   try {
     /* 1. 套餐目录（公开，未登录可看） */

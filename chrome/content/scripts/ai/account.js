@@ -618,6 +618,30 @@ var Account = {
     return { today: Number(u && u.dailyUsed) || 0, limit: Number(u && u.dailyLimit) || 0, last7: 0, days: [] };
   },
 
+  /**
+   * 套餐 AI 能力（1.4.9）。服务端在 /api/auth/me 与 /api/membership 里下发，随会话缓存。
+   * @returns {{highTier:boolean, reason:"plan"|"trial"|"none"|"unknown", trial:object|null,
+   *            models:string[], lockedModels:string[], defaultModel:string}}
+   *
+   * **旧服务端（无 ai 块）一律返回「不限制」**：模型能不能用由服务端网关说了算，
+   * 客户端不知道时绝不自作主张去锁用户（否则老服务端会被新插件锁死）。
+   */
+  ai() {
+    const u = this.user();
+    const a = u && u.ai;
+    if (a && typeof a === "object") {
+      return {
+        highTier: !!a.highTier,
+        reason: a.reason || "none",
+        trial: a.trial && typeof a.trial === "object" ? a.trial : null,
+        models: Array.isArray(a.models) ? a.models : [],
+        lockedModels: Array.isArray(a.lockedModels) ? a.lockedModels : [],
+        defaultModel: a.defaultModel || "auto",
+      };
+    }
+    return { highTier: true, reason: "unknown", trial: null, models: [], lockedModels: [], defaultModel: "auto" };
+  },
+
   /** 是否 Pro（含到期判断：过期的 Pro 视为 Free） */
   isPro() {
     const m = this.membership();

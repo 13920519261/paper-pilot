@@ -336,6 +336,7 @@ function Get-AuditText([string]$a) {
     'channel.create' = '新增模型通道'; 'channel.update' = '修改模型通道'
     'channel.delete' = '删除模型通道'; 'channel.active' = '切换活动通道'
     'channel.published' = '修改上线模型清单'
+    'channel.high-tier' = '修改高级模型清单'
   }
   if ($map.ContainsKey($a)) { return $map[$a] }
   return $a
@@ -380,7 +381,7 @@ function Show-ChannelManager {
 
   $dlg = New-Object System.Windows.Forms.Form
   $dlg.Text = 'AI 模型通道管理（官方网关上游）'
-  $dlg.ClientSize = New-Object System.Drawing.Size(568, 524)
+  $dlg.ClientSize = New-Object System.Drawing.Size(568, 570)
   $dlg.StartPosition = 'CenterParent'
   $dlg.FormBorderStyle = 'FixedSingle'
   $dlg.MaximizeBox = $false
@@ -425,6 +426,15 @@ function Show-ChannelManager {
   $txtPub.SetBounds(108, 358, 296, 24)
   [void]$dlg.Controls.Add($txtPub)
 
+  # 高级模型分级（1.4.9）：逗号分隔，必须落在上面的上线清单内；留空 = 不做分级全部免费
+  $lblHigh = New-Object System.Windows.Forms.Label
+  $lblHigh.Text = '高级模型(需Pro)：'
+  $lblHigh.SetBounds(12, 396, 96, 18)
+  [void]$dlg.Controls.Add($lblHigh)
+  $txtHigh = New-Object System.Windows.Forms.TextBox
+  $txtHigh.SetBounds(108, 392, 296, 24)
+  [void]$dlg.Controls.Add($txtHigh)
+
   $script:cmRows = @()
   $script:cmActiveId = $null
 
@@ -456,6 +466,7 @@ function Show-ChannelManager {
       foreach ($c in $r.channels) { if ($c.id -eq $r.active) { $actCh = $c; break } }
       # 对外上线模型清单（空 = 全部上线，0.15.0）
       $txtPub.Text = (@($r.publishedModels) -join ', ')
+      $txtHigh.Text = (@($r.highTierModels) -join ', ')
       # 官方默认模型下拉跟随活动通道（可下拉选择，也可自由输入自定义模型名）
       $cmbDefault.Items.Clear()
       if ($actCh) {
@@ -535,7 +546,29 @@ function Show-ChannelManager {
     } catch { $lblInfo.Text = '✗ 保存失败：' + (Get-HttpErrorDetail $_) }
   }
 
-  $btnActivate = New-DlgBtn $dlg '设为活动' 12 392 104 {
+  $btnFillHigh = New-DlgBtn $dlg '📡 填充' 410 389 70 {
+    # 把当前上线清单填进来最省事：留着的就是「需专业版」，删掉的就是免费
+    $txtHigh.Text = $txtPub.Text
+    $lblInfo.Text = '已把上线清单填入——删掉要保持免费的，留下的即「需专业版」，再点「保存分级」'
+  }
+  $btnSaveHigh = New-DlgBtn $dlg '保存分级' 484 389 72 {
+    try {
+      $models = @($txtHigh.Text -split '[,，]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+      $r = Invoke-AdminApi 'PUT' '/api/admin/channels/high-tier' @{ models = $models }
+      if ($models.Count) {
+        $lblInfo.Text = '✓ 已设 ' + $models.Count + ' 个模型需专业版（auto 恒免费）'
+      } else {
+        $lblInfo.Text = '✓ 已取消模型分级——全部上线模型免费'
+      }
+      $outside = @($r.outsidePublished)
+      if ($outside.Count -gt 0) {
+        $lblInfo.Text = $lblInfo.Text + '；注意 ' + ($outside -join '、') + ' 不在上线清单内，暂不生效'
+      }
+      Refresh-CmList
+    } catch { $lblInfo.Text = '✗ 保存失败：' + (Get-HttpErrorDetail $_) }
+  }
+
+  $btnActivate = New-DlgBtn $dlg '设为活动' 12 434 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     try {
@@ -544,7 +577,7 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '切换失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnTest = New-DlgBtn $dlg '实测' 124 392 104 {
+  $btnTest = New-DlgBtn $dlg '实测' 124 434 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $lblInfo.Text = '正在实测「' + $c.name + '」，请稍候…'
@@ -563,13 +596,13 @@ function Show-ChannelManager {
       $lblInfo.Text = '实测请求失败'
     }
   }
-  $btnEdit = New-DlgBtn $dlg '编辑' 236 392 104 {
+  $btnEdit = New-DlgBtn $dlg '编辑' 236 434 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     [void](Show-ChannelForm $c)
     Refresh-CmList
   }
-  $btnDel = New-DlgBtn $dlg '删除' 348 392 104 {
+  $btnDel = New-DlgBtn $dlg '删除' 348 434 104 {
     $c = Get-SelectedChannel
     if ($null -eq $c) { return }
     $r = [System.Windows.Forms.MessageBox]::Show('确定删除通道「' + $c.name + '」？删除后不可恢复。', '删除通道', 'YesNo', 'Question')
@@ -580,19 +613,19 @@ function Show-ChannelManager {
       Refresh-CmList
     } catch { $lblInfo.Text = '删除失败：' + (Get-HttpErrorDetail $_) }
   }
-  $btnClose = New-DlgBtn $dlg '关闭' 460 392 96 { $dlg.Close() }
+  $btnClose = New-DlgBtn $dlg '关闭' 460 434 96 { $dlg.Close() }
 
-  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 428 180 {
+  $btnAdd = New-DlgBtn $dlg '＋ 新增通道' 12 470 180 {
     [void](Show-ChannelForm $null)
     Refresh-CmList
   }
-  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 428 180 { Open-Url $AdminPage }
-  $btnRefresh = New-DlgBtn $dlg '刷新' 388 428 168 { Refresh-CmList }
+  $btnOpenPage = New-DlgBtn $dlg '在浏览器中管理' 200 470 180 { Open-Url $AdminPage }
+  $btnRefresh = New-DlgBtn $dlg '刷新' 388 470 168 { Refresh-CmList }
 
   $tip = New-Object System.Windows.Forms.Label
-  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。`n「官方默认模型」= 活动通道的默认模型（登录用户 auto 映射），从拉取列表选择或输入自定义名后点「设为默认」。`n「对外上线模型」= 插件端可见可调用的模型范围（逗号分隔；留空 = 全部上线；auto 恒可用）——官方模型分批发布用。"
+  $tip.Text = "● = 活动通道。新增时可只填 API Key 后点「🔍 检测」自动识别厂商；编辑时 Key 留空 = 保持原密钥。`n「官方默认模型」= 活动通道的默认模型（登录用户 auto 映射），从拉取列表选择或输入自定义名后点「设为默认」。`n「对外上线模型」= 插件端可见可调用的模型范围（逗号分隔；留空 = 全部上线；auto 恒可用）——官方模型分批发布用。`n「高级模型」= 上线模型里**只给专业版**用的（逗号分隔；留空 = 不做分级全部免费；auto 恒免费）——免费用户调用会返回 403；新用户在试用期内不受限。"
   $tip.ForeColor = [System.Drawing.Color]::DimGray
-  $tip.SetBounds(12, 464, 544, 54)
+  $tip.SetBounds(12, 506, 544, 60)
   [void]$dlg.Controls.Add($tip)
 
   Refresh-CmList
@@ -1654,6 +1687,8 @@ function Show-MembershipManager {
   $script:mbPricePlans = @()
   $script:mbCoupons = @()
   $script:mbCouponPlans = @()
+  $script:mbAiTrialDays = 0
+  $script:planTrialDays = 0
 
   $lblTop = New-Object System.Windows.Forms.Label
   $lblTop.SetBounds(14, 8, 872, 38)
@@ -1762,11 +1797,17 @@ function Show-MembershipManager {
       # 套餐配置页（避免 $hash[[string]$k] 这种嵌套方括号写法——PS 5.1 解析器会报错）
       $freePlan = $r.plans.plans | Where-Object { $_.id -eq 'Free' } | Select-Object -First 1
       $proPlan = $r.plans.plans | Where-Object { $_.id -eq 'Pro' } | Select-Object -First 1
-      if ($freePlan) { $txtFreeLimit.Text = [string]$freePlan.dailyLimit }
+      if ($freePlan) {
+        $txtFreeLimit.Text = [string]$freePlan.dailyLimit
+        $chkFreeHi.Checked = [bool]$freePlan.highTierModels
+      }
+      $txtTrialDays.Text = [string]$script:mbAiTrialDays
       if ($proPlan) {
         $txtProLimit.Text = [string]$proPlan.dailyLimit
         $txtProPrice.Text = [string]$proPlan.price
+        $chkProHi.Checked = [bool]$proPlan.highTierModels
       }
+      if ($r.plans.ai) { $script:mbAiTrialDays = [int]$r.plans.ai.trialDays }
       $txtPayChannel.Text = [string]$r.plans.pay.channel
       $txtPayQr.Text = [string]$r.plans.pay.qrImage
       $txtPayText.Text = [string]$r.plans.pay.qrText
@@ -2125,22 +2166,46 @@ function Show-MembershipManager {
   $lblPrice.SetBounds(330, 88, 500, 20)
   [void]$pgPlan.Controls.Add($lblPrice)
 
-  New-PLabel $pgPlan '收款渠道名' 16 130
-  $txtPayChannel = New-PInput $pgPlan 190 127 250
-  New-PLabel $pgPlan '收款码图片地址（可空）' 16 164
-  $txtPayQr = New-PInput $pgPlan 190 161 640
-  New-PLabel $pgPlan '文字收款信息（无图片时展示）' 16 198
-  $txtPayText = New-PInput $pgPlan 190 195 640
-  New-PLabel $pgPlan '支付说明' 16 232
-  $txtPayNote = New-PInput $pgPlan 190 229 640
+  # 1.4.9 AI 能力：新用户全模型试用天数 + 各档能否用高级模型
+  New-PLabel $pgPlan '新用户全模型试用（天）' 16 122
+  $txtTrialDays = New-PInput $pgPlan 190 119 80
+  New-PLabel $pgPlan '可用高级模型：' 330 122
+  $chkFreeHi = New-Object System.Windows.Forms.CheckBox
+  $chkFreeHi.Text = '免费版'
+  $chkFreeHi.SetBounds(490, 120, 76, 22)
+  [void]$pgPlan.Controls.Add($chkFreeHi)
+  $chkProHi = New-Object System.Windows.Forms.CheckBox
+  $chkProHi.Text = '专业版'
+  $chkProHi.SetBounds(572, 120, 76, 22)
+  [void]$pgPlan.Controls.Add($chkProHi)
+  $lblAiHint = New-Object System.Windows.Forms.Label
+  $lblAiHint.Text = '0 = 关闭试用；需配合通道窗体里的「高级模型」清单，清单为空则此项无效果'
+  $lblAiHint.ForeColor = [System.Drawing.Color]::DimGray
+  $lblAiHint.SetBounds(330, 144, 520, 20)
+  [void]$pgPlan.Controls.Add($lblAiHint)
 
-  New-MbBtn $pgPlan '保存配置' 16 276 120 {
+  New-PLabel $pgPlan '收款渠道名' 16 170
+  $txtPayChannel = New-PInput $pgPlan 190 167 250
+  New-PLabel $pgPlan '收款码图片地址（可空）' 16 204
+  $txtPayQr = New-PInput $pgPlan 190 201 640
+  New-PLabel $pgPlan '文字收款信息（无图片时展示）' 16 238
+  $txtPayText = New-PInput $pgPlan 190 235 640
+  New-PLabel $pgPlan '支付说明' 16 272
+  $txtPayNote = New-PInput $pgPlan 190 269 640
+
+  New-MbBtn $pgPlan '保存配置' 16 316 120 {
+    # 试用天数是数字文本框：非法/留空一律按 0 处理（服务端还会再校验一次）
+    $td = 0
+    if (-not [int]::TryParse($txtTrialDays.Text.Trim(), [ref]$td)) { $td = 0 }
+    if ($td -lt 0) { $td = 0 }
+    $script:planTrialDays = $td
     try {
       $body = @{
         plans = @{
-          Free = @{ dailyLimit = [int]$txtFreeLimit.Text }
-          Pro = @{ dailyLimit = [int]$txtProLimit.Text; price = [int]$txtProPrice.Text }
+          Free = @{ dailyLimit = [int]$txtFreeLimit.Text; highTierModels = [bool]$chkFreeHi.Checked }
+          Pro = @{ dailyLimit = [int]$txtProLimit.Text; price = [int]$txtProPrice.Text; highTierModels = [bool]$chkProHi.Checked }
         }
+        ai = @{ trialDays = $script:planTrialDays }
         pay = @{
           channel = $txtPayChannel.Text.Trim()
           qrImage = $txtPayQr.Text.Trim()
@@ -2153,13 +2218,13 @@ function Show-MembershipManager {
       Refresh-Membership
     } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '保存失败', 'OK', 'Warning') | Out-Null }
   }
-  New-MbBtn $pgPlan '重新载入' 144 276 100 { Refresh-Membership }
-  New-MbBtn $pgPlan '关闭' 760 276 96 { $dlg.Close() }
+  New-MbBtn $pgPlan '重新载入' 144 316 100 { Refresh-Membership }
+  New-MbBtn $pgPlan '关闭' 760 316 96 { $dlg.Close() }
 
   $lblPTip = New-Object System.Windows.Forms.Label
-  $lblPTip.Text = '额度改为按套餐配置下发：用户在用户级被管理员单独设过 dailyLimit 的，仍以用户级为准。' + "`n" + '同一套配置也作用于 Web 管理页（/admin → 会员管理）。'
+  $lblPTip.Text = '额度改为按套餐配置下发：用户在用户级被管理员单独设过 dailyLimit 的，仍以用户级为准。' + "`n" + '「新用户全模型试用」从注册时间起算，试用期内免费用户也能用高级模型（额度不变）；「可用高级模型」需配合通道窗体里的分级清单。' + "`n" + '同一套配置也作用于 Web 管理页（/admin → 会员管理）。'
   $lblPTip.ForeColor = [System.Drawing.Color]::DimGray
-  $lblPTip.SetBounds(16, 320, 830, 40)
+  $lblPTip.SetBounds(16, 360, 830, 54)
   [void]$pgPlan.Controls.Add($lblPTip)
 
   # ---------------- 页 5：审计日志（服务端 1.4.4） ----------------

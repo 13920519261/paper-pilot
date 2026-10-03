@@ -59,7 +59,8 @@ const DEFAULT_PLANS = {
     dailyLimit: 100, highTierModels: false,
     tagline: '登录即用，个人日常够用',
     features: [
-      '官方模型每日 100 次',
+      '官方基础模型每日 100 次',
+      '新用户前 7 天可用全部官方模型（含推理档）',
       '全部核心功能（期刊分区列 / 标签治理 / 附件体检 / 库内问答 / PDF 对比…）',
       '可接入自己的 OpenAI 兼容接口，不受额度限制',
       '社区支持',
@@ -71,8 +72,8 @@ const DEFAULT_PLANS = {
     tagline: '高频写论文/做综述时用',
     features: [
       '官方模型每日 3000 次',
-      '高级模型（推理档 / 长上下文）',
-      '高峰时段优先通道',
+      '全部官方模型（含推理档 / 长上下文），不设试用期限制',
+      '可接入自己的 OpenAI 兼容接口，多通道一键切换',
       '邮件优先支持',
     ],
   },
@@ -128,12 +129,29 @@ const DEFAULT_PAY = {
   note: '扫码支付后点「我已完成支付」，管理员核销后自动开通（一般几分钟内）。',
 };
 
+/**
+ * 全局 AI 策略（1.4.9）。
+ * trialDays = 新用户「全模型试用」天数：以 user.createdAt 为起点现场计算，
+ *   **不需要落盘、不需要迁移**；改成 0 即整体关闭。
+ *   试用只放开「高级模型」的可用性，不动每日额度（额度仍按套餐来）。
+ */
+const DEFAULT_AI = {
+  trialDays: 7,
+};
+
 /** 激活码字母表：去掉易混的 0/O/1/I/L */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 /* ---------------- 基础 ---------------- */
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+/** 整数夹取（仅在**配置类**字段上用；金额类字段一律拒绝而不是夹取） */
+function clampInt(v, lo, hi, dflt) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(lo, Math.min(hi, n));
+}
 
 /** 默认价格表：由 DEFAULT_PRICE_OPTIONS 生成，避免两处默认值漂移 */
 function defaultPriceItems() {
@@ -164,6 +182,7 @@ function newDoc() {
     priceItems: defaultPriceItems(),
     priceOptions: clone(DEFAULT_PRICE_OPTIONS),   // 派生视图，normalize 会重算
     pay: clone(DEFAULT_PAY),
+    ai: clone(DEFAULT_AI),
     orders: [],
     codes: [],
   };
@@ -193,6 +212,10 @@ function normalize(doc) {
   // ---- 收款 ----
   if (!out.pay || typeof out.pay !== 'object') out.pay = clone(DEFAULT_PAY);
   else out.pay = Object.assign(clone(DEFAULT_PAY), out.pay);
+  // ---- AI 全局策略（1.4.9）----
+  if (!out.ai || typeof out.ai !== 'object') out.ai = clone(DEFAULT_AI);
+  else out.ai = Object.assign(clone(DEFAULT_AI), out.ai);
+  out.ai = { trialDays: clampInt(out.ai.trialDays, 0, 365, DEFAULT_AI.trialDays) };
   if (!Array.isArray(out.orders)) out.orders = [];
   if (!Array.isArray(out.codes)) out.codes = [];
   // ---- 优惠券（1.4.6）：只做轻修复，**不重建**，否则会丢掉 uses 占用记录 ----
@@ -517,6 +540,37 @@ function effectivePrice(doc, planId, months, now) {
 function planOf(doc, id) {
   const p = (doc.plans || {})[String(id || '')];
   return p || (doc.plans && doc.plans.Free) || DEFAULT_PLANS.Free;
+}
+
+/** 新用户全模型试用天数（0 = 关闭） */
+function trialDaysFor(doc) {
+  const n = Number((doc && doc.ai && doc.ai.trialDays));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(365, Math.round(n));
+}
+
+/**
+ * 「新用户全模型试用」状态（纯函数，便于按毫秒级边界覆盖）。
+ * - createdAt 缺失 / trialDays <= 0 → 一律**不活跃**（不猜、不给默认试用）
+ * - 起点 = 注册时间 createdAt；用时间戳现场算 ⇒ 无需落盘、无需迁移
+ * - 已过期时仍返回 endsAt（供界面说明「试用已于 X 结束」）
+ * @returns {{active:boolean, days:number, endsAt:string|null, daysLeft:number}}
+ */
+function trialState(createdAt, trialDays, now) {
+  const n = Number(trialDays);
+  const days = Number.isFinite(n) && n > 0 ? Math.min(365, Math.round(n)) : 0;
+  const out = { active: false, days: days, endsAt: null, daysLeft: 0 };
+  if (!days) return out;
+  const start = Date.parse(createdAt || '') || 0;
+  if (!start) return out;
+  const end = start + days * DAY_MS;
+  out.endsAt = new Date(end).toISOString();
+  const t = Number.isFinite(now) ? now : Date.now();
+  const left = end - t;
+  if (left <= 0) return out;
+  out.active = true;
+  out.daysLeft = Math.ceil(left / DAY_MS);
+  return out;
 }
 
 /** 某等级的每日官方模型额度（管理员在用户级显式设置的 dailyLimit 优先级更高） */
@@ -979,10 +1033,10 @@ function redeem(doc, code, user, now) {
 
 module.exports = {
   DAY_MS, ORDER_TTL_MS, MAX_MONTHS,
-  DEFAULT_PLANS, DEFAULT_PRICE_OPTIONS, DEFAULT_PAY,
+  DEFAULT_PLANS, DEFAULT_PRICE_OPTIONS, DEFAULT_PAY, DEFAULT_AI,
   CYCLE_PRESETS, PRICE_STATE_TEXT,
   newDoc, normalize, newCode, normCode,
-  planOf, dailyLimitFor, priceOf, clampMonths, plansForClient,
+  planOf, dailyLimitFor, priceOf, clampMonths, plansForClient, trialState, trialDaysFor,
   // v3 价格表
   cycleOfMonths, cycleName, isoOrNull, priceState, sanitizePriceItem,
   migratePriceOptions, derivePriceOptions, priceItemOut,

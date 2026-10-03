@@ -20,7 +20,7 @@ const path = require('path');
 const http = require('http');
 
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-cp-'));
-const PORT = 18300 + Math.floor(Math.random() * 300);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY;
@@ -67,7 +67,8 @@ const iso = (t) => new Date(t).toISOString();
 const fresh = () => membership.normalize(membership.newDoc());
 
 (async () => {
-  await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  PORT = server.address().port;
 
   /* ================= A. 码与参数校验 ================= */
   const a1 = coupon.createCoupons(fresh(), { type: 'percent', percent: 25 }).coupons[0];
@@ -284,7 +285,7 @@ const fresh = () => membership.normalize(membership.newDoc());
   ok(!!tok, 'J1 测试账号登录成功');
 
   const h0 = await req('GET', '/api/health');
-  eq(h0.json.version, '1.4.8', 'J2 服务端版本 1.4.8');
+  eq(h0.json.version, '1.4.9', 'J2 服务端版本 1.4.9');
   ok('coupons' in h0.json && 'couponsActive' in h0.json, 'J3 health 暴露优惠券观测字段', h0.json.coupons);
 
   const jc = await req('POST', '/api/admin/coupons', { type: 'percent', percent: 30, maxUses: 2, perUser: 1, note: '上线三折优惠' });

@@ -16,7 +16,7 @@ const http = require('http');
 
 const ROOT = path.join(__dirname, '..');
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-admin-e2e-'));
-const PORT = 19000 + Math.floor(Math.random() * 800);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 const SHOT = path.join(os.tmpdir(), 'pp-admin-membership.png');
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
@@ -67,7 +67,8 @@ function req(method, p, body, token, extraHeaders) {
 }
 
 (async () => {
-  await new Promise((res) => server.listen(PORT, '127.0.0.1', res));
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  PORT = server.address().port;
 
   // ---- 造数据：一个待核销订单（走真实用户链路）+ 一个 Free 用户 ----
   await req('POST', '/api/auth/register', { email: 'buyer@test.local', password: 'pw12345678', nickname: '买家' });
@@ -589,6 +590,136 @@ function req(method, p, body, token, extraHeaders) {
 
     await page.click('#sessions-mask button:has-text("关闭")');
     await page.waitForTimeout(200);
+
+    /* ---- E24：套餐 AI 能力（1.4.9，高级模型白名单 + 新用户全模型试用） ---- */
+    // 先配一条上游通道：没有活动通道时网关会在**模型校验之前**返回 503，
+    // 那样就测不到 403（校验顺序是 通道 → 上线清单 → 套餐）
+    await req('POST', '/api/admin/channels', { id: 'e2e-aitier', name: 'E2E 分层通道',
+      provider: 'custom', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-e2e',
+      model: 'm-free', models: ['m-free', 'm-pro'] });
+    await req('PUT', '/api/admin/channels/active', { id: 'e2e-aitier' });
+    await req('PUT', '/api/admin/channels/published', { models: ['auto', 'm-free', 'm-pro'] });
+    await req('PUT', '/api/admin/channels/high-tier', { models: ['m-pro'] });
+
+    await page.click('#tab-channels');
+    await page.evaluate(() => loadChannels());
+    await page.waitForTimeout(350);
+
+    eq(await page.textContent('#ch-ht'), '1 个需 Pro', 'E24.1 概览显示高级模型数');
+    const htChips = await page.textContent('#ht-chips');
+    ok(htChips.includes('m-free') && htChips.includes('m-pro'),
+      'E24.2 分级候选来自上线清单', htChips.replace(/\s+/g, ' ').slice(0, 140));
+    const htOn = await page.locator('#ht-chips .chip.on').count();
+    eq(htOn, 1, 'E24.3 已分级的模型显示为选中态');
+    const SHOT_HT = path.join(os.tmpdir(), 'pp-admin-high-tier.png');
+    await page.screenshot({ path: SHOT_HT, fullPage: true });
+    ok(true, 'E24.4 高级模型卡片截图: ' + SHOT_HT);
+
+    // auto 不接受分级（它是全体用户的兜底入口，配了也不生效）
+    await page.locator('#ht-chips .chip', { hasText: 'auto' }).first().click();
+    await page.waitForFunction(() => {
+      const t = document.getElementById('ht-msg');
+      return t && t.textContent.indexOf('恒') >= 0;
+    }, { timeout: 5000 });
+    ok(true, 'E24.5 点 auto 被拒绝并说明「恒免费」',
+      (await page.textContent('#ht-msg')).slice(0, 80));
+
+    // 取消分级 → 空清单（全部免费）
+    // 注意：页面级已有 page.on('dialog', accept)，这里**不要**再挂 once，否则会双重处理
+    await page.locator('button:has-text("取消分级")').click();
+    await page.waitForFunction(() => {
+      const t = document.getElementById('ht-msg');
+      return t && t.textContent.indexOf('全部') >= 0;
+    }, { timeout: 6000 });
+    const cleared = await req('GET', '/api/admin/channels');
+    eq((cleared.json.highTierModels || []).length, 0, 'E24.6 取消分级真的清空了清单');
+    eq(await page.textContent('#ch-ht'), '无分级', 'E24.7 概览同步为「无分级」');
+
+    // 再从界面上真点一次分级（走完整链路：点 chip → 保存 → 概览刷新）
+    await req('PUT', '/api/admin/channels/high-tier', { models: [] });
+    await page.evaluate(() => loadChannels());
+    await page.waitForTimeout(300);
+    // 取消分级后全部免费 → 点一下 m-pro 把它设为需 Pro，保存后上传的正是「差集」
+    await page.locator('#ht-chips .chip', { hasText: 'm-pro' }).first().click();
+    await page.locator('button:has-text("保存分级")').click();
+    await page.waitForFunction(() => {
+      const t = document.getElementById('ht-msg');
+      return t && t.textContent.indexOf('需专业版') >= 0;
+    }, { timeout: 6000 });
+    const saved = await req('GET', '/api/admin/channels');
+    eq((saved.json.highTierModels || []).join(','), 'm-pro', 'E24.8 界面点选 → 服务端分级生效');
+
+    /* ---- 试用天数 + 每档高级模型开关（走 renderPlanForm 回填） ---- */
+    await page.click('#tab-membership');
+    await page.waitForSelector('#p-trial-days', { timeout: 5000 });
+    eq(await page.inputValue('#p-trial-days'), '7',
+      'E24.9 默认试用天数 = 7（1.4.9 的新默认，回填来自 renderPlanForm）');
+    eq(await page.isChecked('#p-pro-hi'), true, 'E24.10 Pro 默认勾选「可用高级模型」');
+    eq(await page.isChecked('#p-free-hi'), false, 'E24.11 Free 默认不勾选');
+
+    await page.fill('#p-trial-days', '10');
+    await page.click('#p-plan-save');
+    await page.waitForFunction(() => {
+      const t = document.getElementById('p-msg');
+      return t && t.textContent.indexOf('已保存') >= 0;
+    }, { timeout: 6000 });
+    ok(true, 'E24.12 保存配置给出反馈（反馈写在 renderPlanForm 之后，不会被清掉）',
+      (await page.textContent('#p-msg')).slice(0, 60));
+    // ★ 回填必须是 10：这里正是 renderPlanForm 读错作用域（r.ai）时会炸/回落到 0 的地方
+    eq(await page.inputValue('#p-trial-days'), '10',
+      'E24.13 保存后回填 10 天（renderPlanForm 作用域正确）');
+    const mcfg = await req('GET', '/api/admin/membership');
+    eq(mcfg.json.ai && mcfg.json.ai.trialDays, 10, 'E24.14 服务端确实存了 10 天');
+    const jsErrAfterSave = jsErrors.length;
+    eq(jsErrAfterSave, 0, 'E24.15 保存配置不产生 JS 报错', jsErrors.slice(0, 2));
+
+    /* ---- 试用对真实用户的效果（网关侧） ---- */
+    const fm = 'tierfree@test.local';
+    await req('POST', '/api/admin/users', { email: fm, password: 'pw12345678', nickname: '分层测试' });
+    const flog = await req('POST', '/api/auth/login', { email: fm, password: 'pw12345678' });
+    const ftok = flog.json.token;
+    ok(!!ftok, 'E24.16 分层测试账号登录成功');
+
+    // 试用 10 天 → Free 也能用高级模型
+    const fm1 = await req('GET', '/v1/models', null, ftok);
+    const ids1 = fm1.json.data.map((x) => x.id);
+    ok(ids1.includes('m-pro'), 'E24.17 试用期内 Free 可用高级模型', ids1);
+    const fme1 = await req('GET', '/api/auth/me', null, ftok);
+    eq(fme1.json.user.ai.reason, 'trial', 'E24.18 me.ai 标明是试用');
+    eq(fme1.json.user.ai.trial.days, 10, 'E24.19 试用天数与配置一致');
+
+    // 关闭试用 → 立刻回落基础模型
+    await req('PUT', '/api/admin/membership', { ai: { trialDays: 0 } });
+    const fm2 = await req('GET', '/v1/models', null, ftok);
+    const ids2 = fm2.json.data.map((x) => x.id);
+    ok(ids2.includes('auto') && ids2.includes('m-free'), 'E24.20 试用关闭后 Free 只能用基础模型', ids2);
+    ok(!ids2.includes('m-pro'), 'E24.21 高级模型从 Free 的列表里消失', ids2);
+    const fme2 = await req('GET', '/api/auth/me', null, ftok);
+    eq(fme2.json.user.ai.reason, 'none', 'E24.22 me.ai 回落 none');
+    eq((fme2.json.user.ai.lockedModels || []).join(','), 'm-pro',
+      'E24.23 lockedModels 列出需升级的模型（面板据此灰显）');
+
+    const f403 = await req('POST', '/v1/chat/completions', { model: 'm-pro', messages: [] }, ftok);
+    eq(f403.status, 403, 'E24.24 直接调高级模型 → 403');
+    eq(f403.json.code, 'MODEL_REQUIRES_PRO', 'E24.25 带可编程识别的 code');
+    ok(/需要专业版/.test(f403.json.error), 'E24.26 文案说明原因', f403.json.error);
+
+    // 「过期不踢下线」：只是收模型，会话与额度不受影响
+    ok(typeof fme2.json.user.dailyLimit === 'number' && fme2.json.user.dailyLimit > 0,
+      'E24.27 试用结束不影响每日额度', fme2.json.user.dailyLimit);
+    const fSess = await req('GET', '/api/sessions', null, ftok);
+    eq(fSess.status, 200, 'E24.28 会话仍然有效（收回模型 ≠ 踢下线）');
+
+    // 清理测试账号，避免影响后面的断言
+    const fAll = await req('GET', '/api/admin/users');
+    const fU = (fAll.json.users || []).find((u) => u.email === fm);
+    if (fU) { await req('DELETE', '/api/admin/users/' + fU.id); }
+    const onPub = await req('PUT', '/api/admin/channels/published', { models: [] });
+    ok(onPub.status === 200, 'E24.29 复位上线清单（不影响后续断言）');
+    await req('PUT', '/api/admin/channels/high-tier', { models: [] });
+    await req('PUT', '/api/admin/membership', { ai: { trialDays: 7 } });
+    await req('DELETE', '/api/admin/channels/e2e-aitier');
+    ok(true, 'E24.30 复位通道 / 分级 / 试用配置');
 
     await page.click('#tab-membership');
     await page.waitForTimeout(400);

@@ -44,8 +44,8 @@ class El {
   }
   getAttribute(k) { return k === 'class' ? this.className : (k in this._attrs ? this._attrs[k] : null); }
   removeAttribute(k) { if (k === 'class') this.className = ''; else delete this._attrs[k]; }
-  appendChild(c) { this.children.push(c); return c; }
-  removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; }
+  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  removeChild(c) { c.parentNode = null; this.children = this.children.filter((x) => x !== c); return c; }
   addEventListener(ev, fn) { this.handlers[ev] = fn; }
   removeEventListener(ev) { delete this.handlers[ev]; }
   click() { if (this.handlers.click) return this.handlers.click({ preventDefault() {} }); return undefined; }
@@ -56,7 +56,10 @@ class El {
     if (this.children.length) return this.children.map((c) => c.textContent).join('');
     return this._text;
   }
-  set innerHTML(v) { this._text = ''; this.children = []; if (v) this._text = String(v); }
+  set innerHTML(v) {
+    this.children.forEach((c) => { c.parentNode = null; });
+    this._text = ''; this.children = []; if (v) this._text = String(v);
+  }
   get innerHTML() { return this.textContent; }
   get firstChild() { return this.children.length ? this.children[0] : null; }
   /** 深度优先收集所有节点（便于断言） */
@@ -70,7 +73,6 @@ function makeDom(html) {
   let m;
   while ((m = re.exec(html))) ids.add(m[1]);
   const registry = new Map();
-  for (const id of ids) registry.set(id, new El('div'));
   const document = {
     getElementById: (id) => registry.get(id) || null,
     createElementNS: (ns, tag) => new El(tag),
@@ -78,6 +80,14 @@ function makeDom(html) {
     createTextNode: (t) => { const e = new El('#text'); e.textContent = t; return e; },
     body: new El('body'),
   };
+  // 面板里有「面板已关」守卫（!el.parentNode 就跳过渲染），所以迷你 DOM 必须让
+  // 已有元素**挂在文档上**，否则这类守卫会静默吃掉整段渲染（曾经就是这么误判的）。
+  for (const id of ids) {
+    const el = new El('div');
+    el.parentNode = document.body;
+    document.body.children.push(el);
+    registry.set(id, el);
+  }
   return { document, registry };
 }
 
@@ -124,6 +134,9 @@ function fakeAccount(over) {
       days: Array.from({ length: 30 }, (_, i) => ({ date: isoDay(i - 29), count: i % 4 })),
     }),
     plans: async () => PLANS_PAYLOAD,
+    // 1.4.9 套餐 AI 能力（同步方法——面板是同步读取后立即渲染的）
+    ai: () => ({ highTier: true, reason: 'plan', trial: null,
+      models: ['auto', 'glm-5.3-flash'], lockedModels: [], defaultModel: 'auto' }),
     onSessionChanged: () => () => {},
   }, over || {});
   return new Proxy(base, {
@@ -441,6 +454,128 @@ const flush = () => new Promise((r) => setImmediate(r));
   ({ registry } = boot({ isLoggedIn: () => false, sessions: async () => DEVICES }));
   await flush(); await flush(); await flush();
   eq(registry.get('pp-dev-block').style.display, 'none', 'H24 未登录不显示设备块');
+
+  /* ============ I. 套餐 AI 能力（0.24.8）：试用横幅 / 锁定模型 / 可见回落 ============ */
+  {
+    const selOf = (reg) => reg.get('pp-account-official-model');
+    const noteOf = (reg) => reg.get('pp-ai-tier-note');
+
+    // ---- I1. Pro：无试用、无锁定 → 说明条不出现 ----
+    ({ registry } = boot({ ai: () => ({ highTier: true, reason: 'plan', trial: null,
+      models: ['auto', 'glm-5.3-flash'], lockedModels: [], defaultModel: 'auto' }) }));
+    await flush(); await flush(); await flush();
+    eq(noteOf(registry).style.display, 'none', 'I1 Pro 用户没有可说的分层信息 → 说明条隐藏');
+
+    // ---- I2. 试用中：横幅出现，说明剩余天数与到期日 ----
+    const trialEnd = new Date(Date.now() + 5 * DAY).toISOString();
+    ({ registry } = boot({ ai: () => ({ highTier: true, reason: 'trial',
+      trial: { active: true, days: 7, daysLeft: 5, endsAt: trialEnd },
+      models: ['auto', 'glm-5.3-flash', 'hunyuan-2.0-thinking'], lockedModels: [], defaultModel: 'auto' }) }));
+    await flush(); await flush(); await flush();
+    const nTrial = noteOf(registry);
+    ok(nTrial.style.display !== 'none', 'I2 试用中 → 说明条出现');
+    has(nTrial.textContent, '全模型试用中', 'I3 说明是试用');
+    has(nTrial.textContent, '剩 5 天', 'I4 显示剩余天数');
+    has(nTrial.textContent, '回到基础模型', 'I5 说明到期后果（不是只报喜）');
+    has(nTrial.className, 'pp-ai-tier-trial', 'I6 试用条用醒目样式');
+
+    // 试用中不应出现 🔒 项
+    const optsTrial = selOf(registry).children.filter((c) => c.tag === 'option');
+    eq(optsTrial.filter((o) => /🔒/.test(o.textContent)).length, 0, 'I7 试用中不出现锁定项');
+
+    // ---- I8. Free 试用已结束：列出需升级的模型 + 当前可用 ----
+    const endedAt = new Date(Date.now() - 2 * DAY).toISOString();
+    ({ registry } = boot({ ai: () => ({ highTier: false, reason: 'none',
+      trial: { active: false, days: 7, daysLeft: 0, endsAt: endedAt },
+      models: ['auto', 'glm-5.3-flash'],
+      lockedModels: ['deepseek-v4-pro', 'hunyuan-2.0-thinking'], defaultModel: 'auto' }) }));
+    await flush(); await flush(); await flush();
+    const nLock = noteOf(registry);
+    ok(nLock.style.display !== 'none', 'I8 有需升级的模型 → 说明条出现');
+    has(nLock.textContent, '需要专业版', 'I9 说清原因');
+    has(nLock.textContent, 'deepseek-v4-pro', 'I10 列出锁定的模型');
+    has(nLock.textContent, '当前可用：auto、glm-5.3-flash', 'I11 同时给出当前可用的（不只说不许）');
+    has(nLock.textContent, '试用已于', 'I12 说明为什么现在不能用了（试用结束）');
+    ok(!/pp-ai-tier-trial/.test(nLock.className), 'I13 非试用态不用试用样式');
+
+    // ---- I14. 下拉里锁定模型以 🔒 灰显列出（可见差距才有转化力） ----
+    const optsLock = selOf(registry).children.filter((c) => c.tag === 'option');
+    const locked = optsLock.filter((o) => /^🔒 /.test(o.textContent));
+    ok(locked.length === 2, 'I14 两个锁定模型以 🔒 列出', optsLock.map((o) => o.textContent));
+    has(locked[0] ? locked[0].textContent : '', 'deepseek-v4-pro', 'I15 锁定项写明模型名');
+    ok(!!(locked[0] && locked[0].style.color), 'I16 锁定项灰显（有独立颜色）',
+      locked[0] && locked[0].style);
+    eq(selOf(registry).value, 'auto', 'I17 当前选择仍是 auto');
+
+    // ---- I18. 当前保存的模型已被锁 → 可见地回落到默认，且写回配置 ----
+    let upserts = [];
+    const c = boot({ ai: () => ({ highTier: false, reason: 'none',
+      trial: { active: false, days: 7, daysLeft: 0, endsAt: endedAt },
+      models: ['auto', 'glm-5.3-flash'], lockedModels: ['deepseek-v4-pro'], defaultModel: 'auto' }) });
+    // 需要让 getChannel 返回一个「已被锁」的当前模型
+    c.sandbox.Zotero.PaperPilot.channels = Object.assign({}, fakeChannels, {
+      getChannel: () => ({ id: 'official', model: 'deepseek-v4-pro', models: ['auto', 'deepseek-v4-pro'] }),
+      upsert: (d) => { upserts.push(d); return { ok: true }; },
+    });
+    // 重新跑一次渲染（channels 已被换掉，renderAll 会读到新值）
+    vm.runInContext('(typeof Zotero !== "undefined")', c.sandbox);
+    ({ registry } = c);
+    registry.get('pp-account-refresh').click();   // 触发 renderAccount → fillOfficialModelSelect
+    await flush(); await flush(); await flush();
+    eq(selOf(registry).value, 'auto', 'I18 已锁的当前模型 → 下拉回落到 auto');
+    has(noteOf(registry).textContent, '已回落到 auto', 'I19 回落是**可见**的（写明原因，不静默改配置）');
+    ok(upserts.some((d) => d.model === 'auto'), 'I20 回落同时写回通道配置', upserts);
+
+    // ---- I21. 选中锁定项：不改配置 + 给出提示 ----
+    let upserts2 = [];
+    const d = boot({ ai: () => ({ highTier: false, reason: 'none', trial: null,
+      models: ['auto', 'glm-5.3-flash'], lockedModels: ['deepseek-v4-pro'], defaultModel: 'auto' }) });
+    d.sandbox.Zotero.PaperPilot.channels = Object.assign({}, fakeChannels, {
+      getChannel: () => ({ id: 'official', model: 'auto', models: ['auto', 'glm-5.3-flash'] }),
+      upsert: (x) => { upserts2.push(x); return { ok: true }; },
+    });
+    ({ registry } = d);
+    registry.get('pp-account-refresh').click();
+    await flush(); await flush(); await flush();
+    const sel21 = selOf(registry);
+    sel21.value = 'deepseek-v4-pro';              // 假装用户选了被锁的那项
+    sel21.handlers.change();
+    await flush(); await flush(); await flush();
+    ok(!upserts2.some((x) => x.model === 'deepseek-v4-pro'), 'I21 选中锁定项不会写进配置', upserts2);
+    has(noteOf(registry).textContent, '需要专业版', 'I22 当场给出「需要专业版」的反馈');
+    has(noteOf(registry).textContent, '保持原模型不变', 'I23 并且说明没有改动');
+
+    // ---- I24. 旧服务端（没有 ai 块）：不做任何锁定与回落 ----
+    let upserts3 = [];
+    const e = boot({});   // 基础 fakeAccount：ai() 已被上面的 stub 覆盖为 plan
+    e.sandbox.Zotero.PaperPilot.account = fakeAccount({
+      ai: () => ({ highTier: true, reason: 'unknown', trial: null, models: [], lockedModels: [], defaultModel: 'auto' }),
+    });
+    e.sandbox.Zotero.PaperPilot.channels = Object.assign({}, fakeChannels, {
+      getChannel: () => ({ id: 'official', model: 'glm-5.3-flash', models: ['auto', 'glm-5.3-flash'] }),
+      upsert: (x) => { upserts3.push(x); return { ok: true }; },
+    });
+    ({ registry } = e);
+    registry.get('pp-account-refresh').click();
+    await flush(); await flush(); await flush();
+    eq(selOf(registry).value, 'glm-5.3-flash', 'I24 旧服务端（reason=unknown）→ 不动用户已选模型');
+    ok(!upserts3.length, 'I25 旧服务端不做回落写入', upserts3);
+    eq(noteOf(registry).style.display, 'none', 'I26 旧服务端不显示分层说明条');
+    eq(selOf(registry).children.filter((o) => /🔒/.test(o.textContent)).length, 0, 'I27 旧服务端不显示锁定项');
+
+    // ---- I28. ai() 返回异常形状：不能抛错（会是未捕获拒绝） ----
+    for (const bad of [async () => null, () => 'not-an-object', () => ({ models: 'oops', lockedModels: 'oops' }),
+      () => { throw new Error('boom'); }]) {
+      ({ registry } = boot({ ai: bad }));
+      await flush(); await flush(); await flush();
+      eq(registry.get('pp-ai-tier-note').style.display, 'none', 'I28 异常 ai() 形状 → 安全降级（' + String(bad).slice(0, 24) + '）');
+    }
+
+    // ---- I29. 未登录：说明条收起 ----
+    ({ registry } = boot({ isLoggedIn: () => false }));
+    await flush(); await flush(); await flush();
+    eq(registry.get('pp-ai-tier-note').style.display, 'none', 'I29 未登录不显示分层说明条');
+  }
 
   console.log('\n会员面板渲染测试：' + pass + ' 项通过，' + fails.length + ' 项失败');
   if (fails.length) {

@@ -69,6 +69,7 @@
     $("pp-account-view").style.display = loggedIn ? "" : "none";
     if (!loggedIn) {
       $("pp-login-password").value = "";
+      renderAiTierNote();
       return;
     }
     const u = A.user() || {};
@@ -87,27 +88,113 @@
     fillOfficialModelSelect();
   }
 
-  /** 官方模型下拉：通道模型列表 + 尽力从网关拉取最新（写入通道 models 缓存） */
+  /**
+   * 套餐 AI 能力的说明条（1.4.9）：试用剩余天数 / 需要升级的模型。
+   * 这段文案是**转化引导**，所以必须同时说清「为什么不能用」和「怎么才能用」。
+   */
+  /**
+   * 归一化 A.ai() 的返回值。**任何异常形状都当作「未知、不限制」**——
+   * 旧服务端没有 ai 块、假实现返回 Promise、字段被人塞了字符串……
+   * 这些都不能变成 `for…of` 上的 TypeError（那会变成未捕获的 Promise 拒绝，
+   * 在 Zotero 里是控制台噪音，在测试里直接打挂进程）。
+   */
+  function aiTier() {
+    const A = account();
+    const UNKNOWN = { highTier: true, reason: "unknown", trial: null,
+      models: [], lockedModels: [], defaultModel: "auto" };
+    if (!A || typeof A.ai !== "function") return UNKNOWN;
+    let raw = null;
+    try { raw = A.ai(); } catch (e) { return UNKNOWN; }
+    if (!raw || typeof raw !== "object") return UNKNOWN;
+    return {
+      highTier: !!raw.highTier,
+      reason: raw.reason || "unknown",
+      trial: (raw.trial && typeof raw.trial === "object") ? raw.trial : null,
+      models: Array.isArray(raw.models) ? raw.models : [],
+      lockedModels: Array.isArray(raw.lockedModels) ? raw.lockedModels : [],
+      defaultModel: raw.defaultModel || "auto",
+    };
+  }
+
+  function renderAiTierNote(note) {
+    const box = $("pp-ai-tier-note");
+    if (!box) return;
+    const A = account();
+    if (!A || !A.isLoggedIn()) { box.style.display = "none"; return; }
+    const AI = aiTier();
+    const parts = [];
+    let cls = "pp-ai-tier";
+    if (AI.reason === "trial" && AI.trial && AI.trial.active) {
+      cls += " pp-ai-tier-trial";
+      parts.push("🎁 全模型试用中，剩 " + AI.trial.daysLeft + " 天（至 "
+        + fmtDate(AI.trial.endsAt) + "）——当前可使用全部官方模型，到期后回到基础模型。");
+    } else if (AI.reason === "none" && AI.lockedModels && AI.lockedModels.length) {
+      const endedAt = AI.trial && AI.trial.endsAt;
+      parts.push("🔒 " + AI.lockedModels.join("、") + " 属于高级模型，需要专业版"
+        + (endedAt ? "（全模型试用已于 " + fmtDate(endedAt) + " 结束）" : "")
+        + "。当前可用：" + (AI.models || []).join("、") + "。");
+    }
+    if (note) parts.push(note);
+    if (!parts.length) { box.style.display = "none"; box.textContent = ""; return; }
+    box.className = cls;
+    box.style.display = "";
+    box.textContent = parts.join(" ");
+  }
+
+  /**
+   * 官方模型下拉（1.4.9 套餐分层）：
+   *  - 可用模型以服务端 /v1/models 为准（**已按套餐过滤**），列表天然正确；
+   *  - 需升级的模型以 🔒 灰显追加在末尾——让用户**看见**自己缺什么，比藏起来更有转化力；
+   *  - 当前保存的模型若已被锁（试用结束 / 套餐到期回落），**可见地**回落到默认并写明原因，
+   *    **不静默改配置**（静默会让用户以为还在用原来那个模型）；
+   *  - 旧服务端没有 ai 块（reason === "unknown"）→ 一律不做锁定与回落，避免把老服务端用户锁死。
+   */
   async function fillOfficialModelSelect() {
     const A = account(), C = channels();
     const sel = $("pp-account-official-model");
-    if (!A || !C || !sel || !A.isLoggedIn()) return;
-    const ch = C.getChannel(C.OFFICIAL_ID);
-    const render = (models) => {
-      if (!sel.parentNode) return; // 面板已关
+    if (!A || !C || !sel || !A.isLoggedIn()) { renderAiTierNote(); return; }
+    const AI = aiTier();
+    const known = AI.reason !== "unknown";
+
+    const paint = (allowed) => {
+      if (!sel.parentNode) return ""; // 面板已关
+      const ch = C.getChannel(C.OFFICIAL_ID);
+      const cur = (ch && ch.model) || AI.defaultModel;
+      // 已知可用集（新服务端）→ 以服务端为准；
+      // 未知（旧服务端没有 ai 块）→ 用通道缓存，**绝不擅自缩小用户的选择**
+      let list = (allowed && allowed.length) ? allowed.slice()
+        : ((ch && Array.isArray(ch.models) && ch.models.length) ? ch.models.slice() : [AI.defaultModel]);
+      if (list.indexOf(AI.defaultModel) < 0) list.unshift(AI.defaultModel);
+      // 无从判断可用性时，当前选择必须留在列表里 —— 否则下拉会显示成别的模型，
+      // 看起来像「配置被改了」，而实际没改（显示与配置不符最容易被当成 bug 报上来）
+      if (!known && cur && list.indexOf(cur) < 0) list.unshift(cur);
       sel.innerHTML = "";
-      const list = models && models.length ? models : ["auto"];
       for (const m of list) sel.appendChild(el("option", { value: m }, m));
-      sel.value = list.includes(ch.model) ? ch.model : "auto";
+      if (known) {
+        for (const m of AI.lockedModels) {
+          if (list.indexOf(m) >= 0) continue;
+          const o = el("option", { value: m }, "🔒 " + m);
+          o.style.color = "var(--pp-muted)";
+          sel.appendChild(o);
+        }
+      }
+      if (list.indexOf(cur) >= 0) { sel.value = cur; return ""; }
+      if (!known) { sel.value = list[0]; return ""; }   // 无从判断 → 不动用户的配置
+      try { C.upsert({ id: C.OFFICIAL_ID, model: AI.defaultModel }); } catch (e) { /* ignore */ }
+      sel.value = AI.defaultModel;
+      return "原选用的「" + cur + "」现在不可用，已回落到 " + AI.defaultModel + "。";
     };
-    render(ch.models);
+
+    let note = paint(AI.models);
+    renderAiTierNote(note);
     try {
       const r = await C.fetchModels({ baseUrl: A.gatewayUrl(), apiKey: A.token(), timeoutMs: 6000 });
       if (r.ok && r.models && r.models.length) {
-        // 去重合并 auto，写回通道 models 缓存（下次秒开）
-        const merged = ["auto", ...r.models.filter((m) => m !== "auto")];
-        C.upsert({ id: C.OFFICIAL_ID, models: merged });
-        render(merged);
+        // 去重合并默认模型，写回通道 models 缓存（下次秒开）
+        C.upsert({ id: C.OFFICIAL_ID,
+          models: [AI.defaultModel].concat(r.models.filter((m) => m !== AI.defaultModel)) });
+        note = paint(known && AI.models.length ? AI.models : r.models);
+        renderAiTierNote(note);
       }
     } catch (e) { /* 拉取失败保持现列表 */ }
   }
@@ -276,9 +363,21 @@
   }
 
   function onOfficialModelChange() {
-    const C = channels();
-    const v = $("pp-account-official-model").value;
+    const C = channels(), A = account();
+    const sel = $("pp-account-official-model");
+    if (!C || !sel) return;
+    const v = sel.value;
+    const AI = aiTier();
+    // 锁定的模型被选中：先把下拉复位到合法状态，再把反馈写在**刷新之后**
+    // （写在刷新之前会被刷新重置掉——这是本项目踩过的坑）
+    if (AI.lockedModels.indexOf(v) >= 0) {
+      Promise.resolve(fillOfficialModelSelect()).then(() => {
+        renderAiTierNote("🔒「" + v + "」需要专业版，已保持原模型不变。");
+      }).catch(() => { /* ignore */ });
+      return;
+    }
     try { C.upsert({ id: C.OFFICIAL_ID, model: v }); } catch (e) { /* ignore */ }
+    renderAiTierNote("");
   }
 
   /* ==================== 会员（0.23.0） ====================

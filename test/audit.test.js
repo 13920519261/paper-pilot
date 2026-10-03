@@ -17,7 +17,7 @@ const path = require('path');
 const http = require('http');
 
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-audit-'));
-const PORT = 17800 + Math.floor(Math.random() * 300);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY;
@@ -138,7 +138,8 @@ const readAuditFile = () => {
 
     /* ================= B. 真实接口：跑一遍管理操作 ================= */
 
-    await new Promise((res) => server.listen(PORT, '127.0.0.1', res));
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    PORT = server.address().port;
 
     // 造数据：一个普通用户 + 一个待核销订单
     await req('POST', '/api/auth/register', { email: 'buyer@test.local', password: 'pw12345678' });
@@ -234,7 +235,7 @@ const readAuditFile = () => {
 
     /* ---- health ---- */
     const h = (await req('GET', '/api/health')).json;
-    eq(h.version, '1.4.8', 'B23 服务端版本');
+    eq(h.version, '1.4.9', 'B23 服务端版本');
     ok(typeof h.auditBytes === 'number' && h.auditBytes > 0, 'B24 health 暴露审计日志体积', h.auditBytes);
   } catch (e) {
     fails.push('异常中断：' + ((e && e.stack) || e));

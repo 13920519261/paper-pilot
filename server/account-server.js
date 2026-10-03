@@ -10,7 +10,8 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.8，插件 0.24.7；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
+ * 会员域（服务端 1.4.9，插件 0.24.8；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券
+ *          + 套餐 AI 能力（高级模型白名单 / 新用户全模型试用））：
  * 登录设备（1.4.7）：令牌带 sid/设备/来源 IP 与最近活动；用户可自查并踢出设备，
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
@@ -69,6 +70,9 @@
  *         GET /api/admin/channels/:id/models · POST /api/admin/channels/detect
  *   上线：PUT /api/admin/channels/published {models:[...]}（0.15.0 对外上线模型清单，
  *         空数组=全部上线；/v1/models 只返回上线模型，显式调用未上线模型返回 400）
+ *   分级：PUT /api/admin/channels/high-tier {models:[...]}（1.4.9 高级模型清单——仅这些
+ *         模型需要「可用高级模型」的套餐（plans[].highTierModels）或新用户试用期；
+ *         auto 恒免费。空数组 = 不存在高级模型，全部免费）
  *
  * 数据：server/data/users.json（scrypt 密码散列 + 令牌表，令牌仅存散列）
  *      server/data/channels.json（官方网关上游通道池 + active + publishedModels，
@@ -399,7 +403,17 @@ function userForClient(user) {
       days: usageDays(user, USAGE_KEEP_DAYS),
     },
   };
-  if (user.expiresAt) out.expiresAt = user.expiresAt; // 套餐有效期（可缺省）
+    if (user.expiresAt) out.expiresAt = user.expiresAt; // 套餐有效期（可缺省）
+    // 1.4.9 套餐 AI 能力（供插件端展示与升级引导；lockedModels 让面板能灰显）
+    const av = modelsForUser(user);
+    out.ai = {
+      highTier: av.highTier,
+      reason: av.reason,              // plan | trial | none
+      trial: av.trial,                // {active, days, endsAt, daysLeft}
+      models: av.models,              // 当前可用
+      lockedModels: av.locked,        // 需升级（升级引导用）
+      defaultModel: 'auto',
+    };
   return out;
 }
 
@@ -728,7 +742,8 @@ function publishedModels() {
   return s || [];
 }
 
-function gatewayModels() {
+/** 官方网关「全部可用模型」（不区分套餐）。auto 恒在首位。 */
+function gatewayModelsAll() {
   const pub = publishedModels();
   const c = activeChannel();
   const out = ['auto'];
@@ -737,6 +752,70 @@ function gatewayModels() {
     if (!out.includes(m)) out.push(m);
   }
   return out;
+}
+
+/**
+ * 高级模型清单（1.4.9）：channels.json 顶层 highTierModels。
+ * 语义与 publishedModels 正交 —— publishedModels 定「对外可见/可调用的范围」，
+ * highTierModels 定「其中哪些属于付费档」。两者是子集关系（不是子集也不报错，
+ * 交集外的项自然不生效）。auto 恒免费，即使被误配也不受影响。
+ */
+function highTierModels() {
+  const s = sanitizeModels(channelsStore.data.highTierModels);
+  return s || [];
+}
+
+/* ---------------- 套餐 AI 能力（1.4.9） ---------------- */
+
+/**
+ * 新用户「全模型试用」状态。
+ * 起点取 user.createdAt 现场计算 ⇒ 零迁移、无需落盘；改 membership.ai.trialDays
+ * 即对全体生效（缩短会立即结束进行中的试用，这是政策语义，不额外记账）。
+ */
+function trialOf(user, now) {
+  // 计算逻辑在 membership.trialState（纯函数，单测覆盖到毫秒边界）
+  return membership.trialState(
+    user && user.createdAt,
+    membership.trialDaysFor(membershipStore.data),
+    now
+  );
+}
+
+/**
+ * 此刻能否使用高级模型。三条路径：
+ *   plan  = 套餐本身含高级模型（plans[].highTierModels）
+ *   trial = Free 但在新用户试用期内
+ *   none  = 不能用
+ * 注意：**过期不踢下线**的既有语义在这里同样成立 —— 套餐过期后 planEffective
+ * 回落 Free，高级模型也跟着回落，但会话与其它功能不受影响。
+ */
+function highTierAccess(user, now) {
+  const plan = planEffective(user);
+  const p = membership.planOf(membershipStore.data, plan);
+  const tr = trialOf(user, now);
+  if (p && p.highTierModels) return { allowed: true, reason: 'plan', trial: tr };
+  if (tr.active) return { allowed: true, reason: 'trial', trial: tr };
+  return { allowed: false, reason: 'none', trial: tr };
+}
+
+/**
+ * 该用户在官方网关上可用的模型集合。
+ * models = 可调用；locked = 需升级才能用（供插件端灰显 + 升级引导）。
+ * **auto 永不被锁**（它映射到通道默认模型，是全部用户的兜底入口）。
+ */
+function modelsForUser(user, now) {
+  const all = gatewayModelsAll();
+  const hi = highTierModels();
+  const acc = highTierAccess(user, now);
+  const isHi = (m) => m !== 'auto' && hi.includes(m);
+  const locked = all.filter(isHi);
+  return {
+    models: acc.allowed ? all.slice() : all.filter((m) => !isHi(m)),
+    locked: acc.allowed ? [] : locked,
+    highTier: acc.allowed,
+    reason: acc.reason,
+    trial: acc.trial,
+  };
 }
 
 /** 转发 chat/completions：auto→通道模型、合并 extraBody、SSE 透传、用量计数 */
@@ -768,12 +847,23 @@ function gatewayChat(req, res, user) {
     // 0.15.0 模型上线管控：后台配置了 publishedModels 时，显式指定的模型必须在
     // 上线清单内（auto 恒放行——映射到通道默认模型，由通道 model 字段另行控制）
     const pub = publishedModels();
-    if (pub.length) {
-      const asked = (!body.model || body.model === 'auto') ? null : String(body.model);
-      if (asked && !pub.includes(asked)) {
-        return json(res, 400, { ok: false,
-          error: '模型 ' + asked + ' 暂未开放。当前开放模型：auto、' + pub.join('、') });
-      }
+    const asked = (!body.model || body.model === 'auto') ? null : String(body.model);
+    if (pub.length && asked && !pub.includes(asked)) {
+      return json(res, 400, { ok: false,
+        error: '模型 ' + asked + ' 暂未开放。当前开放模型：auto、' + pub.join('、') });
+    }
+
+    // 1.4.9 套餐 AI 能力：高级模型需套餐内含或处于试用期。
+    // 与上线清单一样**明确拒绝**而不是静默换成便宜模型——静默降级会让用户
+    // 以为在用自己选的模型，比报错危险得多。
+    const acc = modelsForUser(user);
+    if (asked && !acc.models.includes(asked)) {
+      const why = acc.trial && acc.trial.days
+        ? '新用户全模型试用已于 ' + String(acc.trial.endsAt || '').slice(0, 10) + ' 结束'
+        : '该模型属于高级模型，需要专业版';
+      return json(res, 403, { ok: false, code: 'MODEL_REQUIRES_PRO',
+        error: why + '。当前可用：' + acc.models.join('、') + '；升级后可用：'
+          + (acc.locked || []).join('、') });
     }
 
     if (dailyUsedOf(user) >= dailyLimitOf(user)) {
@@ -1215,13 +1305,14 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.8',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.9',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
         channels: channelsStore.data.channels.length,
         active: channelsStore.data.active || null,
         publishedModels: publishedModels().length, // 0 = 全部上线
+        highTierModels: highTierModels().length,   // 1.4.9 需付费档的模型数（0 = 无分级）
         // 0.23.0 会员域
         plans: Object.keys(membershipStore.data.plans || {}),
         orders: membershipStore.data.orders.length,
@@ -1594,7 +1685,10 @@ const server = http.createServer(async (req, res) => {
       // 不再依赖「重启 Zotero 触发 /me」这一个续期点
       touchTokenSoon(req);
       if (method === 'GET' && url === '/v1/models') {
-        return json(res, 200, { object: 'list', data: gatewayModels().map((id) => ({ id, object: 'model' })) });
+        // 1.4.9：按套餐过滤——客户端下拉自然只出现该用户可用的模型
+        const av = modelsForUser(user);
+        return json(res, 200, { object: 'list',
+          data: av.models.map((id) => ({ id, object: 'model' })) });
       }
       if (method === 'POST' && url === '/v1/chat/completions') {
         return gatewayChat(req, res, user);
@@ -1699,6 +1793,7 @@ const server = http.createServer(async (req, res) => {
             channels: channelsStore.data.channels.map(channelOut),
             active: channelsStore.data.active || null,
             publishedModels: publishedModels(), // 0.15.0 对外上线清单（空 = 全部上线）
+            highTierModels: highTierModels(),   // 1.4.9 高级模型清单（空 = 无分级）
           });
         }
         if (method === 'POST') {
@@ -1741,6 +1836,26 @@ const server = http.createServer(async (req, res) => {
         auditLog(req, 'channel.published', { target: list.length + ' 个模型', after: { models: list } });
         return json(res, 200, { ok: true, publishedModels: list,
           note: list.length ? '仅上线清单内模型（auto 恒放行）' : '已恢复全部上线' });
+      }
+      // 1.4.9 高级模型清单：{ models: [...] }（空数组 = 无分级，全部免费）
+      if (url === '/api/admin/channels/high-tier' && method === 'PUT') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const list = sanitizeModels(input.models);
+        if (list === undefined) return json(res, 400, { ok: false, error: 'models 必须是模型名数组' });
+        // 高级模型必须是「已上线」的子集才有意义；不在上线清单内只提示不阻断
+        // （可能先配分级再放开上线，顺序不该被强制）。
+        const pub = publishedModels();
+        const outside = pub.length ? list.filter((m) => !pub.includes(m)) : [];
+        channelsStore.data.highTierModels = list;
+        channelsStore.save();
+        log('high-tier models ->', JSON.stringify(list));
+        auditLog(req, 'channel.high-tier', { target: list.length + ' 个模型', after: { models: list } });
+        return json(res, 200, { ok: true, highTierModels: list,
+          outsidePublished: outside,
+          note: list.length
+            ? '仅这些模型需要专业版（auto 恒免费）' + (outside.length ? '；其中 ' + outside.join('、') + ' 不在上线清单内，暂不生效' : '')
+            : '已取消模型分级——全部免费' });
       }
       if (url === '/api/admin/channels/detect' && method === 'POST') {
         let input;
@@ -1808,6 +1923,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, {
           ok: true, orders, codes,
           plans: membership.plansForClient(membershipStore.data),
+          ai: { trialDays: membership.trialDaysFor(membershipStore.data) }, // 1.4.9 新用户全模型试用天数
           priceItems: membershipStore.data.priceItems.map((i) => membership.priceItemOut(membershipStore.data, i)),
           cycles: membership.CYCLE_PRESETS,
           counts: {
@@ -1914,7 +2030,8 @@ const server = http.createServer(async (req, res) => {
         snapshot('membership-change', { note: '改套餐额度/收款配置' });
         const doc = membershipStore.data;
         const cfgBefore = { plans: JSON.parse(JSON.stringify(doc.plans || {})),
-          pay: JSON.parse(JSON.stringify(doc.pay || {})) };
+          pay: JSON.parse(JSON.stringify(doc.pay || {})),
+          ai: JSON.parse(JSON.stringify(doc.ai || {})) };
         if (input.plans && typeof input.plans === 'object') {
           for (const [pid, p] of Object.entries(input.plans)) {
             if (!doc.plans[pid] || !p || typeof p !== 'object') continue;
@@ -1922,10 +2039,19 @@ const server = http.createServer(async (req, res) => {
             if (p.price !== undefined) doc.plans[pid].price = Math.max(0, Number(p.price) || 0);
             if (p.name !== undefined) doc.plans[pid].name = String(p.name).slice(0, 20);
             if (p.tagline !== undefined) doc.plans[pid].tagline = String(p.tagline).slice(0, 60);
+            // 1.4.9：高级模型开关（此前只定义、无处可改——补上管理入口）
+            if (p.highTierModels !== undefined) doc.plans[pid].highTierModels = !!p.highTierModels;
             if (Array.isArray(p.features)) {
               doc.plans[pid].features = p.features.slice(0, 12).map((s) => String(s).slice(0, 80));
             }
           }
+        }
+        // 1.4.9 全局 AI 策略：新用户全模型试用天数（0 = 关闭）
+        // 只夹取这一个字段，不整体 renormalize（避免顺手改动别的表）
+        if (input.ai && typeof input.ai === 'object' && input.ai.trialDays !== undefined) {
+          const td = Math.round(Number(input.ai.trialDays));
+          if (!Number.isFinite(td)) return json(res, 400, { ok: false, error: 'ai.trialDays 必须是数字' });
+          doc.ai = Object.assign({}, doc.ai || {}, { trialDays: Math.max(0, Math.min(365, td)) });
         }
         if (input.pay && typeof input.pay === 'object') {
           if (input.pay.channel !== undefined) doc.pay.channel = String(input.pay.channel).slice(0, 20);
@@ -1956,9 +2082,10 @@ const server = http.createServer(async (req, res) => {
         }
         membershipStore.save();
         log('membership config updated');
-        auditLog(req, 'membership.config', { target: 'plans+pay',
-          before: cfgBefore, after: { plans: input.plans || null, pay: input.pay || null } });
-        return json(res, 200, { ok: true, plans: membership.plansForClient(membershipStore.data) });
+        auditLog(req, 'membership.config', { target: 'plans+pay+ai',
+          before: cfgBefore, after: { plans: input.plans || null, pay: input.pay || null, ai: input.ai || null } });
+        return json(res, 200, { ok: true, plans: membership.plansForClient(membershipStore.data),
+          ai: { trialDays: membership.trialDaysFor(membershipStore.data) } });
       }
 
       if (url === '/api/admin/orders' && method === 'GET') {

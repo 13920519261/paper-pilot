@@ -20,7 +20,7 @@ const path = require('path');
 const http = require('http');
 
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-sess-'));
-const PORT = 18500 + Math.floor(Math.random() * 300);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY;
@@ -73,7 +73,8 @@ const DEV_A = { 'X-PP-Device': 'aaaa1111-2222-3333-4444-555566667777', 'X-PP-Pla
 const DEV_B = { 'X-PP-Device': 'bbbb1111-2222-3333-4444-555566667777', 'X-PP-Platform': 'macOS 15', 'X-PP-Zotero': '10.0.5' };
 
 (async () => {
-  await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  PORT = server.address().port;
 
   /* ================= A. 标识与脱敏 ================= */
   const tk = 'a'.repeat(64);
@@ -248,7 +249,7 @@ const DEV_B = { 'X-PP-Device': 'bbbb1111-2222-3333-4444-555566667777', 'X-PP-Pla
   ok(!!tA && !!tB && !!tC, 'F1 三台设备各自登录成功');
 
   const h0 = await req('GET', '/api/health');
-  eq(h0.json.version, '1.4.8', 'F2 服务端版本 1.4.8');
+  eq(h0.json.version, '1.4.9', 'F2 服务端版本 1.4.9');
   eq(h0.json.sessionsActive, 3, 'F3 health 报告 3 个活跃会话');
   eq(h0.json.devicesOverLimit, 1, 'F4 health 报告 1 个账号设备超限');
 

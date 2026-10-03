@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-ops-'));
-const PORT = 17200 + Math.floor(Math.random() * 400);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
@@ -80,7 +80,8 @@ function rewindOrder(orderId, minutes) {
 }
 
 (async () => {
-  await new Promise((res) => server.listen(PORT, '127.0.0.1', res));
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  PORT = server.address().port;
 
   try {
     /* ================= A. 数据快照与一键回滚 ================= */
@@ -343,7 +344,7 @@ function rewindOrder(orderId, minutes) {
 
     /* ================= D. 既有能力不回归 ================= */
     r = await req('GET', '/api/health');
-    eq(r.json.version, '1.4.8', 'D1 服务端版本');
+    eq(r.json.version, '1.4.9', 'D1 服务端版本');
     ok(/Free/.test((r.json.plans || []).join(',')), 'D2 套餐仍在');
     r = await req('GET', '/api/admin/prices');
     ok(r.json.items.length >= 5, 'D3 价格表仍可用（含 A24 新增的两条）', r.json.items.length);

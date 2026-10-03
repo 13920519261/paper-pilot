@@ -388,6 +388,114 @@ ok("pp-dev-row" in io.open(os.path.join(ROOT, "chrome", "content", "prefs.css"),
 # 设备标识不是凭据：不能出现在会话文件/审计的敏感位置（这里核对它只存 pref）
 ok('Prefs.set("installId"' in acct, "11.13 installId 只持久化到 pref（非凭据，与「令牌不进 pref」不冲突）")
 
+# ---------- 12. 套餐 AI 能力（1.4.9：高级模型白名单 + 新用户全模型试用） ----------
+MEM_LIB = os.path.join(ROOT, "server", "lib", "membership.js")
+mem_src = io.open(MEM_LIB, encoding="utf-8").read()
+
+# --- membership.py：试用纯函数 + 全局 ai 配置 ---
+for fn in ["trialState", "trialDaysFor"]:
+    ok(re.search(r"function %s\b" % fn, mem_src) is not None, "12.1 membership.js 定义 %s()" % fn)
+ok("trialState," in mem_src and "trialDaysFor," in mem_src, "12.2 membership.js 导出试用函数")
+ok("DEFAULT_AI" in mem_src and "trialDays: 7" in mem_src, "12.3 试用天数有默认值（7 天）")
+ok("out.ai = { trialDays: clampInt(" in mem_src,
+   "12.4 normalize 归一化 ai.trialDays（越界夹取、非法回落默认）")
+
+# --- 服务端：解析函数 ---
+for fn in ["highTierModels", "trialOf", "highTierAccess", "modelsForUser", "gatewayModelsAll"]:
+    ok(re.search(r"function %s\b" % fn, srv) is not None, "12.5 服务端定义 %s()" % fn)
+
+# auto 恒定免费：这是防「误配把全体用户锁死」的关键守卫
+ok("m !== 'auto' && hi.includes(m)" in srv, "12.6 auto 恒免费（不进 locked，不被拦）")
+ok("acc.allowed ? all : free" in srv or "acc.allowed ? all.slice() : all.filter((m) => !isHi(m))" in srv,
+   "12.7 可用模型按套餐过滤")
+
+# --- 服务端：网关强制 ---
+ok("MODEL_REQUIRES_PRO" in srv, "12.8 越权调用返回可编程识别的 code")
+# 明确拒绝而非静默换模型（金额/模型类纪律：静默修正比报错危险）
+ok(re.search(r"return json\(res, 403, \{ ok: false, code: 'MODEL_REQUIRES_PRO'", srv) is not None,
+   "12.9 高级模型越权 → 403 明确拒绝（不静默降级到便宜模型）")
+ok("const av = modelsForUser(user);\n        return json(res, 200, { object: 'list'," in srv,
+   "12.10 /v1/models 按套餐返回（不再是全局清单）")
+
+# /v1/models 不得再直接吐全量清单
+ok("gatewayModelsAll().map" not in srv, "12.11 /v1/models 不再直接返回全量模型")
+
+# --- 服务端：对外契约与后台 ---
+ok("out.ai = {" in srv and "lockedModels: av.locked" in srv and "defaultModel: 'auto'" in srv,
+   "12.12 /api/auth/me 带 ai 块（含 lockedModels 供面板灰显）")
+ok("highTierModels: highTierModels().length" in srv, "12.13 health 暴露高级模型数量")
+ok("url === '/api/admin/channels/high-tier' && method === 'PUT'" in srv,
+   "12.14 管理端点 PUT /api/admin/channels/high-tier 存在")
+ok("highTierModels: highTierModels(),   // 1.4.9" in srv, "12.15 管理端 GET channels 回传高级清单")
+ok("ai: { trialDays: membership.trialDaysFor(membershipStore.data) }" in srv,
+   "12.16 管理端 GET membership 回传 ai.trialDays（否则后台没法回显）")
+ok("if (p.highTierModels !== undefined) doc.plans[pid].highTierModels" in srv,
+   "12.17 套餐更新白名单含 highTierModels（此前该字段无处可改）")
+ok("input.ai.trialDays !== undefined" in srv, "12.18 套餐更新白名单含 ai.trialDays")
+ok("outsidePublished" in srv, "12.19 高级清单越出上线范围时给出提示（不阻断）")
+
+# --- 审计动作（两处都要有） ---
+AUDIT_LIB = os.path.join(ROOT, "server", "lib", "audit.js")
+audit_src = io.open(AUDIT_LIB, encoding="utf-8").read()
+ok("'channel.high-tier'" in audit_src, "12.20 audit.js 动作表含 channel.high-tier")
+ok("'channel.high-tier'" in ps, "12.21 launcher 的 Get-AuditText 也含 channel.high-tier")
+
+# --- Web 管理页 ---
+for k in ["ht-chips", "saveHighTier", "clearHighTier", "p-trial-days", "p-free-hi", "p-pro-hi", "ch-ht"]:
+    ok(k in html, "12.22 admin.html 含 %s" % k)
+ok("'/api/admin/channels/high-tier'" in html, "12.23 Web 页调用高级清单接口")
+ok("body.ai = { trialDays:" in html, "12.24 Web 页保存试用天数")
+ok("highTierModels: !!$('p-free-hi').checked" in html, "12.25 Web 页保存免费版高级模型开关")
+
+# --- 启动器 ---
+ok("txtHigh" in ps and "btnSaveHigh" in ps, "12.26 启动器通道窗体有高级模型输入与保存")
+ok("'/api/admin/channels/high-tier'" in ps, "12.27 启动器调用高级清单接口")
+ok("highTierModels = [bool]$chkFreeHi.Checked" in ps, "12.28 启动器套餐页保存高级模型开关")
+ok("ai = @{ trialDays = $script:planTrialDays }" in ps, "12.29 启动器套餐页保存试用天数")
+ok("$script:mbAiTrialDays = [int]$r.plans.ai.trialDays" in ps, "12.30 启动器回显当前试用天数")
+
+# ---------- 13. 插件端套餐 AI 能力（0.24.8） ----------
+ok(re.search(r"^  ai\(\) \{", acct, re.M) is not None, "13.1 account.js 定义 ai() 访问器")
+# 旧服务端没有 ai 块时必须回落「不限制」——客户端绝不能在没有依据时锁用户
+ok('reason: "unknown"' in acct, "13.2 旧服务端无 ai 块 → reason=unknown（不限制）")
+ok('return { highTier: true, reason: "unknown"' in acct, "13.3 未知时按「不限制」返回")
+
+ok(re.search(r"function aiTier\(\)", prefs_js) is not None, "13.4 面板有 aiTier() 形状归一化")
+ok("typeof raw !== \"object\"" in prefs_js, "13.5 非对象返回（含 Promise）→ 安全降级")
+ok("Array.isArray(raw.lockedModels)" in prefs_js, "13.6 锁定列表强制成数组（否则 for…of 会抛）")
+ok(re.search(r"function renderAiTierNote\(note\)", prefs_js) is not None, "13.7 面板有分层说明条渲染")
+ok('"🔒 " + m' in prefs_js, "13.8 需升级的模型以 🔒 灰显列出（让用户看见差距）")
+ok("全模型试用中，剩 " in prefs_js, "13.9 试用中显示剩余天数")
+ok("已回落到 " in prefs_js and "C.upsert({ id: C.OFFICIAL_ID, model: AI.defaultModel })" in prefs_js,
+   "13.10 当前模型已锁 → 回落到默认并**写明原因**（不静默改配置）")
+ok("if (!known) { sel.value = list[0]; return \"\"; }" in prefs_js,
+   "13.11 无从判断可用性时不动用户配置（旧服务端兼容）")
+ok("AI.lockedModels.indexOf(v) >= 0" in prefs_js, "13.12 选中锁定模型时拦下（服务端也会 403，双保险）")
+# 反馈必须写在刷新之后（本项目踩过的坑：渲染函数会重置消息区）
+ok(re.search(r"Promise\.resolve\(fillOfficialModelSelect\(\)\)\.then\(\(\) => \{\s*\n\s*renderAiTierNote\(",
+             prefs_js) is not None,
+   "13.13 锁定反馈写在刷新之后（不会被刷新冲掉）")
+ok("pp-ai-tier-note" in prefs_xhtml, "13.14 prefs.xhtml 有分层说明条容器")
+ok("pp-ai-tier" in io.open(os.path.join(ROOT, "chrome", "content", "prefs.css"),
+                           encoding="utf-8").read(), "13.15 prefs.css 有分层说明条样式")
+
+# ---------- 14. 测试基建：端口由系统分配（避免与本机常驻服务撞端口） ----------
+# 起因：sessions.test.js 用 18500..18799 随机端口，而本机常驻的 Prism 网关占 18790/18791，
+# 抽中即 EADDRINUSE —— preflight 偶发失败，看着像被测代码坏了，实际是测试基建踩了别人的端口。
+TEST_DIR = os.path.join(ROOT, "test")
+_n = 0
+for _fn in sorted(os.listdir(TEST_DIR)):
+    if not _fn.endswith(".test.js"):
+        continue
+    _src = io.open(os.path.join(TEST_DIR, _fn), encoding="utf-8").read()
+    if "server.listen(" not in _src:
+        continue
+    _n += 1
+    ok("server.listen(0, '127.0.0.1'" in _src,
+       "14.%d %s 端口由系统分配（listen(0)）" % (_n * 2 - 1, _fn))
+    ok("PORT = server.address().port;" in _src,
+       "14.%d %s 回读实际端口" % (_n * 2, _fn))
+
 # ---------- 输出 ----------
 print("=" * 60)
 for p in passes:

@@ -17,7 +17,7 @@ const path = require('path');
 const http = require('http');
 
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rc-'));
-const PORT = 18100 + Math.floor(Math.random() * 300);
+let PORT = 0;            // 端口由系统分配（listen(0) 后回读）：避免与用户本机常驻服务撞端口导致偶发 EADDRINUSE
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY;
@@ -191,7 +191,8 @@ function req(method, p, body, token) {
     o1.status = 'pending';
 
     /* ================= E. 接口：dryRun → 确认核销 ================= */
-    await new Promise((res) => server.listen(PORT, '127.0.0.1', res));
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    PORT = server.address().port;
 
     // 生产同款：加一条永久价（走后台接口）
     let rr = await req('POST', '/api/admin/prices', { plan: 'Pro', cycle: 'perpetual', months: 0, price: 128, label: '永久' });
