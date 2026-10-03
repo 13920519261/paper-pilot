@@ -669,14 +669,30 @@ var Account = {
   },
 
   /** 下单：返回 {order}（含订单号、金额、收款信息与状态）。cycle==='perpetual' 表示永久会员 */
-  async createOrder(plan, months, cycle) {
+  async createOrder(plan, months, cycle, couponCode) {
     const body = { plan: String(plan || "Pro") };
     if (cycle === "perpetual") body.cycle = "perpetual";   // 永久：不传 months（不适用）
     else body.months = Number(months) || 1;
+    // 0.24.6 优惠码：服务端会**重新校验**（不信客户端），此刻才真正占住券的名额
+    if (couponCode) body.couponCode = String(couponCode).trim();
     const resp = await this._request("POST", "/api/orders", body, this.token(), 15000);
     const j = resp.json || {};
     if (!j.ok || !j.order) throw new Error(j.error || "下单失败");
     return j.order;
+  },
+
+  /**
+   * 0.24.6 优惠码试算：拿到折后价再决定要不要下单。
+   * **不占名额**，用户可以反复试；失败一律抛错（错误文案直接给用户看）。
+   */
+  async validateCoupon(code, plan, months, cycle) {
+    const body = { code: String(code || "").trim(), plan: String(plan || "Pro") };
+    if (cycle === "perpetual") body.cycle = "perpetual";
+    else body.months = Number(months) || 1;
+    const resp = await this._request("POST", "/api/coupons/validate", body, this.token(), 10000);
+    const j = resp.json || {};
+    if (!j.ok || !j.quote) throw new Error(j.error || "优惠码不可用");
+    return j.quote;
   },
 
   /** 查询订单状态（下单后轮询用） */

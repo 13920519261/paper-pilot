@@ -116,6 +116,14 @@
               <html:span id="pp-mb-price-note" class="pp-mb-price-note"></html:span>
             </html:div>
             <html:div id="pp-mb-options" class="pp-row pp-row-tight"></html:div>
+            <!-- 0.24.6 优惠码：只打折，与「激活码」（直接发会员）分工不同 -->
+            <html:div class="pp-row pp-row-tight">
+              <html:input type="text" id="pp-mb-coupon" class="pp-input"
+                          style="min-width:210px;" placeholder="CP-XXXX-XXXX-XXXX（可选）"/>
+              <html:button id="pp-mb-coupon-btn" class="pp-btn pp-btn-sm">应用优惠码</html:button>
+              <html:span id="pp-mb-coupon-msg" class="pp-hint"></html:span>
+            </html:div>
+            <html:div id="pp-mb-quote" class="pp-mb-quote" style="display:none;"></html:div>
             <html:div class="pp-row pp-row-tight">
               <html:button id="pp-mb-create" class="pp-btn pp-btn-primary pp-btn-sm">生成订单</html:button>
               <html:button id="pp-mb-close-order" class="pp-btn pp-btn-sm">收起</html:button>

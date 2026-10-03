@@ -45,6 +45,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const coupon = require('./coupon');
 
 const DAY_MS = 86400e3;
 const ORDER_TTL_MS = 7 * DAY_MS;    // 未支付订单 7 天后自动过期
@@ -194,6 +195,16 @@ function normalize(doc) {
   else out.pay = Object.assign(clone(DEFAULT_PAY), out.pay);
   if (!Array.isArray(out.orders)) out.orders = [];
   if (!Array.isArray(out.codes)) out.codes = [];
+  // ---- 优惠券（1.4.6）：只做轻修复，**不重建**，否则会丢掉 uses 占用记录 ----
+  if (!Array.isArray(out.coupons)) out.coupons = [];
+  out.coupons = out.coupons.filter((c) => c && typeof c === 'object' && c.code).map((c) => {
+    if (!c.id) c.id = coupon.rid('cp', 6);
+    if (!Array.isArray(c.uses)) c.uses = [];
+    if (c.enabled === undefined) c.enabled = true;
+    if (c.type !== 'amount') c.type = 'percent';
+    if (!Array.isArray(c.plans)) c.plans = [];
+    return c;
+  });
   out.schemaVersion = 3;
   return out;
 }
@@ -679,6 +690,14 @@ function orderOut(doc, o) {
     baseCents: baseCentsOf(o),
     tailCents: Number.isFinite(o.tailCents) ? Number(o.tailCents) : null,
     amountText: '¥' + (amountCentsOf(o) / 100).toFixed(2),
+    // 优惠券（1.4.6）：折前价 / 折扣额 / 券码。discountText 为 '−¥x.xx'，便于直接贴 UI
+    originalCents: originalCentsOf(o),
+    originalText: '¥' + (originalCentsOf(o) / 100).toFixed(2),
+    discountCents: Number(o.discountCents) || 0,
+    discountText: Number(o.discountCents) > 0
+      ? '−¥' + (Number(o.discountCents) / 100).toFixed(2) : '',
+    couponId: o.couponId || null,
+    couponCode: o.couponCode || null,
     perpetual: !!o.perpetual || Number(o.months) === 0,
     status: o.status, createdAt: o.createdAt, updatedAt: o.updatedAt,
     claimedAt: o.claimedAt || null, fulfilledAt: o.fulfilledAt || null,
@@ -702,6 +721,7 @@ function reapOrders(doc, now) {
     if ((o.status === 'pending' || o.status === 'claimed') && (t - Date.parse(o.createdAt)) > ORDER_TTL_MS) {
       o.status = 'expired';
       o.updatedAt = new Date(t).toISOString();
+      coupon.releaseUseByOrder(doc, o.id);   // 超时回收 → 释放券名额
       changed = true;
     }
   }
@@ -721,6 +741,13 @@ function baseCentsOf(o) {
     return Math.round(o.amountCents - o.tailCents);
   }
   return Math.round((Number(o.amount) || 0) * 100);
+}
+
+/** 订单折前价（分）：老订单没有 originalCents → 折后价 + 折扣额（无折扣时两者相等） */
+function originalCentsOf(o) {
+  if (!o) return 0;
+  if (Number.isFinite(o.originalCents) && o.originalCents > 0) return Math.round(o.originalCents);
+  return baseCentsOf(o) + (Number(o.discountCents) || 0);
 }
 
 /** 订单实付金额（分）：优先 amountCents，旧数据由 amount（元）换算 */
@@ -769,8 +796,24 @@ function createOrder(doc, opts) {
   const eff = effectivePrice(doc, pid, m);
   if (eff.error) return { error: eff.error };
   if (!(eff.price > 0)) return { error: '该套餐无需购买（' + p.name + '）' };
-  const baseCents = Math.round(eff.price * 100);
-  if (baseCents < 100 + TAIL_MAX) return { error: '价格过低（需至少 ¥1.99），无法分出对账尾数' };
+  const originalCents = Math.round(eff.price * 100);
+  if (originalCents < 100 + TAIL_MAX) return { error: '价格过低（需至少 ¥1.99），无法分出对账尾数' };
+  // 优惠券：只把应付金额降下来。**尾数必须在折后金额上分配** ——
+  // 否则两张折前同价、折后不同的订单会共用同一批尾数，「按金额唯一对账」就失效了。
+  let couponDoc = null;
+  let discountCents = 0;
+  if (o.couponCode) {
+    const q = coupon.quote(doc, {
+      code: o.couponCode, plan: pid, months: m,
+      baseCents: originalCents, userId: o.user && o.user.id,
+      now: Number.isFinite(o.now) ? o.now : Date.now(),
+    });
+    if (!q.ok) return { error: q.error };
+    couponDoc = q.coupon;
+    discountCents = q.discountCents;
+  }
+  const baseCents = originalCents - discountCents;
+  if (baseCents < 100 + TAIL_MAX) return { error: '折扣后金额过低（需至少 ¥1.99），无法分出对账尾数' };
   const tail = assignTail(doc, baseCents, { rng: o.rng });
   if (tail.error) return { error: tail.error };
   const amountCents = baseCents + tail.tailCents;
@@ -783,6 +826,11 @@ function createOrder(doc, opts) {
     // amount 仍保留（元，含尾数）以兼容既有 UI/插件；精确比较一律用 *_Cents
     amount: amountCents / 100,
     amountCents, baseCents, tailCents: tail.tailCents,
+    // 优惠券溯源：折前价 / 折扣额 / 券标识。金额一律用「分」，amount（元）只兼容旧 UI
+    originalCents,
+    discountCents,
+    couponId: couponDoc ? couponDoc.id : null,
+    couponCode: couponDoc ? couponDoc.code : null,
     currency: p.currency || 'CNY',
     status: 'pending',
     createdAt: now, updatedAt: now,
@@ -793,6 +841,13 @@ function createOrder(doc, opts) {
     unitPrice: m > 0 ? Math.round((eff.price / m) * 100) / 100 : eff.price,
   };
   doc.orders.push(order);
+  // 占住名额（**不是消耗**）：订单超时/取消会释放，只有核销才真正消耗
+  if (couponDoc) {
+    coupon.reserveUse(couponDoc, {
+      orderId: order.id, userId: order.userId, email: order.email,
+      discountCents, now: Number.isFinite(o.now) ? o.now : Date.now(),
+    });
+  }
   return { order };
 }
 
@@ -820,6 +875,7 @@ function cancelOrder(doc, order, user, reason) {
   order.cancelledAt = new Date().toISOString();
   order.updatedAt = order.cancelledAt;
   order.cancelReason = String(reason || '用户取消').slice(0, 60);
+  coupon.releaseUseByOrder(doc, order.id);   // 取消 → 释放券名额（没付款就不该占额度）
   return { order };
 }
 
@@ -845,6 +901,7 @@ function fulfillOrder(doc, order, { by, now } = {}) {
   order.fulfilledAt = code.usedAt;
   order.updatedAt = order.fulfilledAt;
   order.codeId = code.id;
+  coupon.consumeUseByOrder(doc, order.id);   // 核销 = 券真正消耗
   return { order, code };
 }
 
@@ -934,7 +991,7 @@ module.exports = {
   membershipOf, grantMembership,
   orderOut, reapOrders, createOrder, findOrder, claimOrder, cancelOrder, fulfillOrder,
   PERPETUAL, isPerpetual, monthsLabel, TAIL_MIN, TAIL_MAX,
-  tailActive, baseCentsOf, amountCentsOf, assignTail,
+  tailActive, baseCentsOf, amountCentsOf, originalCentsOf, assignTail,
   orderStatusText,
   codeOut, createCodes, findCode, redeem,
 };

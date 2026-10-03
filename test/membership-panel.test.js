@@ -257,6 +257,83 @@ const flush = () => new Promise((r) => setImmediate(r));
   eq(registry.get('pp-mb-usage').style.display, 'none', 'E1 无趋势数据 → 用量块隐藏');
   eq(registry.get('pp-mb-renew').style.display, '', 'E2 到期提醒不受影响（仍显示）');
 
+  /* ============ F. 优惠码：试算 → 展示折后价 → 下单带券 ============ */
+  let createdArgs = null;
+  let validatedArgs = null;
+  ({ registry } = boot({
+    validateCoupon: async (code, plan, months, cycle) => {
+      validatedArgs = { code: code, plan: plan, months: months, cycle: cycle };
+      return { code: 'CP-AAAA-BBBB-CCCC', type: 'percent', label: '减 25%（75 折）',
+        originalText: '¥269.00', discountText: '−¥67.25', payableText: '¥201.75', payableCents: 20175 };
+    },
+    createOrder: async (plan, months, cycle, couponCode) => {
+      createdArgs = { plan: plan, months: months, cycle: cycle, couponCode: couponCode };
+      return { id: 'o-cp1', plan: 'Pro', planName: '专业版', months: 12, status: 'pending',
+        amountText: '¥201.85', baseCents: 20175, originalCents: 26900,
+        originalText: '¥269.00', discountText: '−¥67.25', discountCents: 6725,
+        couponCode: couponCode, tailCents: 10, pay: { channel: '微信收款码' } };
+    },
+  }));
+
+  registry.get('pp-mb-upgrade').click();
+  await flush(); await flush(); await flush();
+  eq(registry.get('pp-mb-quote').style.display, 'none', 'F1 未应用优惠码时折后价区隐藏');
+
+  registry.get('pp-mb-coupon').value = 'cp-aaaa-bbbb-cccc';
+  registry.get('pp-mb-coupon-btn').click();
+  await flush(); await flush(); await flush();
+  eq(validatedArgs && validatedArgs.code, 'cp-aaaa-bbbb-cccc', 'F2 用户输入原样交给服务端校验');
+  eq(validatedArgs && validatedArgs.months, 12, 'F3 带上当前档位月数（服务端据此算折前价）');
+  has(registry.get('pp-mb-coupon-msg').textContent, '减 25%', 'F4 应用成功回显券的内容');
+
+  const qbox = registry.get('pp-mb-quote');
+  eq(qbox.style.display, '', 'F5 折后价区出现');
+  has(qbox.textContent, '¥269.00', 'F6 显示折前价');
+  has(qbox.textContent, '−¥67.25', 'F7 显示减免额');
+  has(qbox.textContent, '¥201.75', 'F8 显示应付金额');
+  has(qbox.textContent, '尾数', 'F9 提醒应付之外还会加对账尾数（避免用户以为被多收）');
+
+  // 换档位必须作废已试算的折后价（否则用户会照着旧价格转账）
+  const opts2 = registry.get('pp-mb-options');
+  const chips2 = opts2.children.filter((c) => /pp-mb-opt/.test(c.className) && !/soo?n/.test(c.className));
+  chips2[0].click();
+  await flush();
+  eq(registry.get('pp-mb-quote').style.display, 'none', 'F10 换档位 → 折后价区收起');
+  has(registry.get('pp-mb-coupon-msg').textContent, '重新应用', 'F11 换档位提示需要重新应用优惠码');
+
+  registry.get('pp-mb-coupon-btn').click();
+  await flush(); await flush(); await flush();
+  eq(registry.get('pp-mb-quote').style.display, '', 'F12 重新应用后折后价区回来');
+
+  registry.get('pp-mb-create').click();
+  await flush(); await flush(); await flush();
+  eq(createdArgs && createdArgs.couponCode, 'CP-AAAA-BBBB-CCCC', 'F13 下单时把券码带上（用归一后的码）');
+  const payInfo = registry.get('pp-mb-pay-info').textContent;
+  has(payInfo, '折前 ¥269.00', 'F14 支付页显示折前价');
+  has(payInfo, '−¥67.25', 'F15 支付页显示减免额');
+  has(payInfo, '折后 ¥201.75', 'F16 支付页显示折后价');
+  has(payInfo, '201.85', 'F17 转账金额仍是含尾数的实付（不是折后价）');
+  has(payInfo, 'CP-AAAA-BBBB-CCCC', 'F18 支付页标注用了哪张券（便于对账）');
+
+  /* ============ G. 优惠码不可用 / 清除 ============ */
+  ({ registry } = boot({
+    validateCoupon: async () => { throw new Error('该优惠码需满 ¥100.00，本单折前 ¥29.00，未达门槛'); },
+  }));
+  registry.get('pp-mb-upgrade').click();
+  await flush(); await flush(); await flush();
+  registry.get('pp-mb-coupon').value = 'CP-AAAA-BBBB-CCCC';
+  registry.get('pp-mb-coupon-btn').click();
+  await flush(); await flush(); await flush();
+  has(registry.get('pp-mb-coupon-msg').textContent, '未达门槛', 'G1 服务端给的原因原样告诉用户');
+  eq(registry.get('pp-mb-quote').style.display, 'none', 'G2 失败时不显示折后价（绝不显示错的价）');
+  ok(registry.get('pp-mb-order-msg').textContent.indexOf('✗') < 0, 'G3 券失败不影响正常下单流程');
+
+  registry.get('pp-mb-coupon').value = '';
+  registry.get('pp-mb-coupon-btn').click();
+  await flush();
+  has(registry.get('pp-mb-coupon-msg').textContent, '已清除', 'G4 清空输入即取消已应用的券');
+  eq(registry.get('pp-mb-quote').style.display, 'none', 'G5 清除后折后价区收起');
+
   console.log('\n会员面板渲染测试：' + pass + ' 项通过，' + fails.length + ' 项失败');
   if (fails.length) {
     for (const f of fails) console.log('  ✗ ' + f);

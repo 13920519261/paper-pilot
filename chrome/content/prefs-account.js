@@ -291,6 +291,7 @@
 
   let mbPlans = null;       // {plans, priceOptions, priceItems, upcoming, cycles, pay}（服务端下发，缓存）
   let mbSel = null;         // 当前选中的价格档位 {plan, months, text}
+  let mbCoupon = null;      // 0.24.6 已应用的优惠码试算结果 {code, discountText, payableText, ...}
   let mbOrder = null;       // 当前订单
   let mbTimer = null;       // 订单轮询定时器
   let mbPollDeadline = 0;   // 轮询截止（避免永久轮询）
@@ -482,7 +483,13 @@
     for (const o of list) {
       const on = mbSel && mbSel.plan === o.plan && Number(mbSel.months) === Number(o.months);
       const chip = el("span", { class: on ? "pp-mb-opt pp-mb-opt-on" : "pp-mb-opt" }, o.text);
-      chip.addEventListener("click", () => { mbSel = o; renderMbOptions(); });
+      chip.addEventListener("click", () => {
+        mbSel = o;
+        // 换了档位：之前试算的折后价已经不对了 —— 主动作废，避免用户按旧价格转账
+        if (mbCoupon) { mbCoupon = null; mbSetMsg("pp-mb-coupon-msg", "档位已变更，请重新应用优惠码", "var(--pp-warn)"); }
+        renderMbOptions();
+        renderMbQuote();
+      });
       opts.appendChild(chip);
     }
     // 尚未生效的价格：只作预告（灰底、不可点）——让用户知道「什么时候会变价」
@@ -501,6 +508,40 @@
     }
   }
 
+  /* ---------- 优惠码（0.24.6） ---------- */
+
+  /** 应用优惠码：向服务端试算折后价（**不占名额**，用户可反复试） */
+  async function onMbCoupon() {
+    const A = account();
+    const inp = $("pp-mb-coupon");
+    if (!A || !inp) return;
+    const code = String(inp.value || "").trim();
+    if (!code) { mbCoupon = null; renderMbQuote(); mbSetMsg("pp-mb-coupon-msg", "已清除优惠码", "var(--pp-muted)"); return; }
+    if (!mbSel) { mbSetMsg("pp-mb-coupon-msg", "请先选择购买档位", "var(--pp-warn)"); return; }
+    mbSetMsg("pp-mb-coupon-msg", "正在校验…", "var(--pp-muted)");
+    try {
+      mbCoupon = await A.validateCoupon(code, mbSel.plan, mbSel.months, mbSel.cycle);
+      mbSetMsg("pp-mb-coupon-msg", "✓ " + (mbCoupon.label || "优惠码可用"), "var(--pp-success)");
+      renderMbQuote();
+    } catch (e) {
+      mbCoupon = null;
+      renderMbQuote();
+      mbSetMsg("pp-mb-coupon-msg", "✗ " + ((e && e.message) || "优惠码不可用"), "var(--pp-danger)");
+    }
+  }
+
+  /** 折后价明细：折前 / 减免 / 应付（应付不含对账尾数，尾数在下单后才确定） */
+  function renderMbQuote() {
+    const box = $("pp-mb-quote");
+    if (!box) return;
+    if (!mbCoupon) { box.style.display = "none"; box.textContent = ""; return; }
+    const q = mbCoupon;
+    box.style.display = "";
+    box.textContent = "折前 " + (q.originalText || "") + "　" + (q.discountText || "")
+      + "　应付 " + (q.payableText || "")
+      + "（下单后另加 1~99 分的专属对账尾数，转账金额以下单页为准）";
+  }
+
   /** 点到期横幅 = 打开续费面板（默认档位取「上次购买的周期」） */
   function onMbRenew() {
     const A = account();
@@ -515,6 +556,9 @@
     const box = $("pp-mb-order");
     if (!A || !box || !A.isLoggedIn()) return;
     box.style.display = "";
+    mbCoupon = null;
+    renderMbQuote();
+    mbSetMsg("pp-mb-coupon-msg", "", "var(--pp-muted)");
     mbSetMsg("pp-mb-order-msg", "正在获取套餐…", "var(--pp-muted)");
     try {
       await ensurePlans(true);
@@ -532,7 +576,8 @@
     btn.disabled = true;
     mbSetMsg("pp-mb-order-msg", "正在生成订单…", "var(--pp-muted)");
     try {
-      mbOrder = await A.createOrder(mbSel.plan, mbSel.months, mbSel.cycle);
+      mbOrder = await A.createOrder(mbSel.plan, mbSel.months, mbSel.cycle,
+        mbCoupon ? mbCoupon.code : "");
       mbSetMsg("pp-mb-order-msg", "", "var(--pp-muted)");
       renderMbPay();
       startMbPolling();
@@ -553,11 +598,15 @@
     const o = mbOrder;
     const cycleTxt = o.perpetual ? "永久" : (o.months + " 个月");
     const money = o.amountText || ("¥" + (Number(o.amount) || 0).toFixed(2));
-    const lines = [
-      "订单号：" + o.id,
-      (o.planName || o.plan) + " · " + cycleTxt + " · " + money,
-      "状态：" + (MB_STATUS[o.status] || o.status),
-    ];
+    const lines = ["订单号：" + o.id];
+    // 0.24.6：用了优惠码就把「折前 → 减免 → 实付」摆清楚，避免用户以为被多收
+    if (Number(o.discountCents) > 0) {
+      lines.push((o.planName || o.plan) + " · " + cycleTxt + " · 折前 " + (o.originalText || "") + "（优惠码 " + o.couponCode + "）");
+      lines.push("优惠 " + o.discountText + " → 折后 ¥" + ((Number(o.baseCents) || 0) / 100).toFixed(2));
+    } else {
+      lines.push((o.planName || o.plan) + " · " + cycleTxt + " · " + money);
+    }
+    lines.push("状态：" + (MB_STATUS[o.status] || o.status));
     // 0.24.5：金额末尾的小数尾数是这笔订单的专属标识（后台据此自动对账核销）
     if (o.tailCents) {
       lines.push("⚠ 请**精确转账 " + money + "**（不能凑整）：末尾 "
@@ -1150,6 +1199,7 @@
     bind("pp-account-official-model", "change", onOfficialModelChange);
     // 会员（0.23.0）
     bind("pp-mb-upgrade", "click", onMbUpgrade);
+    bind("pp-mb-coupon-btn", "click", onMbCoupon);
     bind("pp-mb-renew", "click", onMbRenew);
     bind("pp-mb-create", "click", onMbCreate);
     bind("pp-mb-close-order", "click", () => { const b = $("pp-mb-order"); if (b) b.style.display = "none"; });

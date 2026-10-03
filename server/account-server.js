@@ -10,7 +10,7 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.5，插件 0.24.5；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销）：
+ * 会员域（服务端 1.4.6，插件 0.24.6；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
  *   GET  /api/auth/me               Bearer → user 内附带 usage:{today,limit,last7,days[30]}
@@ -19,6 +19,8 @@
  *   POST /api/orders/:id/claim      Bearer → 标记「我已完成支付」，等管理员核销
  *   POST /api/orders/:id/cancel     Bearer → 取消未支付订单
  *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
+ *   POST /api/coupons/validate      Bearer {code,plan,months|cycle} → 优惠码试算（不占名额）
+ *   POST /api/orders                支持 {couponCode} → 折后下单（尾数在折后金额上分配）
  *   POST /api/admin/reconcile       收款流水按金额（含唯一尾数）自动匹配核销（默认 dryRun 预览）
  * 会员管理（仅本机直连）：
  *   GET  /api/admin/membership      订单 + 激活码 + 套餐/价格表/收款配置一览
@@ -30,6 +32,8 @@
  *   DELETE /api/admin/prices/:id    删除价格条目
  *   GET  /api/admin/orders          订单列表
  *   POST /api/admin/orders/:id/fulfill | /cancel   核销（自动开通）/ 取消
+ *   GET|POST /api/admin/coupons     优惠券列表 / 批量生成（只打折，与"发会员"的激活码分工不同）
+ *   PUT|DELETE /api/admin/coupons/:id  局部更新（启停/额度/有效期）/ 作废（有占用则拒绝删除）
  *   GET|POST /api/admin/codes       激活码列表 / 批量生成
  *   DELETE /api/admin/codes/:id     作废未使用的激活码
  *   POST /api/admin/users/:id/membership           直接给用户开通/续期（叠加式）
@@ -77,6 +81,7 @@ const path = require('path');
 const { JsonStore } = require('./lib/store');
 const { PROVIDERS, providerOf, providersForClient } = require('./lib/presets');
 const membership = require('./lib/membership');
+const coupon = require('./lib/coupon');
 const backup = require('./lib/backup');
 const alerts = require('./lib/alerts');
 const lockout = require('./lib/lockout');
@@ -955,7 +960,35 @@ function stopBackgroundJobs() {
   if (_alertTimer) { clearInterval(_alertTimer); _alertTimer = null; }
 }
 
-/* ---------------- 用户管理（管理域） ---------------- */
+/**
+ * 优惠码试算（1.4.6）：把 (等级, 周期/月数) 解析成折前价，再走优惠券报价。
+ * **不创建订单、不占名额** —— 用户在支付前反复试算不会消耗券额度。
+ * 与 createOrder 共用 coupon.quote()，保证「试算价」与「下单价」永远一致。
+ */
+function quoteOrder(doc, o) {
+  const inp = o || {};
+  const perpetual = membership.isPerpetual(inp.cycle) || Number(inp.months) === 0;
+  const m = perpetual ? 0 : membership.clampMonths(inp.months);
+  const pid = membership.planOf(doc, inp.plan).id || String(inp.plan || 'Pro');
+  const eff = membership.effectivePrice(doc, pid, m);
+  if (eff.error) return { error: eff.error };
+  const baseCents = Math.round(eff.price * 100);
+  const q = coupon.quote(doc, {
+    code: inp.code, plan: pid, months: m, baseCents, userId: inp.userId, now: inp.now,
+  });
+  if (!q.ok) return { error: q.error };
+  const yuan = (c) => '¥' + (c / 100).toFixed(2);
+  return {
+    code: q.coupon.code, type: q.type, label: q.label,
+    plan: pid, months: m, cycle: eff.cycle, cycleName: membership.cycleName(eff.cycle),
+    priceItemId: eff.itemId, priceSource: eff.source,
+    originalCents: baseCents, discountCents: q.discountCents, payableCents: q.payableCents,
+    originalText: yuan(baseCents), discountText: '−' + yuan(q.discountCents), payableText: yuan(q.payableCents),
+    coupon: coupon.couponPublicOut(q.coupon),
+  };
+}
+
+/* ---------------- 管理域（用户） ---------------- */
 
 /**
  * 管理端直接改 plan / expiresAt 时同步会员对象（0.23.0）。
@@ -1103,7 +1136,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.5',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.6',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -1114,6 +1147,9 @@ const server = http.createServer(async (req, res) => {
         plans: Object.keys(membershipStore.data.plans || {}),
         orders: membershipStore.data.orders.length,
         ordersAwaitingReview: membershipStore.data.orders.filter((o) => o.status === 'claimed').length,
+        // 1.4.6 优惠券
+        coupons: (membershipStore.data.coupons || []).length,
+        couponsActive: (membershipStore.data.coupons || []).filter((c) => coupon.stateOf(c) === 'active').length,
         codesUnused: membershipStore.data.codes.filter((c) => !c.usedAt).length,
         // 1.4.1 价格表
         priceActive: membershipStore.data.priceItems.filter((i) => membership.priceState(i) === 'active').length,
@@ -1326,7 +1362,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url === '/api/membership' || url === '/api/orders' || url === '/api/redeem'
-        || url.startsWith('/api/orders/')) {
+        || url === '/api/coupons/validate' || url.startsWith('/api/orders/')) {
       const user = userByToken(req);
       if (!user) return json(res, 401, { ok: false, error: '登录已过期' });
       touchTokenSoon(req);
@@ -1353,6 +1389,20 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, membership: r.membership, user: userForClient(user), code: r.code });
       }
 
+      // 优惠码试算：下单前预览折后价（不占名额、不写库）
+      if (method === 'POST' && url === '/api/coupons/validate') {
+        if (rateThrottled('coupon:' + clientIp(req), REDEEM_MAX, LOGIN_WINDOW_MS)) {
+          return json(res, 429, { ok: false, error: '尝试过于频繁，请稍后再试' });
+        }
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const q = quoteOrder(membershipStore.data, {
+          code: input.code, plan: input.plan, months: input.months, cycle: input.cycle, userId: user.id,
+        });
+        if (q.error) return json(res, 400, { ok: false, error: q.error });
+        return json(res, 200, { ok: true, quote: q });
+      }
+
       // 下单：返回订单号 + 金额 + 收款信息；支付与核销在线下完成
       if (method === 'POST' && url === '/api/orders') {
         let input;
@@ -1360,10 +1410,14 @@ const server = http.createServer(async (req, res) => {
         if (membership.reapOrders(membershipStore.data)) membershipStore.save();
         const r = membership.createOrder(membershipStore.data, {
           user, plan: input.plan, months: input.months, cycle: input.cycle,
+          // couponCode 由插件在上一步 /api/coupons/validate 拿到并回传；
+          // 这里会**重新校验**（不信客户端），且此刻才真正占住券的名额
+          couponCode: input.couponCode || '',
         });
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
-        log('order created:', user.email, r.order.plan, r.order.months + 'm', '¥' + r.order.amount);
+        log('order created:', user.email, r.order.plan, r.order.months + 'm',
+          '¥' + r.order.amount, r.order.couponCode ? ('coupon=' + r.order.couponCode) : '');
         return json(res, 200, { ok: true, order: membership.orderOut(membershipStore.data, r.order) });
       }
 
@@ -2015,6 +2069,84 @@ const server = http.createServer(async (req, res) => {
           since: q.get('since') || '', until: q.get('until') || '',
         }).map((e) => Object.assign({}, e, { actionText: audit.labelOf(e.action) }));
         return json(res, 200, { ok: true, items, actions: audit.ACTIONS, stats: audit.stats(DATA_DIR) });
+      }
+
+      /* ---- 优惠券 / 折扣码（1.4.6） ----
+       * 与激活码的分工：激活码**发会员**（免费、不走订单），优惠券**只打折**（走完整下单收款）。
+       * 券码值本身不是敏感凭据（泄漏最多让人少付点钱），所以后台可查、并按需写进审计。 */
+
+      if (url === '/api/admin/coupons' && method === 'GET') {
+        const list = (membershipStore.data.coupons || []).slice().reverse()
+          .map((c) => coupon.couponOut(c));
+        const by = (st) => list.filter((c) => c.state === st).length;
+        return json(res, 200, { ok: true, coupons: list, types: coupon.TYPE_TEXT,
+          counts: {
+            total: list.length, active: by('active'), scheduled: by('scheduled'),
+            exhausted: by('exhausted'), disabled: by('disabled'), expired: by('expired'),
+            reserved: list.reduce((n, c) => n + c.usedReserved, 0),
+            used: list.reduce((n, c) => n + c.usedDone, 0),
+          } });
+      }
+
+      if (url === '/api/admin/coupons' && method === 'POST') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        snapshot('membership-change', { note: '生成优惠券' });
+        const r = coupon.createCoupons(membershipStore.data, {
+          type: input.type, percent: input.percent, amountCents: input.amountCents,
+          plans: input.plans, minAmountCents: input.minAmountCents,
+          maxUses: input.maxUses, perUser: input.perUser,
+          effectiveFrom: input.effectiveFrom, effectiveTo: input.effectiveTo,
+          note: input.note, count: input.count, createdBy: 'admin',
+        });
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('coupons created:', r.coupons.length, input.type,
+          input.type === 'amount' ? ('¥' + (Number(input.amountCents) / 100).toFixed(2)) : (input.percent + '%'));
+        // 审计记「配置与数量」，**不逐条落码值**（批量生成时会把日志撑爆）
+        auditLog(req, 'coupon.create', { target: r.coupons.length + ' 枚券',
+          after: { type: input.type, percent: input.percent || null, amountCents: input.amountCents || null,
+            plans: input.plans || [], minAmountCents: input.minAmountCents || 0,
+            maxUses: input.maxUses || 0, perUser: input.perUser,
+            effectiveFrom: input.effectiveFrom || null, effectiveTo: input.effectiveTo || null,
+            count: r.coupons.length, note: input.note || '' } });
+        return json(res, 200, { ok: true, coupons: r.coupons.map((c) => coupon.couponOut(c)) });
+      }
+
+      m = url.match(/^\/api\/admin\/coupons\/([a-zA-Z0-9-]+)$/);
+      if (m && method === 'PUT') {
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const before = coupon.findById(membershipStore.data, m[1]);
+        if (!before) return json(res, 404, { ok: false, error: '优惠券不存在' });
+        const b4 = { enabled: before.enabled, maxUses: before.maxUses, perUser: before.perUser,
+          percent: before.percent, amountCents: before.amountCents,
+          minAmountCents: before.minAmountCents,
+          effectiveFrom: before.effectiveFrom, effectiveTo: before.effectiveTo, note: before.note };
+        snapshot('membership-change', { note: '修改优惠券 ' + before.code });
+        const r = coupon.updateCoupon(membershipStore.data, m[1], input);
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('coupon updated:', r.coupon.code);
+        auditLog(req, 'coupon.update', { target: r.coupon.code, before: b4, after: {
+          enabled: r.coupon.enabled, maxUses: r.coupon.maxUses, perUser: r.coupon.perUser,
+          percent: r.coupon.percent, amountCents: r.coupon.amountCents,
+          minAmountCents: r.coupon.minAmountCents,
+          effectiveFrom: r.coupon.effectiveFrom, effectiveTo: r.coupon.effectiveTo, note: r.coupon.note } });
+        return json(res, 200, { ok: true, coupon: coupon.couponOut(r.coupon) });
+      }
+
+      if (m && method === 'DELETE') {
+        const target = coupon.findById(membershipStore.data, m[1]);
+        if (!target) return json(res, 404, { ok: false, error: '优惠券不存在' });
+        snapshot('membership-change', { note: '删除优惠券 ' + target.code });
+        const r = coupon.removeCoupon(membershipStore.data, m[1]);
+        if (r.error) return json(res, 400, { ok: false, error: r.error });
+        membershipStore.save();
+        log('coupon revoked:', r.coupon.code);
+        auditLog(req, 'coupon.revoke', { target: r.coupon.code, before: {
+          state: coupon.stateOf(r.coupon), used: coupon.usedCount(r.coupon) } });
+        return json(res, 200, { ok: true });
       }
     }
 

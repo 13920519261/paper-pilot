@@ -108,6 +108,7 @@
     <button id="tab-channels" class="on" onclick="switchTab('channels')">模型通道</button>
     <button id="tab-users" onclick="switchTab('users')">账号管理</button>
     <button id="tab-membership" onclick="switchTab('membership')">会员管理</button>
+    <button id="tab-coupon" onclick="switchTab('coupon')">优惠券</button>
     <button id="tab-audit" onclick="switchTab('audit')">审计日志</button>
   </div>
 
@@ -318,6 +319,42 @@
   </section>
 
   <!-- ============ 审计日志（服务端 1.4.4） ============ -->
+  <section id="pane-coupon" style="display:none">
+    <div class="card">
+      <div class="toolbar"><h2 style="margin:0">优惠券 / 折扣码</h2>
+        <div>
+          <button class="btn primary" onclick="openCouponForm(null)">＋ 新建优惠券</button>
+          <button class="btn" onclick="loadCoupons()">刷新</button>
+        </div></div>
+      <p class="hint" style="margin:0 0 12px">
+        <b>与激活码的分工</b>：激活码是「直接发会员」（免费、不走订单）；优惠券<b>只打折</b>，用户仍走完整
+        「下单 → 收款 → 核销」流程。想免费送用激活码，想让人少掏点钱用优惠券。
+        折后金额仍会再加 1~99 分的<b>专属对账尾数</b>，自动对账不受影响。
+      </p>
+      <p class="hint" style="margin:0 0 12px">
+        名额在<b>下单时占用</b>、订单取消或超时自动<b>释放</b>、核销才真正<b>消耗</b> ——
+        所以用户反复下单/取消不会把限量券耗光。<b>折后至少留 ¥1</b>（100% 减免请发激活码）。
+        已被占用的券不能删除，但可以停用（停用只影响新订单，不影响已经下过的单）。
+      </p>
+      <div class="kpis">
+        <div class="kpi"><div class="n" id="cp-k-active">0</div><div class="t">生效中</div></div>
+        <div class="kpi"><div class="n" id="cp-k-sched">0</div><div class="t">未生效（定时）</div></div>
+        <div class="kpi"><div class="n" id="cp-k-used">0</div><div class="t">已核销使用</div></div>
+        <div class="kpi"><div class="n" id="cp-k-reserved">0</div><div class="t">已被订单占用</div></div>
+      </div>
+      <table id="cp-table" style="margin-top:12px">
+        <thead><tr>
+          <th style="width:160px">券码</th><th>内容</th><th style="width:110px">适用范围</th>
+          <th style="width:110px">用量</th><th style="width:130px">有效期</th><th style="width:76px">状态</th>
+          <th style="width:190px">操作</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" id="cp-empty" style="display:none">还没有优惠券</div>
+      <div class="msg" id="cp-msg"></div>
+    </div>
+  </section>
+
   <section id="pane-audit" style="display:none">
     <div class="card">
       <div class="toolbar"><h2 style="margin:0">管理操作审计</h2>
@@ -468,6 +505,46 @@
   </div>
 </div>
 
+<!-- 优惠券新建 / 编辑弹窗 -->
+<div class="mask" id="coupon-mask">
+  <div class="modal" style="width:560px">
+    <h3><span id="cp-form-title">新建优惠券</span></h3>
+    <div class="grid2">
+      <div class="field"><label>减免类型</label>
+        <select id="cp-type" onchange="onCpTypeChange()">
+          <option value="percent">按比例减免（折扣）</option>
+          <option value="amount">固定金额减免（满减）</option>
+        </select></div>
+      <div class="field"><label>适用等级（都不勾 = 全场通用）</label>
+        <div id="cp-plans" style="display:flex;gap:12px;padding-top:6px;flex-wrap:wrap"></div></div>
+      <div class="field" id="cp-percent-wrap"><label>减免百分比（1 ~ 99）</label>
+        <input id="cp-percent" type="number" min="1" max="99" value="20" oninput="syncCpPreview()"></div>
+      <div class="field" id="cp-amount-wrap" style="display:none"><label>固定减免（元）</label>
+        <input id="cp-amount" type="number" min="0.01" step="0.01" value="10" oninput="syncCpPreview()"></div>
+      <div class="field"><label>门槛：折前满（元，0 = 无门槛）</label>
+        <input id="cp-min" type="number" min="0" step="0.01" value="0" oninput="syncCpPreview()"></div>
+      <div class="field"><label>备注（后台备注，不展示给用户）</label>
+        <input id="cp-note" style="width:220px"></div>
+      <div class="field"><label>可用总次数（0 = 不限）</label>
+        <input id="cp-maxuses" type="number" min="0" value="0"></div>
+      <div class="field"><label>每人限用（0 = 不限）</label>
+        <input id="cp-peruser" type="number" min="0" value="1"></div>
+      <div class="field"><label>生效起始（留空 = 立即生效）</label>
+        <input id="cp-from" type="datetime-local" onchange="syncCpPreview()"></div>
+      <div class="field"><label>生效截止（留空 = 长期有效）</label>
+        <input id="cp-to" type="datetime-local" onchange="syncCpPreview()"></div>
+      <div class="field" id="cp-count-wrap"><label>生成数量（1 ~ 200）</label>
+        <input id="cp-count" type="number" min="1" max="200" value="1"></div>
+    </div>
+    <p class="hint" id="cp-preview" style="margin-top:10px"></p>
+    <p class="hint">折后至少要留 ¥1（100% 减免请改用激活码）；生效时段留空即长期有效。</p>
+    <div class="actions">
+      <button class="btn" type="button" onclick="closeMask('coupon-mask')">取消</button>
+      <button class="btn primary" type="button" onclick="saveCoupon()" id="cp-save">创建</button>
+    </div>
+  </div>
+</div>
+
 <!-- 会员开通 / 续期弹窗（叠加式） -->
 <div class="mask" id="membership-mask">
   <div class="modal" style="width:440px">
@@ -511,18 +588,17 @@ function api(method, path, body) {
   });
 }
 
+var TABS = ['channels', 'users', 'membership', 'coupon', 'audit'];
 function switchTab(t) {
-  $('tab-channels').classList.toggle('on', t === 'channels');
-  $('tab-users').classList.toggle('on', t === 'users');
-  $('tab-membership').classList.toggle('on', t === 'membership');
-  $('tab-audit').classList.toggle('on', t === 'audit');
-  $('pane-channels').style.display = t === 'channels' ? '' : 'none';
-  $('pane-users').style.display = t === 'users' ? '' : 'none';
-  $('pane-membership').style.display = t === 'membership' ? '' : 'none';
-  $('pane-audit').style.display = t === 'audit' ? '' : 'none';
+  TABS.forEach(function (k) {
+    var b = $('tab-' + k), p = $('pane-' + k);
+    if (b) b.classList.toggle('on', t === k);
+    if (p) p.style.display = t === k ? '' : 'none';
+  });
   if (location.hash !== '#' + t) location.hash = t;
   if (t === 'users') loadUsers();
   if (t === 'membership') loadMembership();
+  if (t === 'coupon') loadCoupons();
   if (t === 'audit') loadAudit();
 }
 window.addEventListener('hashchange', function () {
@@ -893,6 +969,222 @@ function saveChannel() {
   p.then(function (r) {
     if (r.ok) { closeMask('ch-mask'); msg('ch-msg', '✓ 已保存通道：' + body.name, true); loadChannels(); }
     else msg('f-msg', r.error || '保存失败', false);
+  });
+}
+
+/* ---------------- 优惠券（服务端 1.4.6） ---------------- */
+var cp = { list: [], counts: {}, types: {}, editing: null };
+
+function cpBadgeClass(state) {
+  if (state === 'active') return 'green';
+  if (state === 'scheduled') return 'warn';
+  if (state === 'invalid') return 'red';
+  return 'gray';
+}
+
+function loadCoupons() {
+  api('GET', '/api/admin/coupons').then(function (r) {
+    if (!r.ok) { msg('cp-msg', r.error || '加载失败', false); return; }
+    cp.list = r.coupons || [];
+    cp.counts = r.counts || {};
+    cp.types = r.types || {};
+    renderCoupons();
+    $('cp-k-active').textContent = cp.counts.active || 0;
+    $('cp-k-sched').textContent = cp.counts.scheduled || 0;
+    $('cp-k-used').textContent = cp.counts.used || 0;
+    $('cp-k-reserved').textContent = cp.counts.reserved || 0;
+  });
+}
+
+function renderCoupons() {
+  var tb = $('cp-table').querySelector('tbody');
+  tb.textContent = '';
+  $('cp-empty').style.display = cp.list.length ? 'none' : '';
+  cp.list.forEach(function (c) {
+    var usage = '<b>' + (c.maxUses > 0 ? c.usedCount + ' / ' + c.maxUses : c.usedCount + ' / 不限') + '</b>'
+      + (c.perUser > 0 ? '<br><span class="hint">每人 ' + c.perUser + ' 次</span>' : '');
+    var scope = (c.plans && c.plans.length) ? c.plans.join(' / ') : '全场通用';
+    var when = (c.effectiveFrom ? c.effectiveFrom.slice(0, 10) : '立即')
+      + ' ~ ' + (c.effectiveTo ? c.effectiveTo.slice(0, 10) : '长期');
+    var tr = document.createElement('tr');
+    // 「内容」只放折扣本身与门槛/备注；适用范围单独一列，避免两列重复同一句话把表格挤花
+    var content = '<b>' + esc(c.discountText) + '</b>'
+      + (c.minAmountCents > 0 ? '<br><span class="hint">折前满 ¥' + (c.minAmountCents / 100).toFixed(2) + '</span>' : '')
+      + (c.note ? '<br><span class="hint">' + esc(c.note) + '</span>' : '');
+    tr.innerHTML =
+      '<td class="mono" style="white-space:nowrap">' + esc(c.code) + '</td>' +
+      '<td>' + content + '</td>' +
+      '<td>' + esc(scope) + '</td>' +
+      '<td class="mono">' + esc(usage) + '</td>' +
+      '<td class="mono" style="white-space:nowrap">' + esc(when) + '</td>' +
+      '<td><span class="badge ' + cpBadgeClass(c.state) + '">' + esc(c.stateText) + '</span></td>';
+    var td = document.createElement('td');
+    td.style.whiteSpace = 'nowrap';
+    td.innerHTML =
+      '<button class="btn sm" onclick="openCouponForm(\'' + c.id + '\')">编辑</button> ' +
+      '<button class="btn sm" onclick="copyCoupon(\'' + c.id + '\')">复制</button> ' +
+      '<button class="btn sm" onclick="couponToggle(\'' + c.id + '\',' + (c.enabled ? 'false' : 'true') + ')">'
+        + (c.enabled ? '停用' : '启用') + '</button> ' +
+      '<button class="btn sm danger" onclick="couponDelete(\'' + c.id + '\',\'' + esc(c.code) + '\')">作废</button>';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function copyCoupon(id) {
+  var c = cp.list.filter(function (x) { return x.id === id; })[0];
+  if (!c) return;
+  var done = function () { msg('cp-msg', '✓ 已复制 ' + c.code + '（发给用户即可）', true); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(c.code).then(done, function () { window.prompt('复制券码：', c.code); });
+    } else window.prompt('复制券码：', c.code);
+  } catch (e) { window.prompt('复制券码：', c.code); }
+}
+
+function onCpTypeChange() {
+  var t = $('cp-type').value;
+  $('cp-percent-wrap').style.display = t === 'percent' ? '' : 'none';
+  $('cp-amount-wrap').style.display = t === 'amount' ? '' : 'none';
+  syncCpPreview();
+}
+
+/** 预览：把「减多少」用用户读得懂的话说清楚（含折合几折） */
+function syncCpPreview() {
+  var t = $('cp-type').value;
+  var txt;
+  if (t === 'percent') {
+    var p = Number($('cp-percent').value) || 0;
+    var bad = !(p >= 1 && p <= 99);
+    txt = bad ? '减免百分比必须在 1 ~ 99 之间（100% 减免请改用激活码）'
+      : '用户看到：减 ' + p + '%（' + (Math.round((100 - p) * 100) / 100) + ' 折）';
+  } else {
+    var a = Math.round((Number($('cp-amount').value) || 0) * 100);
+    txt = a < 1 ? '固定减免必须大于 0' : '用户看到：减 ¥' + (a / 100).toFixed(2);
+  }
+  var m = Math.round((Number($('cp-min').value) || 0) * 100);
+  if (m > 0) txt += '　·　折前需满 ¥' + (m / 100).toFixed(2);
+  var to = $('cp-to').value;
+  if (to) txt += '　·　' + to.slice(0, 10) + ' 截止';
+  var from = $('cp-from').value;
+  if (from && new Date(from) > new Date()) txt += '　·　' + from.slice(0, 10) + ' 起定时生效';
+  if (cp.editing) txt += '　·　（编辑不改变已产生的使用记录）';
+  else {
+    var n = Number($('cp-count').value) || 1;
+    if (n > 1) txt += '　·　将生成 ' + n + ' 枚互不重复的券码';
+  }
+  $('cp-preview').textContent = txt;
+}
+
+function openCouponForm(id) {
+  cp.editing = null;
+  // 等级复选框：从公开套餐目录取（未登录也能读）
+  api('GET', '/api/plans').then(function (r) {
+    var box = $('cp-plans');
+    box.textContent = '';
+    var plans = (r && r.plans) || [];
+    plans.forEach(function (p) {
+      var lb = document.createElement('label');
+      lb.innerHTML = '<input type="checkbox" value="' + esc(p.id) + '"> ' + esc(p.name || p.id);
+      box.appendChild(lb);
+    });
+    if (id) {
+      var c = cp.list.filter(function (x) { return x.id === id; })[0];
+      if (!c) return;
+      cp.editing = c;
+      $('cp-form-title').textContent = '编辑优惠券 ' + c.code;
+      $('cp-save').textContent = '保存';
+      $('cp-type').value = c.type;
+      $('cp-type').disabled = true;              // 类型不支持改（改类型等于换一种券）
+      $('cp-percent').value = c.percent === null ? 20 : c.percent;
+      $('cp-amount').value = c.amountCents === null ? 10 : (c.amountCents / 100);
+      $('cp-min').value = (c.minAmountCents || 0) / 100;
+      $('cp-note').value = c.note || '';
+      $('cp-maxuses').value = c.maxUses || 0;
+      $('cp-peruser').value = c.perUser || 0;
+      $('cp-from').value = c.effectiveFrom ? c.effectiveFrom.slice(0, 16) : '';
+      $('cp-to').value = c.effectiveTo ? c.effectiveTo.slice(0, 16) : '';
+      $('cp-count-wrap').style.display = 'none';
+      $('cp-count').disabled = true;      // 编辑不产新码，禁用而不是仅隐藏
+      Array.prototype.forEach.call(box.querySelectorAll('input'),
+        function (i) { i.checked = (c.plans || []).indexOf(i.value) >= 0; });
+    } else {
+      $('cp-form-title').textContent = '新建优惠券';
+      $('cp-save').textContent = '创建';
+      $('cp-type').disabled = false;
+      $('cp-type').value = 'percent';
+      $('cp-percent').value = 20;
+      $('cp-amount').value = 10;
+      $('cp-min').value = 0;
+      $('cp-note').value = '';
+      $('cp-maxuses').value = 0;
+      $('cp-peruser').value = 1;
+      $('cp-from').value = '';
+      $('cp-to').value = '';
+      $('cp-count').value = 1;
+      $('cp-count').disabled = false;
+      $('cp-count-wrap').style.display = '';
+    }
+    onCpTypeChange();
+    $('coupon-mask').classList.add('show');
+  });
+}
+
+function couponBody() {
+  var t = $('cp-type').value;
+  var plans = [];
+  Array.prototype.forEach.call($('cp-plans').querySelectorAll('input'), function (i) {
+    if (i.checked) plans.push(i.value);
+  });
+  return {
+    type: t,
+    percent: t === 'percent' ? Number($('cp-percent').value) : undefined,
+    amountCents: t === 'amount' ? Math.round((Number($('cp-amount').value) || 0) * 100) : undefined,
+    minAmountCents: Math.round((Number($('cp-min').value) || 0) * 100),
+    plans: plans,
+    maxUses: Number($('cp-maxuses').value) || 0,
+    perUser: Number($('cp-peruser').value) || 0,
+    effectiveFrom: $('cp-from').value || null,
+    effectiveTo: $('cp-to').value || null,
+    note: $('cp-note').value.trim(),
+  };
+}
+
+function saveCoupon() {
+  var body = couponBody();
+  var p;
+  if (cp.editing) {
+    p = api('PUT', '/api/admin/coupons/' + cp.editing.id, body);
+  } else {
+    body.count = Number($('cp-count').value) || 1;
+    p = api('POST', '/api/admin/coupons', body);
+  }
+  p.then(function (r) {
+    if (!r.ok) { msg('cp-msg', r.error || '保存失败', false); return; }
+    closeMask('coupon-mask');
+    if (cp.editing) msg('cp-msg', '✓ 已保存（不影响已产生的使用记录与已下的订单）', true);
+    else {
+      var codes = (r.coupons || []).map(function (c) { return c.code; });
+      msg('cp-msg', '✓ 已创建 ' + codes.length + ' 枚：' + codes.join('、'), true);
+    }
+    loadCoupons();
+  });
+}
+
+function couponToggle(id, enabled) {
+  api('PUT', '/api/admin/coupons/' + id, { enabled: enabled }).then(function (r) {
+    if (!r.ok) { msg('cp-msg', r.error || '操作失败', false); return; }
+    msg('cp-msg', enabled ? '✓ 已启用' : '✓ 已停用（已下的订单不受影响）', true);
+    loadCoupons();
+  });
+}
+
+function couponDelete(id, code) {
+  if (!confirm('确定作废优惠券 ' + code + '？已被订单占用/使用的券无法作废（需先处理那些订单）。')) return;
+  api('DELETE', '/api/admin/coupons/' + id).then(function (r) {
+    if (!r.ok) { msg('cp-msg', r.error || '作废失败', false); return; }
+    msg('cp-msg', '✓ 已作废 ' + code, true);
+    loadCoupons();
   });
 }
 
@@ -1596,7 +1888,7 @@ api('GET', '/api/admin/providers').then(function (r) {
 });
 loadChannels();
 toggleInitMonths();
-if (['#users', '#membership', '#audit'].indexOf(location.hash) >= 0) switchTab(location.hash.slice(1));
+  if (['#users', '#membership', '#coupon', '#audit'].indexOf(location.hash) >= 0) switchTab(location.hash.slice(1));
 </script>
 </body>
 </html>

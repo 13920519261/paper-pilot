@@ -328,6 +328,7 @@ function Get-AuditText([string]$a) {
     'price.create' = '新增价格条目'; 'price.update' = '修改价格条目'; 'price.delete' = '删除价格条目'
     'membership.config' = '修改会员/收款配置'
     'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'; 'order.reconcile' = '对账自动核销'
+    'coupon.create' = '生成优惠券'; 'coupon.update' = '修改优惠券'; 'coupon.revoke' = '作废优惠券'
     'code.create' = '生成激活码'; 'code.revoke' = '作废激活码'
     'backup.create' = '手动打快照'; 'backup.restore' = '回滚数据'; 'backup.delete' = '删除快照'
     'alert.check' = '手动巡检积压告警'
@@ -1369,10 +1370,159 @@ function Show-PriceForm($parent, $editing) {
 #   （订单绑定账号，用户无需再输码；核销同时留档一枚已用兑换码便于对账）
 #   续期一律按「剩余时长 + 本次时长」叠加 —— 与 Web 管理页（/admin）同一套接口
 # ============================================================
+# 新建 / 编辑优惠券。$c 为 $null 时新建（可批量），否则编辑既有券（类型不可改）
+function Show-CouponForm($c) {
+  $isEdit = ($null -ne $c)
+  $dlg = New-Object System.Windows.Forms.Form
+  $dlg.Text = $(if ($isEdit) { '编辑优惠券 ' + [string]$c.code } else { '新建优惠券' })
+  $dlg.ClientSize = New-Object System.Drawing.Size(520, 420)
+  $dlg.StartPosition = 'CenterParent'
+  $dlg.FormBorderStyle = 'FixedSingle'
+  $dlg.MaximizeBox = $false
+  $dlg.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+  $dlg.Icon = $script:appIcon
+
+  $lblType = New-Object System.Windows.Forms.Label
+  $lblType.Text = '减免类型'; $lblType.SetBounds(16, 18, 90, 20)
+  [void]$dlg.Controls.Add($lblType)
+  $cmbType = New-Object System.Windows.Forms.ComboBox
+  $cmbType.DropDownStyle = 'DropDownList'
+  $cmbType.SetBounds(110, 16, 200, 24)
+  [void]$cmbType.Items.Add('按比例减免（折扣）')
+  [void]$cmbType.Items.Add('固定金额减免（满减）')
+  $cmbType.SelectedIndex = 0
+  if ($isEdit -and [string]$c.type -eq 'amount') { $cmbType.SelectedIndex = 1 }
+  if ($isEdit) { $cmbType.Enabled = $false }
+  [void]$dlg.Controls.Add($cmbType)
+
+  $lblVal = New-Object System.Windows.Forms.Label
+  $lblVal.Text = '减免百分比 %'; $lblVal.SetBounds(16, 50, 90, 20)
+  [void]$dlg.Controls.Add($lblVal)
+  $txtVal = New-Object System.Windows.Forms.TextBox
+  $txtVal.SetBounds(110, 48, 120, 24)
+  $txtVal.Text = '20'
+  [void]$dlg.Controls.Add($txtVal)
+
+  $lblMin = New-Object System.Windows.Forms.Label
+  $lblMin.Text = '门槛（元）'; $lblMin.SetBounds(250, 50, 90, 20)
+  [void]$dlg.Controls.Add($lblMin)
+  $txtMin = New-Object System.Windows.Forms.TextBox
+  $txtMin.SetBounds(340, 48, 110, 24)
+  $txtMin.Text = '0'
+  [void]$dlg.Controls.Add($txtMin)
+
+  $lblScope = New-Object System.Windows.Forms.Label
+  $lblScope.Text = '适用等级（留空 = 全场通用，可填 Pro / Free）'; $lblScope.SetBounds(16, 82, 320, 20)
+  [void]$dlg.Controls.Add($lblScope)
+  $txtScope = New-Object System.Windows.Forms.TextBox
+  $txtScope.SetBounds(16, 104, 486, 24)
+  [void]$dlg.Controls.Add($txtScope)
+
+  $lblMax = New-Object System.Windows.Forms.Label
+  $lblMax.Text = '可用总次数（0 = 不限）'; $lblMax.SetBounds(16, 138, 160, 20)
+  [void]$dlg.Controls.Add($lblMax)
+  $txtMax = New-Object System.Windows.Forms.TextBox
+  $txtMax.SetBounds(180, 136, 90, 24)
+  $txtMax.Text = '0'
+  [void]$dlg.Controls.Add($txtMax)
+
+  $lblPer = New-Object System.Windows.Forms.Label
+  $lblPer.Text = '每人限用（0 = 不限）'; $lblPer.SetBounds(286, 138, 150, 20)
+  [void]$dlg.Controls.Add($lblPer)
+  $txtPer = New-Object System.Windows.Forms.TextBox
+  $txtPer.SetBounds(436, 136, 66, 24)
+  $txtPer.Text = '1'
+  [void]$dlg.Controls.Add($txtPer)
+
+  $lblTo = New-Object System.Windows.Forms.Label
+  $lblTo.Text = '生效截止（不勾 = 长期有效）'; $lblTo.SetBounds(16, 170, 200, 20)
+  [void]$dlg.Controls.Add($lblTo)
+  $dtTo = New-Object System.Windows.Forms.DateTimePicker
+  $dtTo.Format = 'Short'; $dtTo.ShowCheckBox = $true; $dtTo.Checked = $false
+  $dtTo.SetBounds(216, 168, 140, 24)
+  [void]$dlg.Controls.Add($dtTo)
+
+  $lblCnt = New-Object System.Windows.Forms.Label
+  $lblCnt.Text = '生成数量（1~200，仅新建）'; $lblCnt.SetBounds(16, 202, 200, 20)
+  [void]$dlg.Controls.Add($lblCnt)
+  $txtCnt = New-Object System.Windows.Forms.TextBox
+  $txtCnt.SetBounds(216, 200, 80, 24)
+  $txtCnt.Text = '1'
+  [void]$dlg.Controls.Add($txtCnt)
+
+  $lblNote = New-Object System.Windows.Forms.Label
+  $lblNote.Text = '备注（后台可见，不给用户看）'; $lblNote.SetBounds(16, 234, 260, 20)
+  [void]$dlg.Controls.Add($lblNote)
+  $txtNote = New-Object System.Windows.Forms.TextBox
+  $txtNote.SetBounds(16, 256, 486, 24)
+  [void]$dlg.Controls.Add($txtNote)
+
+  # 编辑既有券：回填现值
+  if ($isEdit) {
+    $txtVal.Text = $(if ([string]$c.type -eq 'amount') { [string]([int]$c.amountCents / 100.0) } else { [string]$c.percent })
+    $txtMin.Text = [string]([int]$c.minAmountCents / 100.0)
+    $txtScope.Text = (@($c.plans) -join ',')
+    $txtMax.Text = [string]$c.maxUses
+    $txtPer.Text = [string]$c.perUser
+    $txtNote.Text = [string]$c.note
+    if ($c.effectiveTo) {
+      $dtTo.Checked = $true
+      try { $dtTo.Value = [datetime]::Parse([string]$c.effectiveTo) } catch { $dtTo.Checked = $false }
+    }
+    $txtCnt.Enabled = $false
+  }
+
+  $lblMsgC = New-Object System.Windows.Forms.Label
+  $lblMsgC.Text = ''
+  $lblMsgC.ForeColor = [System.Drawing.Color]::DimGray
+  $lblMsgC.SetBounds(16, 286, 486, 44)
+  [void]$dlg.Controls.Add($lblMsgC)
+
+  $btnOk = New-Object System.Windows.Forms.Button
+  $btnOk.Text = $(if ($isEdit) { '保存' } else { '创建' })
+  $btnOk.SetBounds(296, 342, 96, 32)
+  $btnOk.add_Click({
+    $isAmt = ($cmbType.SelectedIndex -eq 1)
+    $body = @{
+      minAmountCents = [int]([math]::Round((([double]$txtMin.Text) * 100)))
+      maxUses        = [int]$txtMax.Text
+      perUser        = [int]$txtPer.Text
+      note           = $txtNote.Text.Trim()
+    }
+    if ($isAmt) { $body['amountCents'] = [int]([math]::Round((([double]$txtVal.Text) * 100))) }
+    else { $body['percent'] = [double]$txtVal.Text }
+    if ($txtScope.Text.Trim()) { $body['plans'] = @($txtScope.Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    if ($dtTo.Checked) { $body['effectiveTo'] = $dtTo.Value.ToString('yyyy-MM-ddTHH:mm') }
+    try {
+      if ($isEdit) {
+        [void](Invoke-AdminApi 'PUT' ('/api/admin/coupons/' + [string]$c.id) $body)
+      } else {
+        $body['count'] = [int]$txtCnt.Text
+        [void](Invoke-AdminApi 'POST' '/api/admin/coupons' $body)
+      }
+      $dlg.Close()
+    } catch {
+      $lblMsgC.Text = '保存失败：' + (Get-HttpErrorDetail $_)
+      $lblMsgC.ForeColor = [System.Drawing.Color]::Firebrick
+    }
+  })
+  [void]$dlg.Controls.Add($btnOk)
+
+  $btnCancel = New-Object System.Windows.Forms.Button
+  $btnCancel.Text = '取消'
+  $btnCancel.SetBounds(400, 342, 96, 32)
+  $btnCancel.add_Click({ $dlg.Close() })
+  [void]$dlg.Controls.Add($btnCancel)
+
+  [void]$dlg.ShowDialog($form)
+  $dlg.Dispose()
+}
+
+
 function Show-MembershipManager {
   if (-not (Require-ServerRunning)) { return }
   $dlg = New-Object System.Windows.Forms.Form
-  $dlg.Text = '会员管理（订单 / 激活码 / 价格与周期 / 套餐与收款 / 审计日志）'
+  $dlg.Text = '会员管理（订单 / 激活码 / 价格与周期 / 优惠券 / 套餐与收款 / 审计日志）'
   $dlg.ClientSize = New-Object System.Drawing.Size(900, 580)
   $dlg.StartPosition = 'CenterParent'
   $dlg.MinimizeBox = $false
@@ -1384,6 +1534,8 @@ function Show-MembershipManager {
   $script:mbPrices = @()
   $script:mbCycles = @()
   $script:mbPricePlans = @()
+  $script:mbCoupons = @()
+  $script:mbCouponPlans = @()
 
   $lblTop = New-Object System.Windows.Forms.Label
   $lblTop.SetBounds(14, 8, 872, 38)
@@ -1966,7 +2118,101 @@ function Show-MembershipManager {
   $lblATip2.SetBounds(16, 446, 830, 20)
   [void]$pgAudit.Controls.Add($lblATip2)
 
+  # ---------------- 页 6：优惠券 / 折扣码 ----------------
+  # 与激活码的分工：激活码"直接发会员"（免费、不走订单）；优惠券"只打折"，仍走下单→收款→核销。
+  # 名额在下单时占用、取消/超时释放、核销才消耗 ⇒ 用户乱点不会把限量券耗光。
+  $pgCoup = New-Object System.Windows.Forms.TabPage
+  $pgCoup.Text = '优惠券'
+  [void]$tabs.TabPages.Add($pgCoup)
+
+  $lvCp = New-Object System.Windows.Forms.ListView
+  $lvCp.View = 'Details'; $lvCp.FullRowSelect = $true; $lvCp.HideSelection = $false
+  $lvCp.SetBounds(8, 8, 848, 400)
+  [void]$lvCp.Columns.Add('券码', 150)
+  [void]$lvCp.Columns.Add('内容', 210)
+  [void]$lvCp.Columns.Add('范围', 110)
+  [void]$lvCp.Columns.Add('用量', 110)
+  [void]$lvCp.Columns.Add('有效期', 130)
+  [void]$lvCp.Columns.Add('状态', 70)
+  [void]$pgCoup.Controls.Add($lvCp)
+
+  $lblCpTip = New-Object System.Windows.Forms.Label
+  $lblCpTip.Text = '折后仍会再加 1~99 分的专属对账尾数（自动对账不受影响）；折后至少留 ¥1，100% 减免请用激活码。'
+  $lblCpTip.ForeColor = [System.Drawing.Color]::DimGray
+  $lblCpTip.SetBounds(10, 442, 840, 20)
+  [void]$pgCoup.Controls.Add($lblCpTip)
+
+  function Refresh-Coupons {
+    try {
+      $r = Invoke-AdminApi 'GET' '/api/admin/coupons'
+      $script:mbCoupons = @($r.coupons)
+      $lvCp.Items.Clear()
+      foreach ($c in $script:mbCoupons) {
+        $usage = '0 / 不限'
+        if ([int]$c.maxUses -gt 0) { $usage = [string]$c.usedCount + ' / ' + [string]$c.maxUses }
+        else { $usage = [string]$c.usedCount + ' / 不限' }
+        if ([int]$c.perUser -gt 0) { $usage = $usage + '（每人 ' + [string]$c.perUser + '）' }
+        $scope = '全场通用'
+        if (@($c.plans).Count -gt 0) { $scope = (@($c.plans) -join '/') }
+        $from = '立即'
+        if ($c.effectiveFrom) { $from = ([string]$c.effectiveFrom).Substring(0, 10) }
+        $to = '长期'
+        if ($c.effectiveTo) { $to = ([string]$c.effectiveTo).Substring(0, 10) }
+        $it = New-Object System.Windows.Forms.ListViewItem([string]$c.code)
+        [void]$it.SubItems.Add([string]$c.label)
+        [void]$it.SubItems.Add($scope)
+        [void]$it.SubItems.Add($usage)
+        [void]$it.SubItems.Add($from + ' ~ ' + $to)
+        [void]$it.SubItems.Add([string]$c.stateText)
+        [void]$lvCp.Items.Add($it)
+      }
+    } catch {
+      [System.Windows.Forms.MessageBox]::Show('加载优惠券失败：' + (Get-HttpErrorDetail $_), '错误', 'OK', 'Warning') | Out-Null
+    }
+  }
+
+  New-MbBtn $pgCoup '＋ 新建优惠券' 8 418 130 { Show-CouponForm $null; Refresh-Coupons }
+  New-MbBtn $pgCoup '编辑' 146 418 70 {
+    if ($lvCp.SelectedItems.Count -eq 0) { return }
+    Show-CouponForm $script:mbCoupons[$lvCp.SelectedItems[0].Index]
+    Refresh-Coupons
+  }
+  New-MbBtn $pgCoup '停用/启用' 224 418 90 {
+    if ($lvCp.SelectedItems.Count -eq 0) { return }
+    $c = $script:mbCoupons[$lvCp.SelectedItems[0].Index]
+    $want = -not [bool]$c.enabled
+    try {
+      [void](Invoke-AdminApi 'PUT' ('/api/admin/coupons/' + [string]$c.id) @{ enabled = $want })
+      Refresh-Coupons
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgCoup '复制券码' 322 418 90 {
+    if ($lvCp.SelectedItems.Count -eq 0) { return }
+    $code = [string]$script:mbCoupons[$lvCp.SelectedItems[0].Index].code
+    try {
+      [System.Windows.Forms.Clipboard]::SetText($code)
+      [System.Windows.Forms.MessageBox]::Show('已复制：' + $code + "`n" + '发给用户即可，大小写与连字符都不敏感。', '已复制', 'OK', 'Information') | Out-Null
+    } catch {
+      [System.Windows.Forms.MessageBox]::Show('券码：' + $code, '复制失败，请手工抄录', 'OK', 'Information') | Out-Null
+    }
+  }
+  New-MbBtn $pgCoup '作废' 420 418 70 {
+    if ($lvCp.SelectedItems.Count -eq 0) { return }
+    $c = $script:mbCoupons[$lvCp.SelectedItems[0].Index]
+    $q = [System.Windows.Forms.MessageBox]::Show(
+      ('确定作废 ' + [string]$c.code + '？' + "`n" + '已被订单占用或已使用的券无法作废（需先处理那些订单）。'),
+      '作废优惠券', 'YesNo', 'Question')
+    if ($q -ne 'Yes') { return }
+    try {
+      [void](Invoke-AdminApi 'DELETE' ('/api/admin/coupons/' + [string]$c.id))
+      Refresh-Coupons
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-MbBtn $pgCoup '刷新' 498 418 70 { Refresh-Coupons }
+  New-MbBtn $pgCoup '关闭' 760 418 96 { $dlg.Close() }
+
   Refresh-Membership
+  Refresh-Coupons
   [void]$dlg.ShowDialog($form)
   $dlg.Dispose()
 }

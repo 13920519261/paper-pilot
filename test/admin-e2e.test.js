@@ -437,6 +437,97 @@ function req(method, p, body, token) {
     await page.screenshot({ path: SHOT_AUDIT, fullPage: true });
     ok(true, 'E20.12 审计页截图: ' + SHOT_AUDIT);
 
+    /* ---- 服务端 1.4.6：优惠券标签页（真点击建券 → 编辑 → 停用 → 校验接口联动） ---- */
+    await page.click('#tab-coupon');
+    await page.waitForSelector('#cp-table', { timeout: 5000 });
+    await page.waitForTimeout(300);
+    ok(await page.locator('#cp-empty').isVisible(), 'E22.1 初始无优惠券（空态提示）');
+
+    await page.click('button:has-text("＋ 新建优惠券")');
+    await page.waitForSelector('#coupon-mask.show');
+    ok((await page.textContent('#cp-preview')).includes('减 20%'),
+      'E22.2 预览用用户能懂的话说明折扣（减 20% = 8 折）');
+    await page.fill('#cp-percent', '25');
+    await page.inputValue('#cp-percent');
+    ok((await page.textContent('#cp-preview')).includes('75 折'), 'E22.3 改百分比后预览联动（85→75 折）');
+    await page.fill('#cp-min', '50');
+    ok((await page.textContent('#cp-preview')).includes('折前需满 ¥50.00'),
+      'E22.4 填门槛后预览联动（此前预览不跟门槛走，会与实际不符）');
+    await page.fill('#cp-note', '国庆活动');
+    await page.fill('#cp-peruser', '1');
+    await page.fill('#cp-maxuses', '3');
+    await page.fill('#cp-count', '2');
+    await page.click('#cp-save');
+    await page.waitForFunction(() => {
+      var t = document.getElementById('cp-msg');
+      return t && t.textContent.indexOf('已创建') >= 0;
+    }, { timeout: 6000 });
+    const cpMsg = await page.textContent('#cp-msg');
+    ok(/已创建 2 枚/.test(cpMsg), 'E22.5 批量创建 2 枚并回显券码', cpMsg.slice(0, 120));
+    const cpRows = await page.locator('#cp-table tbody tr').count();
+    eq(cpRows, 2, 'E22.6 列表出现 2 行');
+    const cpTxt = await page.textContent('#cp-table tbody');
+    ok(cpTxt.includes('减 25%'), 'E22.7 列表显示券的内容');
+    ok(cpTxt.includes('全场通用'), 'E22.8 未勾等级 → 标记全场通用');
+    ok(cpTxt.includes('0 / 3'), 'E22.9 用量列为「已用 / 总次数」');
+    ok(cpTxt.includes('生效中'), 'E22.10 新券为生效中');
+    const cpCodes = await page.$$eval('#cp-table tbody tr td:first-child', (ts) => ts.map((t) => t.textContent.trim()));
+    ok(cpCodes.every((c) => /^CP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c)),
+      'E22.11 券码格式正确且两枚不同', cpCodes);
+    eq(await page.textContent('#cp-k-active'), '2', 'E22.12 KPI「生效中」= 2');
+
+    // 门槛 50 元：月付 ¥9.9 会被拦（真调接口验证 UI 里的配置真的生效了）
+    const badQuote = await req('POST', '/api/coupons/validate',
+      { code: cpCodes[0], plan: 'Pro', months: 1 }, tok);
+    ok(badQuote.status === 400 && /未达门槛/.test(badQuote.json.error),
+      'E22.13 界面配的门槛真的生效（月付 ¥29 被 ¥50 门槛拦下）', badQuote.json && badQuote.json.error);
+    const goodQuote = await req('POST', '/api/coupons/validate',
+      { code: cpCodes[0], plan: 'Pro', months: 12 }, tok);
+    eq(goodQuote.status, 200, 'E22.14 年付 ¥269 达门槛 → 可试算');
+    // 注意：默认价格表按年 ¥269（¥9.9/19.9/69 那套是线上后台配的）
+    eq(goodQuote.json.quote.discountCents, 6725, 'E22.15 25% of ¥269 = ¥67.25');
+    eq(goodQuote.json.quote.payableCents, 20175, 'E22.16 折后 ¥201.75');
+
+    // 编辑：改额度
+    await page.locator('#cp-table tbody tr').first().locator('button:has-text("编辑")').click();
+    await page.waitForSelector('#coupon-mask.show');
+    ok((await page.textContent('#cp-form-title')).includes('编辑'), 'E22.17 打开的是编辑态');
+    eq(await page.isDisabled('#cp-type'), true, 'E22.18 编辑时类型锁定（改类型等于换一种券）');
+    eq(await page.isDisabled('#cp-count'), true, 'E22.19 编辑时不显示批量数量');
+    await page.fill('#cp-maxuses', '9');
+    await page.click('#cp-save');
+    await page.waitForFunction(() => {
+      var t = document.getElementById('cp-msg');
+      return t && t.textContent.indexOf('已保存') >= 0;
+    }, { timeout: 6000 });
+    ok((await page.textContent('#cp-table tbody')).includes('0 / 9'), 'E22.20 编辑后额度变为 9');
+    ok((await page.textContent('#cp-table tbody')).includes('减 25%'),
+      'E22.21 编辑只改额度，折扣率没被清掉（局部更新回归）');
+
+    // 停用 → 接口立刻拒绝试算
+    await page.locator('#cp-table tbody tr').first().locator('button:has-text("停用")').click();
+    await page.waitForFunction(() => {
+      var t = document.getElementById('cp-msg');
+      return t && t.textContent.indexOf('已停用') >= 0;
+    }, { timeout: 6000 });
+    const afterOff = await req('POST', '/api/coupons/validate',
+      { code: cpCodes[0], plan: 'Pro', months: 12 }, tok);
+    ok(afterOff.status === 400 && /已停用/.test(afterOff.json.error),
+      'E22.22 界面停用后试算立即被拒（不用重启服务）', afterOff.json && afterOff.json.error);
+    ok((await page.textContent('#cp-table tbody')).includes('已停用'), 'E22.23 列表状态同步为已停用');
+
+    // 作废未使用的券（confirm 由文件顶部的全局 dialog 处理器自动确认）
+    await page.locator('#cp-table tbody tr').first().locator('button:has-text("作废")').click();
+    await page.waitForFunction(() => {
+      var t = document.getElementById('cp-msg');
+      return t && t.textContent.indexOf('已作废') >= 0;
+    }, { timeout: 6000 });
+    eq(await page.locator('#cp-table tbody tr').count(), 1, 'E22.24 作废后只剩 1 枚');
+
+    const SHOT_CP = path.join(os.tmpdir(), 'pp-admin-coupon.png');
+    await page.screenshot({ path: SHOT_CP, fullPage: true });
+    ok(true, 'E22.25 优惠券页截图: ' + SHOT_CP);
+
     await page.click('#tab-membership');
     await page.waitForTimeout(400);
     await page.screenshot({ path: SHOT, fullPage: true });

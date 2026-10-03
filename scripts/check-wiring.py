@@ -232,7 +232,8 @@ ok("'perpetual'" in ps, "9.17 launcher 价格表单识别永久周期")
 _acct_src = io.open(os.path.join(ROOT, "chrome", "content", "scripts", "ai", "account.js"),
                     encoding="utf-8").read()
 _pa_src = io.open(os.path.join(ROOT, "chrome", "content", "prefs-account.js"), encoding="utf-8").read()
-ok("createOrder(plan, months, cycle)" in _acct_src, "9.18 插件 createOrder 支持周期参数")
+ok("async createOrder(plan, months, cycle, couponCode)" in _acct_src,
+   "9.18 插件 createOrder 支持周期参数与券码")
 ok("perpetual" in _acct_src, "9.19 插件 account.js 读取 perpetual")
 ok("tailCents" in _pa_src, "9.20 插件支付面板提示专属尾数")
 ok("永久" in _pa_src, "9.21 插件显示「永久」相关文案")
@@ -276,6 +277,52 @@ ok("renewPromptShownFor" in prefsdef, "8.6 prefs.js 有 renewPromptShownFor 默�
 ok("usageDays" in srv and "usageDaily" in srv, "8.7 服务端实现按日用量与后台下发")
 ok("exportUsageCSV" in html, "8.8 Web 管理页有用量 CSV 导出")
 
+# ---------- 9. 1.4.6：优惠券 / 折扣码 ----------
+COUPON_LIB = os.path.join(ROOT, "server", "lib", "coupon.js")
+ok(os.path.exists(COUPON_LIB), "9.1 存在 server/lib/coupon.js")
+coupon_src = io.open(COUPON_LIB, encoding="utf-8").read()
+for fn in ["sanitizeCoupon", "stateOf", "computeDiscount", "quote",
+           "reserveUse", "consumeUseByOrder", "releaseUseByOrder",
+           "couponOut", "couponPublicOut", "createCoupons", "updateCoupon", "removeCoupon"]:
+    # 有的是 function 声明、有的是 const 箭头函数 —— 两种形态都要认，否则满屏假失败
+    _defined = (re.search(r"function %s\b" % fn, coupon_src) is not None
+                or re.search(r"const %s\s*=" % fn, coupon_src) is not None)
+    ok(_defined, "9.2 coupon.js 定义 %s()" % fn)
+ok("require('./lib/coupon')" in srv, "9.3 服务端引入 coupon 模块")
+for must in ["/api/admin/coupons", "/api/coupons/validate", "couponCode"]:
+    ok(must in srv, "9.4 服务端含优惠券接线 %s" % must)
+ok("quoteOrder" in srv, "9.5 服务端有试算 helper（与下单共用同一取价口径）")
+ok("coupons" in srv and "couponsActive" in srv, "9.6 health 暴露优惠券观测字段")
+# 订单生命周期必须联动券占用（否则限额会被乱点耗光 / 释放不掉）
+for must in ["coupon.releaseUseByOrder", "coupon.consumeUseByOrder", "coupon.reserveUse"]:
+    ok(must in srv or must in io.open(os.path.join(ROOT, "server", "lib", "membership.js"),
+                                      encoding="utf-8").read(),
+       "9.7 订单生命周期联动券占用：%s" % must)
+ok("coupon.create" in io.open(os.path.join(ROOT, "server", "lib", "audit.js"),
+                              encoding="utf-8").read(), "9.8 审计动作表含 coupon.*")
+# 三处 UI
+ok("tab-coupon" in html and "pane-coupon" in html and "openCouponForm" in html,
+   "9.9 Web 管理页有优惠券标签页与弹窗")
+ok("'优惠券'" in ps and "Show-CouponForm" in ps and "Refresh-Coupons" in ps,
+   "9.10 启动器有优惠券标签页与对话框")
+# 插件端：试算 + 下单带券 + 面板元素存在
+ok("validateCoupon" in acct and "couponCode" in acct, "9.11 插件 account.js 支持试算与带券下单")
+ok("createOrder(mbSel.plan, mbSel.months, mbSel.cycle," in prefs_js, "9.12 插件下单时传券码")
+for eid in ["pp-mb-coupon", "pp-mb-coupon-btn", "pp-mb-quote"]:
+    ok(('id="%s"' % eid) in io.open(os.path.join(ROOT, "chrome", "content", "prefs.xhtml"),
+                                    encoding="utf-8").read(),
+       "9.13 prefs.xhtml 存在优惠码元素 %s" % eid)
+    ok(('"%s"' % eid) in prefs_js, "9.14 prefs-account.js 引用 %s" % eid)
+ok("pp-mb-quote" in io.open(os.path.join(ROOT, "chrome", "content", "prefs.css"),
+                            encoding="utf-8").read(), "9.15 prefs.css 有折后价样式")
+# 折后金额的下限保护（不允许 100% 减免 → 免费请用激活码）
+ok("MIN_PAYABLE_CENTS" in coupon_src and "MAX_PERCENT = 99" in coupon_src,
+   "9.16 优惠券守住「折后至少 ¥1、最多 99%」的下限")
+# ★ 尾数必须在**折后**金额上分配，否则「按金额唯一对账」在打折后会失效
+mem_src = io.open(os.path.join(ROOT, "server", "lib", "membership.js"), encoding="utf-8").read()
+ok("const baseCents = originalCents - discountCents;" in mem_src
+   and "assignTail(doc, baseCents" in mem_src,
+   "9.17 尾数在折后金额上分配（保住按金额唯一对账）")
 # ---------- 输出 ----------
 print("=" * 60)
 for p in passes:
