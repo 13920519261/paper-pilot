@@ -363,6 +363,31 @@ for eid in ["sessions-mask", "ss-table", "ss-stat"]:
     ok(('id="%s"' % eid) in html, "10.16 Web 管理页存在设备元素 %s" % eid)
 ok("openSessions" in html, "10.17 用户行有设备入口按钮")
 
+# ---------- 11. 0.24.7：插件上报设备标识 + 登录设备面板 ----------
+for fn in ["installId()", "_deviceHeaders()", "sessions()", "renameSession(", "revokeSession(", "revokeOtherSessions("]:
+    ok(fn in acct, "11.1 account.js 定义 %s" % fn)
+ok('X-PP-Device' in acct and 'X-PP-Platform' in acct, "11.2 account.js 上报设备头")
+ok("const headers = this._deviceHeaders();" in acct,
+   "11.3 _request 统一注入设备头（不是每处手写，避免漏传）")
+ok("installId" in prefsdef, "11.4 prefs.js 有 installId 默认值")
+ok("PUT" in srv and "session.label" in srv, "11.5 服务端支持给设备命名（PUT /api/sessions/:sid）")
+ok("setLabel" in sess_src, "11.6 sessions.js 定义 setLabel()")
+for eid in ["pp-dev-block", "pp-dev-list", "pp-dev-stat", "pp-dev-refresh",
+            "pp-dev-kick-others", "pp-dev-msg"]:
+    ok(('id="%s"' % eid) in prefs_xhtml, "11.7 prefs.xhtml 存在设备元素 %s" % eid)
+ok("renderDevices" in prefs_js, "11.8 prefs-account.js 渲染设备列表")
+ok("onKickOtherDevices" in prefs_js and "onKickDevice" in prefs_js, "11.9 有踢出（单台/全部）逻辑")
+# ★ 反馈必须在刷新之后写，否则「已踢出」会被刷新清空（改前踩过）
+ok("await renderDevices(\"✓ 已踢出该设备\")" in prefs_js,
+   "11.10 操作反馈交给刷新函数最后写（不会被刷新冲掉）")
+# ★ 面板作用域没有 Services，必须走安全包装；直接 window.prompt 在 Zotero 里不可靠
+ok("Services_promptInput(" in prefs_js and "Services_promptConfirm(" in prefs_js,
+   "11.11 提示框走 Services 安全包装（不用裸 window.prompt）")
+ok("pp-dev-row" in io.open(os.path.join(ROOT, "chrome", "content", "prefs.css"),
+                           encoding="utf-8").read(), "11.12 prefs.css 有设备行样式")
+# 设备标识不是凭据：不能出现在会话文件/审计的敏感位置（这里核对它只存 pref）
+ok('Prefs.set("installId"' in acct, "11.13 installId 只持久化到 pref（非凭据，与「令牌不进 pref」不冲突）")
+
 # ---------- 输出 ----------
 print("=" * 60)
 for p in passes:

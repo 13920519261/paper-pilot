@@ -10,7 +10,7 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.7，插件 0.24.6；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
+ * 会员域（服务端 1.4.8，插件 0.24.7；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
  * 登录设备（1.4.7）：令牌带 sid/设备/来源 IP 与最近活动；用户可自查并踢出设备，
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
@@ -22,6 +22,7 @@
  *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
  *   POST /api/coupons/validate      Bearer {code,plan,months|cycle} → 优惠码试算（不占名额）
  *   GET  /api/sessions              Bearer → 本账号登录设备（IP 打码）+ 活跃设备数
+ *   PUT  /api/sessions/:sid        Bearer {label} → 给自己的设备命名（本机拿不到主机名）
  *   DELETE /api/sessions/:sid       Bearer → 踢出指定设备（踢自己 = 登出）
  *   POST /api/sessions/revoke-others Bearer → 踢出除当前外的全部设备
  *   POST /api/orders                支持 {couponCode} → 折后下单（尾数在折后金额上分配）
@@ -1214,7 +1215,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.7',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.8',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -1505,6 +1506,18 @@ const server = http.createServer(async (req, res) => {
 
       // 踢出指定设备（踢自己 = 登出，语义与 /api/auth/logout 一致）
       const sm = url.match(/^\/api\/sessions\/([a-zA-Z0-9-]+)$/);
+      if (sm && method === 'PUT') {
+        // 给自己的设备起名（本机拿不到可靠主机名，所以由用户自己命名）
+        let input;
+        try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
+        const rec = sessions.sessionsOf(usersStore.data, user.id).find((r) => r.sid === sm[1]);
+        if (!rec) return json(res, 404, { ok: false, error: '会话不存在或已失效' });
+        sessions.setLabel(rec, input && input.label);
+        usersStore.save();
+        auditLog(req, 'session.label', { target: user.email, after: { sid: sm[1], label: rec.deviceLabel } });
+        return json(res, 200, { ok: true, sid: sm[1], label: rec.deviceLabel,
+          session: sessions.sessionOut(rec, { current: sm[1] === currentSid(req) }) });
+      }
       if (sm && method === 'DELETE') {
         snapshot('users-change', { note: '踢出设备 ' + sm[1] });
         const r = sessions.revokeSid(usersStore.data, user.id, sm[1], { currentSid: currentSid(req) });

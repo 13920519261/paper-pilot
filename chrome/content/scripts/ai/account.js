@@ -30,7 +30,14 @@
  *       首次成功写入即升级为 v2，旧内容自动滚动进第 1 代作为备份。
  * 卸载：bootstrap 的 uninstall 钩子绝不动会话文件（更新/重装会触发 uninstall）。
  *
- * 三、会员（0.23.0）
+ * 三、登录设备（0.24.7）
+ * - 本机生成一次 installId（非敏感标识，存 pref）并随请求上报，供服务端识别"这是哪台机器"
+ *   —— 服务端据此才能回答「这个账号在几台机器上登录着」，也才有据可查账号共享。
+ * - installId **不是凭据**（可伪造），只用于展示与异常检测，绝不参与鉴权。
+ * - 不上报主机名等更多标识：本机拿不到可靠主机名（Zotero 10 的 Firefox 基座已移除
+ *   Services.sysinfo），设备名改由用户自己命名（PUT /api/sessions/:sid）—— 既够用又最小必要。
+ *
+ * 四、会员（0.23.0）
  * - 等级 Free / Pro；额度、价格档位、收款信息全部由服务端下发（可后台调整）
  * - 购买：插件内下单（服务端返回订单号 + 收款信息）→ 用户付款后点「我已完成支付」
  *         → 管理员核销 → 会员自动开通（订单绑定账号，无需手动输码）
@@ -51,7 +58,7 @@
  *   GET  {server}/api/membership    Bearer → 200 {ok, membership}
  *   GET  {server}/v1/models | POST {server}/v1/chat/completions  Bearer <token>
  */
-/* global Zotero, Services, Components, IOUtils, PathUtils, Prefs, setTimeout, clearTimeout */
+/* global Zotero, Services, Components, IOUtils, PathUtils, Prefs, crypto, setTimeout, clearTimeout */
 
 var Account = {
   _session: null,       // {token, expiresAt(ms), user:{}}，仅存内存；落盘走 _save
@@ -695,6 +702,50 @@ var Account = {
     return j.quote;
   },
 
+  /* ---------- 登录设备（0.24.7） ---------- */
+
+  /** 本账号的登录设备列表（IP 已由服务端打码）+ 活跃设备数与阈值 */
+  async sessions() {
+    const resp = await this._request("GET", "/api/sessions", null, this.token(), 10000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "获取登录设备失败");
+    return {
+      sessions: j.sessions || [],
+      activeCount: Number(j.activeCount) || 0,
+      activeDays: Number(j.activeDays) || 7,
+      maxDevices: Number(j.maxDevices) || 3,
+      overLimit: !!j.overLimit,
+      identified: j.identified !== false,
+      hint: j.hint || "",
+    };
+  },
+
+  /** 给自己的设备起名（空串 = 清空） */
+  async renameSession(sid, label) {
+    const resp = await this._request("PUT", "/api/sessions/" + encodeURIComponent(sid),
+      { label: String(label == null ? "" : label) }, this.token(), 10000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "重命名失败");
+    return j;
+  },
+
+  /** 踢出某台设备（踢自己 = 登出） */
+  async revokeSession(sid) {
+    const resp = await this._request("DELETE", "/api/sessions/" + encodeURIComponent(sid),
+      null, this.token(), 10000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "踢出失败");
+    return j;
+  },
+
+  /** 踢出除当前设备外的全部设备 */
+  async revokeOtherSessions() {
+    const resp = await this._request("POST", "/api/sessions/revoke-others", {}, this.token(), 15000);
+    const j = resp.json || {};
+    if (!j.ok) throw new Error(j.error || "操作失败");
+    return j;
+  },
+
   /** 查询订单状态（下单后轮询用） */
   async orderStatus(orderId) {
     const resp = await this._request("GET", "/api/orders/" + encodeURIComponent(orderId), null, this.token(), 10000);
@@ -774,9 +825,47 @@ var Account = {
 
   /* ---------- HTTP（带超时与错误翻译；Token 只出现在 Authorization 头） ---------- */
 
+  /** 本机安装标识：首次调用时生成一次并持久化（随机 UUID，非凭据） */
+  installId() {
+    let id = "";
+    try { id = String(Prefs.get("installId", "") || ""); } catch (e) { /* 读失败下面生成 */ }
+    if (/^[0-9a-fA-F-]{8,64}$/.test(id)) return id;
+    // 生成：优先 crypto.randomUUID，退化用 getRandomValues 拼装
+    let nid = "";
+    try {
+      if (typeof crypto !== "undefined" && crypto.randomUUID) nid = crypto.randomUUID();
+      else {
+        const b = new Uint8Array(16);
+        crypto.getRandomValues(b);
+        nid = Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+        nid = nid.slice(0, 8) + "-" + nid.slice(8, 12) + "-" + nid.slice(12, 16)
+          + "-" + nid.slice(16, 20) + "-" + nid.slice(20);
+      }
+    } catch (e) {
+      // 极端情况下退化成时间戳 + 随机数（形状仍需符合服务端校验）
+      nid = "dev" + Date.now().toString(16) + Math.floor(Math.random() * 1e6).toString(16);
+    }
+    try { Prefs.set("installId", nid); } catch (e) { /* 存不下也照用，最坏是每次换标识 */ }
+    return nid;
+  },
+
+  /** 设备上报头（服务端只用它做展示与异常检测，不作鉴权） */
+  _deviceHeaders() {
+    const h = {};
+    try {
+      h["X-PP-Device"] = this.installId();
+      const plat = (typeof Zotero !== "undefined" && Zotero.isWin) ? "Windows"
+        : (typeof Zotero !== "undefined" && Zotero.isMac) ? "macOS" : "Linux";
+      h["X-PP-Platform"] = plat;
+      const ver = (typeof Zotero !== "undefined" && Zotero.version) ? String(Zotero.version) : "";
+      if (ver) h["X-PP-Zotero"] = ver;
+    } catch (e) { /* 取不到就不报，服务端会标记为未识别设备 */ }
+    return h;
+  },
+
   async _request(method, path, body, token, timeoutMs) {
     const url = this.serverUrl() + path;
-    const headers = {};
+    const headers = this._deviceHeaders();
     if (body !== null && body !== undefined) headers["Content-Type"] = "application/json";
     if (token) headers["Authorization"] = "Bearer " + token;
     let req;

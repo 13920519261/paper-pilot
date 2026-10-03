@@ -329,7 +329,7 @@ function Get-AuditText([string]$a) {
     'membership.config' = '修改会员/收款配置'
     'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'; 'order.reconcile' = '对账自动核销'
     'coupon.create' = '生成优惠券'; 'coupon.update' = '修改优惠券'; 'coupon.revoke' = '作废优惠券'
-    'session.revoke' = '踢出登录设备'; 'session.revoke-others' = '踢出其他全部设备'; 'session.revoke-admin' = '管理员踢出设备'
+    'session.revoke' = '踢出登录设备'; 'session.revoke-others' = '踢出其他全部设备'; 'session.revoke-admin' = '管理员踢出设备'; 'session.label' = '给设备命名'
     'code.create' = '生成激活码'; 'code.revoke' = '作废激活码'
     'backup.create' = '手动打快照'; 'backup.restore' = '回滚数据'; 'backup.delete' = '删除快照'
     'alert.check' = '手动巡检积压告警'

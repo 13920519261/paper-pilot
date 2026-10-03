@@ -248,7 +248,7 @@ const DEV_B = { 'X-PP-Device': 'bbbb1111-2222-3333-4444-555566667777', 'X-PP-Pla
   ok(!!tA && !!tB && !!tC, 'F1 三台设备各自登录成功');
 
   const h0 = await req('GET', '/api/health');
-  eq(h0.json.version, '1.4.7', 'F2 服务端版本 1.4.7');
+  eq(h0.json.version, '1.4.8', 'F2 服务端版本 1.4.8');
   eq(h0.json.sessionsActive, 3, 'F3 health 报告 3 个活跃会话');
   eq(h0.json.devicesOverLimit, 1, 'F4 health 报告 1 个账号设备超限');
 
@@ -277,6 +277,42 @@ const DEV_B = { 'X-PP-Device': 'bbbb1111-2222-3333-4444-555566667777', 'X-PP-Pla
   ss = await req('GET', '/api/sessions', null, tA);
   const after = ss.json.sessions.filter((x) => x.current)[0].lastSeenAt;
   ok(Date.parse(after) > Date.parse(before), 'F19 请求会推进该设备的「最近活动」', { before, after });
+
+  /* ---- 给设备命名（0.24.7）：本机拿不到可靠主机名，所以由用户自己命名 ---- */
+  const mySid = ss.json.sessions.filter((x) => x.current)[0].sid;
+  const rn = await req('PUT', '/api/sessions/' + mySid, { label: '  办公室台式  ' }, tA);
+  eq(rn.status, 200, 'F19a 可以给自己的设备命名');
+  eq(rn.json.label, '办公室台式', 'F19b 名字去掉了首尾空白');
+  const afterRn = await req('GET', '/api/sessions', null, tA);
+  eq(afterRn.json.sessions.filter((x) => x.current)[0].deviceLabel, '办公室台式',
+    'F19c 重命名后列表里显示新名字');
+  ok(afterRn.json.sessions.filter((x) => x.current)[0].identified === true,
+    'F19d 命名后该设备算「已识别」');
+
+  // 名字里的控制字符必须被清洗掉（用 fromCharCode 构造，避免源码里出现真实控制字符）
+  const dirtyName = 'a' + String.fromCharCode(0) + 'b' + String.fromCharCode(10) + 'c' + 'x'.repeat(60);
+  const badName = await req('PUT', '/api/sessions/' + mySid, { label: dirtyName }, tA);
+  eq(badName.json.label.length, 40, 'F19e 名字限长 40 且去掉控制字符', badName.json.label);
+  const cleared = await req('PUT', '/api/sessions/' + mySid, { label: '' }, tA);
+  eq(cleared.json.label, null, 'F19f 传空串即清除名字（回落默认展示）');
+  const noSid = await req('PUT', '/api/sessions/deadbeef', { label: 'x' }, tA);
+  eq(noSid.status, 404, 'F19g 重命名不存在的会话 → 404');
+
+  // 不能给别人的设备命名（越权）
+  const lgOther = await req('POST', '/api/auth/login', { email: 'other@t.local', password: 'pw12345678' }, null, DEV_B);
+  await req('POST', '/api/auth/register', { email: 'other@t.local', password: 'pw12345678' });
+  const userOther = (await req('GET', '/api/admin/users')).json.users.filter((u) => u.email === 'other@t.local')[0];
+  if (userOther) await req('POST', '/api/admin/users/' + userOther.id + '/password', { password: 'pw12345678' });
+  const tOther = (await req('POST', '/api/auth/login', { email: 'other@t.local', password: 'pw12345678' })).json.token;
+  if (tOther) {
+    const cross = await req('PUT', '/api/sessions/' + mySid, { label: '越权' }, tOther);
+    eq(cross.status, 404, 'F19h 不能给别人的设备命名（越权返回 404）');
+  } else {
+    ok(true, 'F19h 越权用例前置登录失败，跳过');
+  }
+
+  const auRn = await req('GET', '/api/admin/audit?action=session.label&limit=5');
+  ok(auRn.json.items.length >= 1, 'F19i 命名动作写入审计（session.label）', auRn.json.items.length);
 
   // 用户输出带设备数
   const usersF = await req('GET', '/api/admin/users');

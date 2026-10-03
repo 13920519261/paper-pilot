@@ -48,6 +48,7 @@ const ACTIONS = {
   'session.revoke': '踢出登录设备',
   'session.revoke-others': '踢出其他全部设备',
   'session.revoke-admin': '管理员踢出设备',
+  'session.label': '给设备命名',
   'backup.create': '手动打快照',
   'backup.restore': '回滚数据',
   'backup.delete': '删除快照',

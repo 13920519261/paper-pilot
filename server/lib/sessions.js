@@ -125,6 +125,18 @@ function recordSeen(rec, { ip, now } = {}) {
   return rec;
 }
 
+/**
+ * 给设备起名（用户给自己的设备命名，如「办公室台式」）。
+ * 空串 = 清空回落到默认展示。理由：本机拿不到可靠主机名（Zotero 10 的 Firefox 基座
+ * 已移除 Services.sysinfo），由用户自己命名既能达到「认出是哪台机器」的目的，
+ * 又符合最小必要原则（不上报主机名等更多标识）。
+ */
+function setLabel(rec, label) {
+  if (!rec) return false;
+  rec.deviceLabel = cleanLabel(label) || null;
+  return true;
+}
+
 /** 兼容历史令牌：老记录没有 sid/createdAt，读取时按需现场补齐。
  *  返回 true 表示**确实改动了记录**（调用方据此决定要不要落盘）。 */
 function backfill(rec, tokenKey) {
@@ -387,7 +399,7 @@ module.exports = {
   SID_LEN, DEFAULT_ACTIVE_DAYS, DEFAULT_MAX_DEVICES, DEFAULT_REPEAT_H, DAY_MS,
   activeDays, maxDevices, repeatMs,
   sidOf, maskIp, cleanLabel, pickHeader, deviceFromHeaders,
-  recordStart, recordSeen, backfill,
+  recordStart, recordSeen, setLabel, backfill,
   sessionsOf, sessionsOfDetailed, countActive, countActiveAll, countActiveAllDetailed,
   needsBackfill, isActive, sessionOut, revocable, sidOfRec,
   deviceAlertOf, shouldAlert, record, logLine, buildMail, view,

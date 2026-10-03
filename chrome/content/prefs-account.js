@@ -508,6 +508,114 @@
     }
   }
 
+  /* ---------- 登录设备（0.24.7） ---------- */
+
+  /**
+   * 列出本账号的登录设备。服务端只给「最近 N 天内有请求」的活跃设备 ——
+   * 令牌是 30 天滑动续期，关掉 Zotero 并不会立刻下线，所以界面上写的是「活跃设备」。
+   */
+  async function renderDevices(note, noteColor) {
+    const A = account();
+    const box = $("pp-dev-block");
+    const list = $("pp-dev-list");
+    if (!A || !box || !list) return;
+    if (!A.isLoggedIn()) { box.style.display = "none"; return; }
+    // ★ 整个函数体都要包在 try 里：renderAll 是同步调用它的，异步抛错会变成
+    //   未捕获的 Promise 拒绝（在 Zotero 里表现为控制台噪音，在测试里会直接打挂进程）。
+    try {
+      const r = await A.sessions();
+      // 老服务端没有该接口、或应答形状不对 → 整块隐藏，而不是报错占屏
+      if (!r || !Array.isArray(r.sessions)) { box.style.display = "none"; return; }
+      box.style.display = "";
+      list.innerHTML = "";
+      const stat = $("pp-dev-stat");
+      if (stat) {
+        stat.textContent = "活跃 " + r.activeCount + " 台（阈值 " + r.maxDevices
+          + " 台 / 窗口 " + r.activeDays + " 天）";
+      }
+      if (r.overLimit) {
+        mbSetMsg("pp-dev-msg", "有 " + r.activeCount + " 台设备在活跃使用本账号。"
+          + "如果这不是你自己，请踢掉不认识的设备，或改密码（会踢掉全部设备）。", "var(--pp-warn)");
+      } else {
+        mbSetMsg("pp-dev-msg", "", "var(--pp-muted)");
+      }
+      // ★ 本次操作的反馈要放在最后写 —— 否则会被上面这句清空/覆盖（改前就踩了这个坑）
+      if (note) mbSetMsg("pp-dev-msg", note, noteColor || "var(--pp-success)");
+      if (!r.identified) {
+        list.appendChild(el("div", { class: "pp-hint" }, r.hint || "部分设备未上报标识。"));
+      }
+      for (const d of r.sessions) {
+        const row = el("div", { class: d.current ? "pp-dev-row pp-dev-row-cur" : "pp-dev-row" });
+        const name = d.deviceLabel || (d.deviceId ? "设备 " + d.deviceId.slice(0, 8) : "未上报设备标识的客户端");
+        const meta = [d.platform, d.zoteroVersion ? "Zotero " + d.zoteroVersion : "",
+          d.lastSeenAt ? "最近 " + fmtDate(d.lastSeenAt) : "", d.ipMasked || ""]
+          .filter(Boolean).join(" · ");
+        const left = el("div", { class: "pp-dev-info" });
+        left.appendChild(el("div", { class: "pp-dev-name" }, name + (d.current ? "（本机）" : "")));
+        left.appendChild(el("div", { class: "pp-dev-meta" }, meta));
+        row.appendChild(left);
+        const act = el("div", { class: "pp-dev-act" });
+        const rename = el("span", { class: "pp-link" }, "重命名");
+        rename.addEventListener("click", () => onRenameDevice(d));
+        act.appendChild(rename);
+        if (!d.current) {
+          const kick = el("span", { class: "pp-link pp-link-danger" }, "踢出");
+          kick.addEventListener("click", () => onKickDevice(d));
+          act.appendChild(kick);
+        } else {
+          act.appendChild(el("span", { class: "pp-hint" }, "当前设备"));
+        }
+        row.appendChild(act);
+        list.appendChild(row);
+      }
+    } catch (e) {
+      box.style.display = "none";
+    }
+  }
+
+  async function onRenameDevice(d) {
+    const A = account();
+    if (!A) return;
+    const cur = d.deviceLabel || "";
+    const name = Services_promptInput(Zotero.getMainWindow(), "PaperPilot",
+      "给这台设备起个名字（例如「办公室台式」，留空可清除）：", cur);
+    if (name === null) return;
+    try {
+      await A.renameSession(d.sid, name);
+      await renderDevices("✓ 已保存设备名");
+    } catch (e) {
+      mbSetMsg("pp-dev-msg", "✗ " + ((e && e.message) || "重命名失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onKickDevice(d) {
+    const A = account();
+    if (!A) return;
+    const name = d.deviceLabel || d.platform || "该设备";
+    const ok = Services_promptConfirm(Zotero.getMainWindow(), "PaperPilot",
+      "踢出「" + name + "」？\n它下次使用时会要求重新登录；不影响当前设备。");
+    if (!ok) return;
+    try {
+      await A.revokeSession(d.sid);
+      await renderDevices("✓ 已踢出该设备");
+    } catch (e) {
+      mbSetMsg("pp-dev-msg", "✗ " + ((e && e.message) || "踢出失败"), "var(--pp-danger)");
+    }
+  }
+
+  async function onKickOtherDevices() {
+    const A = account();
+    if (!A) return;
+    if (!Services_promptConfirm(Zotero.getMainWindow(), "PaperPilot",
+      "踢出除本机外的全部设备？其他机器需要重新登录。")) return;
+    try {
+      const r = await A.revokeOtherSessions();
+      await renderDevices("✓ 已踢出 " + (r.revoked || 0) + " 台设备");
+    } catch (e) {
+      mbSetMsg("pp-dev-msg", "✗ " + ((e && e.message) || "操作失败"), "var(--pp-danger)");
+    }
+  }
+
   /* ---------- 优惠码（0.24.6） ---------- */
 
   /** 应用优惠码：向服务端试算折后价（**不占名额**，用户可反复试） */
@@ -948,6 +1056,19 @@
     }
   }
 
+  /** Services.prompt.prompt 的安全包装：单行输入。取消返回 null。 */
+  function Services_promptInput(win, title, msg, value) {
+    try {
+      const ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+        .getService(Components.interfaces.nsIPromptService);
+      const input = { value: String(value == null ? "" : value) };
+      if (!ps.prompt(win, title, msg, input, null, null)) return null;
+      return input.value;
+    } catch (e) {
+      try { return window.prompt(msg, value); } catch (e2) { return null; }
+    }
+  }
+
   /* ---------- 通道编辑表单（原项目 mf-* 逻辑移植） ---------- */
 
   let mfEditing = null;   // 编辑中的通道 id；null = 新增
@@ -1166,6 +1287,8 @@
 
   function renderAll() {
     try { renderAccount(); } catch (e) { /* ignore */ }
+    // 登录设备是异步拉取的，失败时自行隐藏，不影响其余渲染
+    try { renderDevices(); } catch (e) { /* ignore */ }
     try { renderMembership(); } catch (e) { /* ignore */ }
     try { renderChannels(); } catch (e) { /* ignore */ }
   }
@@ -1200,6 +1323,8 @@
     // 会员（0.23.0）
     bind("pp-mb-upgrade", "click", onMbUpgrade);
     bind("pp-mb-coupon-btn", "click", onMbCoupon);
+    bind("pp-dev-refresh", "click", renderDevices);
+    bind("pp-dev-kick-others", "click", onKickOtherDevices);
     bind("pp-mb-renew", "click", onMbRenew);
     bind("pp-mb-create", "click", onMbCreate);
     bind("pp-mb-close-order", "click", () => { const b = $("pp-mb-order"); if (b) b.style.display = "none"; });

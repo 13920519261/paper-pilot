@@ -314,3 +314,24 @@
   border: 1px solid var(--pp-accent); background: var(--pp-surface-2); color: var(--pp-text);
   white-space: pre-wrap; word-break: break-all;
 }
+
+/* ---------- 登录设备（0.24.7） ---------- */
+.pp-root .pp-dev-block {
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--pp-border); border-radius: 8px;
+  background: var(--pp-surface-2);
+}
+.pp-root .pp-dev-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pp-root .pp-dev-head .pp-row-tight { flex: 1 1 auto; }
+.pp-root .pp-dev-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.pp-root .pp-dev-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--pp-border); background: var(--pp-surface);
+}
+.pp-root .pp-dev-row-cur { border-color: var(--pp-accent); background: var(--pp-accent-weak); }
+.pp-root .pp-dev-info { flex: 1 1 auto; min-width: 0; }
+.pp-root .pp-dev-name { font-size: 12.5px; color: var(--pp-text); font-weight: 600; }
+.pp-root .pp-dev-meta { font-size: 11px; color: var(--pp-muted); }
+.pp-root .pp-dev-act { display: flex; gap: 10px; flex: 0 0 auto; }
+.pp-root .pp-link-danger { color: var(--pp-danger); }

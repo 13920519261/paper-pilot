@@ -166,7 +166,7 @@ function boot(accountOver) {
     },
     window: {
       setTimeout: () => 0, setInterval: () => 0, clearInterval: () => {},
-      addEventListener: () => {}, confirm: () => false,
+      addEventListener: () => {}, confirm: () => false, prompt: () => null,
     },
     Components: undefined,
   };
@@ -333,6 +333,114 @@ const flush = () => new Promise((r) => setImmediate(r));
   await flush();
   has(registry.get('pp-mb-coupon-msg').textContent, '已清除', 'G4 清空输入即取消已应用的券');
   eq(registry.get('pp-mb-quote').style.display, 'none', 'G5 清除后折后价区收起');
+
+  /* ============ H. 登录设备面板（0.24.7） ============ */
+  let revokedSid = null;
+  let renamed = null;
+  let kickOthersCalled = 0;
+  const DEVICES = {
+    sessions: [
+      { sid: 'cur00001', deviceId: 'aaaa1111-2222-3333-4444-555566667777', deviceLabel: null,
+        platform: 'Windows 11', zoteroVersion: '10.0.5', lastSeenAt: new Date().toISOString(),
+        ipMasked: '203.0.113.*', active: true, current: true, identified: true },
+      { sid: 'oth00002', deviceId: 'bbbb1111-2222-3333-4444-555566667777', deviceLabel: '办公室台式',
+        platform: 'Windows 10', zoteroVersion: '10.0.5', lastSeenAt: new Date().toISOString(),
+        ipMasked: '198.51.100.*', active: true, current: false, identified: true },
+      { sid: 'oth00003', deviceId: null, deviceLabel: null,
+        platform: null, zoteroVersion: null, lastSeenAt: new Date().toISOString(),
+        ipMasked: '203.0.113.*', active: true, current: false, identified: false },
+    ],
+    activeCount: 3, activeDays: 7, maxDevices: 3, overLimit: false, identified: true, hint: '',
+  };
+  let booted = boot({
+    sessions: async () => DEVICES,
+    revokeSession: async (sid) => { revokedSid = sid; return { ok: true }; },
+    renameSession: async (sid, label) => { renamed = { sid: sid, label: label }; return { ok: true }; },
+    revokeOtherSessions: async () => { kickOthersCalled++; return { ok: true, revoked: 2 }; },
+  });
+  ({ registry } = booted);
+  await flush(); await flush(); await flush();
+
+  const devBlock = registry.get('pp-dev-block');
+  eq(devBlock.style.display, '', 'H1 登录设备块出现');
+  has(registry.get('pp-dev-stat').textContent, '活跃 3 台', 'H2 显示活跃设备数');
+  has(registry.get('pp-dev-stat').textContent, '阈值 3 台', 'H3 显示阈值');
+  has(registry.get('pp-dev-stat').textContent, '窗口 7 天', 'H4 显示活跃窗口（诚实表述：不是「在线」）');
+  const devRows = registry.get('pp-dev-list').children.filter((c) => /pp-dev-row/.test(c.className));
+  eq(devRows.length, 3, 'H5 列出 3 台设备');
+
+  const curRow = devRows.filter((c) => /pp-dev-row-cur/.test(c.className));
+  eq(curRow.length, 1, 'H6 恰有一台标为当前设备');
+  has(curRow[0].textContent, '（本机）', 'H7 当前设备标注「本机」');
+  const curLinks = [];
+  (function walk(n) {
+    if (!n) return;
+    if (/pp-link/.test(n.className || '')) curLinks.push(n.textContent);
+    (n.children || []).forEach(walk);
+  })(curRow[0]);
+  ok(curLinks.indexOf('踢出') < 0, 'H8 当前设备没有「踢出」入口（要退出请用登出）', curLinks);
+
+  has(devRows[1].textContent, '办公室台式', 'H9 展示用户起的设备名');
+  has(devRows[1].textContent, '198.51.100.*', 'H10 展示打码后的 IP（不是完整 IP）');
+  has(devRows[2].textContent, '未上报设备标识', 'H11 未上报标识的设备如实说明');
+
+  // 踢出一台
+  let kickLink = null;
+  (function walk(n) {
+    if (!n || kickLink) return;
+    if (/pp-link/.test(n.className || '') && n.textContent === '踢出') { kickLink = n; return; }
+    (n.children || []).forEach(walk);
+  })(devRows[1]);
+  ok(!!kickLink, 'H12 非当前设备有「踢出」入口');
+  // 确认框：sandbox 的 window.confirm 返回 false，这里改成 true 才能继续
+  booted.sandbox.window.confirm = () => true;
+  if (kickLink) kickLink.handlers.click();
+  await flush(); await flush(); await flush();
+  eq(revokedSid, 'oth00002', 'H13 踢出的是被点的那台设备（sid 传递正确）');
+  has(registry.get('pp-dev-msg').textContent, '已踢出', 'H14 给出成功反馈');
+
+  // 重命名
+  booted.sandbox.window.prompt = () => '家里的笔记本';
+  let renameLink = null;
+  (function walk(n) {
+    if (!n || renameLink) return;
+    if (/pp-link/.test(n.className || '') && n.textContent === '重命名') { renameLink = n; return; }
+    (n.children || []).forEach(walk);
+  })(curRow[0]);
+  ok(!!renameLink, 'H15 当前设备也能重命名（自己的设备自己起名）');
+  if (renameLink) renameLink.handlers.click();
+  await flush(); await flush(); await flush();
+  eq(renamed && renamed.label, '家里的笔记本', 'H16 重命名把新名字提交到服务端');
+  eq(renamed && renamed.sid, 'cur00001', 'H17 重命名提交的是正确会话');
+
+  // 踢出其他全部
+  registry.get('pp-dev-kick-others').handlers.click();
+  await flush(); await flush(); await flush();
+  eq(kickOthersCalled, 1, 'H18 「踢出其他设备」调用对应接口');
+  has(registry.get('pp-dev-msg').textContent, '已踢出 2 台', 'H19 反馈踢出数量');
+
+  // 超限提示
+  ({ registry } = boot({
+    sessions: async () => Object.assign({}, DEVICES, { activeCount: 5, overLimit: true }),
+  }));
+  await flush(); await flush(); await flush();
+  has(registry.get('pp-dev-msg').textContent, '如果这不是你自己', 'H20 超限时给出「不是你自己就踢掉」的提示');
+  has(registry.get('pp-dev-msg').textContent, '改密码', 'H21 同时给出改密码这条一刀切的办法');
+
+  // 老服务端 / 接口失败：整块隐藏，不报错占屏
+  ({ registry } = boot({ sessions: async () => { throw new Error('HTTP 404'); } }));
+  await flush(); await flush(); await flush();
+  eq(registry.get('pp-dev-block').style.display, 'none', 'H22 老服务端（无该接口）→ 整块隐藏');
+
+  // 应答形状不对也不能炸（异步抛错会变成未捕获拒绝，在 Zotero 里是控制台噪音）
+  ({ registry } = boot({ sessions: async () => null }));
+  await flush(); await flush(); await flush();
+  eq(registry.get('pp-dev-block').style.display, 'none', 'H23 应答形状异常 → 隐藏而不是抛错');
+
+  // 未登录：不显示
+  ({ registry } = boot({ isLoggedIn: () => false, sessions: async () => DEVICES }));
+  await flush(); await flush(); await flush();
+  eq(registry.get('pp-dev-block').style.display, 'none', 'H24 未登录不显示设备块');
 
   console.log('\n会员面板渲染测试：' + pass + ' 项通过，' + fails.length + ' 项失败');
   if (fails.length) {

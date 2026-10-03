@@ -154,3 +154,7 @@ pref("extensions.zotero.paperpilot.mcpEnabled", false);
 pref("extensions.zotero.paperpilot.mcpToken", "");
 // 0.24.4 新增：会员到期提醒「已提示过的到期周期」（存 expiresAt；避免每次启动重复弹窗）
 pref("extensions.zotero.paperpilot.renewPromptShownFor", "");
+// 0.24.7 新增：本机安装标识（首次登录时生成一次并持久化）。
+//   ★ 它**不是凭据**：只是让服务端能区分「这是哪台机器」，用于「登录设备」列表与账号共享检测。
+//   非敏感标识，可以放 pref（与「令牌绝不进 pref」那条纪律不冲突：令牌是凭据，这个不是）。
+pref("extensions.zotero.paperpilot.installId", "");

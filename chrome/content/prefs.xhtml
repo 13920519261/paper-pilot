@@ -142,6 +142,18 @@
           </html:div>
           <!-- 会话持久化异常提示（0.23.0：写盘失败不再静默） -->
           <html:div id="pp-mb-persist-warn" class="pp-mb-warn" style="display:none;"></html:div>
+          <!-- 登录设备（0.24.7）：自查「我在几台机器上登录着」并能踢掉可疑设备 -->
+          <html:div id="pp-dev-block" class="pp-dev-block" style="display:none;">
+            <html:div class="pp-dev-head">
+              <html:b>登录设备</html:b>
+              <html:span id="pp-dev-stat" class="pp-hint"></html:span>
+              <html:span class="pp-row-tight"></html:span>
+              <html:button id="pp-dev-refresh" class="pp-btn pp-btn-sm">刷新</html:button>
+              <html:button id="pp-dev-kick-others" class="pp-btn pp-btn-sm">踢出其他设备</html:button>
+            </html:div>
+            <html:div id="pp-dev-list" class="pp-dev-list"></html:div>
+            <html:div id="pp-dev-msg" class="pp-msg"></html:div>
+          </html:div>
         </html:div>
         <html:div class="pp-row">
           <html:span class="pp-label">官方模型</html:span>
