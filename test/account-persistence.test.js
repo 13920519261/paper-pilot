@@ -305,10 +305,22 @@ function put(dir, name, doc) {
     eq(leak.length, 0, 'T11.1 令牌从不写入 prefs');
 
     /* ===== T12 诊断日志串行且有上限（缺陷④回归） ===== */
-    await (app.Account._diagChain || Promise.resolve());
+    // _diagChain 是**实例属性**：等待期间可能又被 _diag 追加成新链，
+    // 只 await 一次会读到「上一轮」的状态（曾导致 preflight 下偶发 T12.2 读到 0 行）。
+    // 正确做法：反复 await 直到链不再变化，再对文件做有界轮询。
+    for (let i = 0; i < 50; i++) {
+      const cur = app.Account._diagChain;
+      await cur;
+      if (cur === app.Account._diagChain) break;
+    }
     const logPath = path.join(DATA_DIR, 'paperpilot-account.log');
+    let logText = '';
+    for (let i = 0; i < 40; i++) {           // 最多等 ~1s，给串行写盘收尾
+      try { logText = fs.readFileSync(logPath, 'utf8'); } catch (e) { logText = ''; }
+      if (logText) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
     ok(fs.existsSync(logPath), 'T12.1 诊断日志已落盘');
-    const logText = fs.readFileSync(logPath, 'utf8');
     const logLines = logText.split('\n').filter(Boolean);
     ok(logLines.length > 0 && logLines.length <= 400, 'T12.2 日志行数有上限', logLines.length);
     ok(/session saved/.test(logText) || /session saved/.test(logText) === false,

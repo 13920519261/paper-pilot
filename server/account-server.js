@@ -10,7 +10,7 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.4，插件 0.24.4；Free / Pro 两档 + 价格表，全部配置化）：
+ * 会员域（服务端 1.4.5，插件 0.24.5；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销）：
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
  *   GET  /api/auth/me               Bearer → user 内附带 usage:{today,limit,last7,days[30]}
@@ -19,6 +19,7 @@
  *   POST /api/orders/:id/claim      Bearer → 标记「我已完成支付」，等管理员核销
  *   POST /api/orders/:id/cancel     Bearer → 取消未支付订单
  *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
+ *   POST /api/admin/reconcile       收款流水按金额（含唯一尾数）自动匹配核销（默认 dryRun 预览）
  * 会员管理（仅本机直连）：
  *   GET  /api/admin/membership      订单 + 激活码 + 套餐/价格表/收款配置一览
  *   PUT  /api/admin/membership      改套餐额度 / 收款信息（局部更新；仍兼容旧的 priceOptions 写法）
@@ -80,6 +81,7 @@ const backup = require('./lib/backup');
 const alerts = require('./lib/alerts');
 const lockout = require('./lib/lockout');
 const audit = require('./lib/audit');
+const reconcile = require('./lib/reconcile');
 const mail = require('./lib/mail');
 
 /* ---------------- 配置 ---------------- */
@@ -1101,7 +1103,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.4',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.5',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -1356,7 +1358,9 @@ const server = http.createServer(async (req, res) => {
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
         if (membership.reapOrders(membershipStore.data)) membershipStore.save();
-        const r = membership.createOrder(membershipStore.data, { user, plan: input.plan, months: input.months });
+        const r = membership.createOrder(membershipStore.data, {
+          user, plan: input.plan, months: input.months, cycle: input.cycle,
+        });
         if (r.error) return json(res, 400, { ok: false, error: r.error });
         membershipStore.save();
         log('order created:', user.email, r.order.plan, r.order.months + 'm', '¥' + r.order.amount);
@@ -1787,13 +1791,15 @@ const server = http.createServer(async (req, res) => {
           if (r.error) return json(res, 400, { ok: false, error: r.error });
           // 核销即开通：直接给下单账号叠加续期（同时留档一枚已用兑换码）
           membership.grantMembership(membershipStore.data, user, {
-            plan: order.plan, months: order.months, source: 'order', refId: order.id,
+            plan: order.plan, months: order.months, perpetual: order.perpetual,
+            cycle: order.cycle, source: 'order', refId: order.id,
           });
           membershipStore.save();
           usersStore.save();
           log('order fulfilled:', order.id, user.email, order.plan, order.months + 'm');
           auditLog(req, 'order.fulfill', { target: order.id, note: '下单账号 ' + user.email,
-            after: { plan: order.plan, months: order.months, amount: order.amount,
+            after: { plan: order.plan, months: order.months, perpetual: !!order.perpetual,
+              amountCents: membership.amountCentsOf(order),
               expiresAt: (user.membership && user.membership.expiresAt) || null } });
           return json(res, 200, {
             ok: true, order: membership.orderOut(membershipStore.data, order),
@@ -1856,14 +1862,18 @@ const server = http.createServer(async (req, res) => {
         let input;
         try { input = await readBody(req); } catch (e) { return json(res, 400, { ok: false, error: e.message }); }
         snapshot('membership-change', { note: '管理员开通/续期：' + user.email });
+        const perpetual = !!input.perpetual || Number(input.months) === 0;
         const mp = membership.grantMembership(membershipStore.data, user, {
-          plan: input.plan || 'Pro', months: input.months || 1,
+          plan: input.plan || 'Pro',
+          months: perpetual ? 0 : (input.months || 1),
+          perpetual,
           source: 'admin', note: input.note || '',
         });
         usersStore.save();
-        log('membership granted by admin:', user.email, mp.plan, mp.expiresAt);
+        log('membership granted by admin:', user.email, mp.plan,
+          perpetual ? '永久' : mp.expiresAt);
         auditLog(req, 'user.membership', { target: user.email, note: input.note || '',
-          after: { plan: mp.plan, expiresAt: mp.expiresAt, daysLeft: mp.daysLeft } });
+          after: { plan: mp.plan, perpetual: !!mp.perpetual, expiresAt: mp.expiresAt, daysLeft: mp.daysLeft } });
         return json(res, 200, { ok: true, membership: mp, user: userAdminOut(user) });
       }
 
@@ -1927,6 +1937,72 @@ const server = http.createServer(async (req, res) => {
         const r = await runAlertCheck({ force: true, dryRun: !!(input && input.dryRun) });
         auditLog(req, 'alert.check', { after: { backlog: r.backlogCount, alerted: r.alerted, mailed: r.mailed } });
         return json(res, 200, { ok: true, result: r, alerts: alertStatus() });
+      }
+
+      /* ---- 收款流水对账（1.4.5）：按金额（含唯一尾数）自动匹配并核销 ---- */
+
+      /**
+       * body: { text?: '每行「金额,时间,备注」', entries?: [{amount|amountCents, at, note, txnId}],
+       *         dryRun?: false 才真核销（默认只预览）, windowDays?: 30 }
+       * 说明：核销语义与管理员手动核销完全一致（叠加开通 + 留档一枚已用码），只是触发源换成流水。
+       */
+      if (url === '/api/admin/reconcile' && method === 'POST') {
+        let input = {};
+        try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
+        const entries = (Array.isArray(input.entries) && input.entries.length)
+          ? input.entries.map((e) => ({
+            amountCents: Math.round((Number(e && e.amountCents) || Number(e && e.amount) * 100) || 0),
+            at: Date.parse((e && e.at) || '') || Date.now(),
+            note: String((e && e.note) || ''),
+            txnId: String((e && e.txnId) || ''),
+            raw: String((e && e.raw) || ''),
+          })).filter((e) => e.amountCents > 0)
+          : reconcile.parseEntries(input.text || '');
+        if (!entries.length) {
+          return json(res, 400, { ok: false,
+            error: '没有解析出任何收款流水。每行格式：金额,时间,备注（时间与备注可空），例如 128.62,2026-10-03 12:30,微信' });
+        }
+        const dryRun = input.dryRun !== false;   // 默认只预览：必须显式传 dryRun:false 才真核销
+        const m = reconcile.matchPayments(membershipStore.data, entries, {
+          windowDays: input.windowDays, membership,
+        });
+        if (dryRun) {
+          return json(res, 200, { ok: true, dryRun: true, results: m.results, summary: m.summary,
+            statusText: reconcile.STATUS_TEXT });
+        }
+        const applied = [];
+        for (const r of m.results) {
+          if (r.status !== 'matched') continue;
+          const order = membership.findOrder(membershipStore.data, r.orderId);
+          const user = order ? findUserById(order.userId) : null;
+          if (!order || !user) {
+            applied.push({ orderId: r.orderId, ok: false, error: '订单或账号已不存在' });
+            continue;
+          }
+          snapshot('orders-change', { note: '对账核销 ' + order.id });
+          const f = membership.fulfillOrder(membershipStore.data, order, { by: 'reconcile' });
+          if (f.error) { applied.push({ orderId: order.id, ok: false, error: f.error }); continue; }
+          membership.grantMembership(membershipStore.data, user, {
+            plan: order.plan, months: order.months, perpetual: order.perpetual,
+            cycle: order.cycle, source: 'order', refId: order.id,
+          });
+          const mp = (user.membership) || {};
+          applied.push({ orderId: order.id, ok: true, email: user.email,
+            plan: mp.plan || null, perpetual: !!mp.perpetual, expiresAt: mp.expiresAt || null });
+          auditLog(req, 'order.reconcile', {
+            target: order.id,
+            note: '对账自动核销：' + user.email + '（流水 ' + reconcile.money(r.amountCents)
+              + (r.entry && r.entry.txnId ? ' / ' + r.entry.txnId : '') + '）',
+            after: { amountCents: r.amountCents, perpetual: !!mp.perpetual, expiresAt: mp.expiresAt || null },
+          });
+        }
+        membershipStore.save();
+        usersStore.save();
+        log('reconcile applied:',
+          applied.filter((x) => x.ok).length + '/' + m.results.length,
+          'matched=' + m.summary.matched, 'cents=' + m.summary.matchedCents);
+        return json(res, 200, { ok: true, dryRun: false, results: m.results, summary: m.summary,
+          applied, statusText: reconcile.STATUS_TEXT });
       }
 
       /* ---- 管理操作审计（1.4.4） ---- */

@@ -218,7 +218,9 @@ try {
   doc = m.normalize(m.newDoc());
   const order = m.createOrder(doc, { user: { id: 'u1', email: 'a@b.c' }, plan: 'Pro', months: 3 }).order;
   ok(!!order, 'I1 下单成功');
-  eq(order.amount, 79, 'I2 金额取自价格条目');
+  eq(order.baseCents, 7900, 'I2 原始价取自价格条目（baseCents=7900；实付另加唯一尾数）');
+  ok(order.tailCents >= 1 && order.tailCents <= 99, 'I2b 分配到 1..99 的唯一尾数', order.tailCents);
+  eq(order.amountCents, 7900 + order.tailCents, 'I2c 实付 = 原始价 + 尾数');
   eq(order.priceSource, 'item', 'I3 记录价格来源');
   ok(!!order.priceItemId, 'I4 记录价格条目 id');
   eq(order.cycle, 'quarterly', 'I5 记录计费周期');

@@ -91,7 +91,7 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
     eq(r.status, 200, '3.1 下单成功');
     const order = r.json.order;
     eq(order.status, 'pending', '3.2 订单初始为待支付');
-    eq(order.amount, 79, '3.3 3 个月走档位价 79');
+    eq(order.baseCents, 7900, '3.3 3 个月走档位价 79（baseCents；实付另加对账尾数）');
     eq(order.months, 3, '3.4 订单月数');
     ok(!!order.pay && 'note' in order.pay, '3.5 订单带收款信息');
 
@@ -235,7 +235,9 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
     ok(!(r.json.priceOptions || []).some((o) => o.months === 1 && o.price === 19),
       '13.15 派生 priceOptions 也不含未生效价');
     r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
-    eq(r.json.order.amount, 29, '13.16 促销未生效时下单仍是原价 29');
+    // 1.4.5 起实付金额 = 原始价 + 对账尾数，所以原始价要看 baseCents
+    eq(r.json.order.baseCents, 2900, '13.16 促销未生效时下单仍是原价 29（baseCents=2900）');
+    ok(r.json.order.tailCents >= 1 && r.json.order.tailCents <= 99, '13.16b 订单带 1..99 的对账尾数', r.json.order.tailCents);
     eq(r.json.order.cycle, 'monthly', '13.17 订单记录计费周期');
     ok(!!r.json.order.priceItemId, '13.18 订单记录价格条目 id（对账溯源）');
     const orderBeforePromo = r.json.order.id;
@@ -250,7 +252,7 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
     eq(oneMonth.length, 1, '13.21 同一周期客户端只看到一条价');
     eq(oneMonth[0].price, 19, '13.22 高优先级促销价胜出');
     r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
-    eq(r.json.order.amount, 19, '13.23 下单立刻用上促销价');
+    eq(r.json.order.baseCents, 1900, '13.23 下单立刻用上促销价（baseCents=1900）');
     eq(r.json.order.priceItemId, promoId, '13.24 订单指向促销条目');
     eq(r.json.order.priceSource, 'item', '13.25 价格来源为条目');
 
@@ -266,7 +268,7 @@ function daysBetween(iso) { return Math.round((Date.parse(iso) - Date.now()) / D
     eq(r.status, 200, '13.29 停用促销价成功');
     eq(r.json.item.state, 'disabled', '13.30 状态为已停用');
     r = await req('POST', '/api/orders', { plan: 'Pro', months: 1 }, token);
-    eq(r.json.order.amount, 29, '13.31 停用后下单回到基础价');
+    eq(r.json.order.baseCents, 2900, '13.31 停用后下单回到基础价（baseCents=2900）');
 
     // 未配置的计费周期明确拒绝（不让用户买到没配的周期）
     r = await req('POST', '/api/orders', { plan: 'Pro', months: 6 }, token);

@@ -333,11 +333,14 @@
         const per = Number(it.months) > 1
           ? " · 折合 ¥" + (Number(it.perMonth) || Math.round((it.price / it.months) * 100) / 100) + "/月"
           : "";
-        return { plan: it.plan, months: Number(it.months), text: cyc + " · ¥" + it.price + per };
+        return { plan: it.plan, months: Number(it.months), cycle: it.cycle,
+          perpetual: it.cycle === "perpetual" || Number(it.months) === 0,
+          text: cyc + " · ¥" + it.price + per };
       });
     }
     return ((mbPlans && mbPlans.priceOptions) || []).map((o) => ({
-      plan: o.plan, months: Number(o.months),
+      plan: o.plan, months: Number(o.months), cycle: "",
+      perpetual: Number(o.months) === 0,
       text: (o.label || o.months + " 个月") + " · ¥" + o.price,
     }));
   }
@@ -351,7 +354,9 @@
       const hit = list.find((o) => Number(o.months) === Number(last));
       if (hit) return hit;
     }
-    return list.slice().sort((a, b) => a.months - b.months)[0];
+    // 有月数的档位优先（按最少月数，花钱最少）；全是永久时才回落永久
+    const paid = list.filter((o) => Number(o.months) > 0);
+    return (paid.length ? paid : list).slice().sort((a, b) => a.months - b.months)[0];
   }
 
   function renderMembership() {
@@ -377,6 +382,8 @@
       if (days <= 0) { txt = "已到期（" + fmtDate(m.expiresAt) + "）"; cls += " pp-mb-expiry-expired"; }
       else if (days <= 7) { txt = "仅剩 " + days + " 天 · " + fmtDate(m.expiresAt) + " 到期"; cls += " pp-mb-expiry-warn"; }
       else { txt = "剩 " + days + " 天 · " + fmtDate(m.expiresAt) + " 到期"; }
+    } else if (m.perpetual) {
+      txt = "永久有效（无需续费）";
     }
     exp.textContent = txt;
     exp.className = cls;
@@ -525,7 +532,7 @@
     btn.disabled = true;
     mbSetMsg("pp-mb-order-msg", "正在生成订单…", "var(--pp-muted)");
     try {
-      mbOrder = await A.createOrder(mbSel.plan, mbSel.months);
+      mbOrder = await A.createOrder(mbSel.plan, mbSel.months, mbSel.cycle);
       mbSetMsg("pp-mb-order-msg", "", "var(--pp-muted)");
       renderMbPay();
       startMbPolling();
@@ -544,11 +551,18 @@
     if (!mbOrder) { pay.style.display = "none"; return; }
     pay.style.display = "";
     const o = mbOrder;
+    const cycleTxt = o.perpetual ? "永久" : (o.months + " 个月");
+    const money = o.amountText || ("¥" + (Number(o.amount) || 0).toFixed(2));
     const lines = [
       "订单号：" + o.id,
-      (o.planName || o.plan) + " · " + o.months + " 个月 · ¥" + o.amount,
+      (o.planName || o.plan) + " · " + cycleTxt + " · " + money,
       "状态：" + (MB_STATUS[o.status] || o.status),
     ];
+    // 0.24.5：金额末尾的小数尾数是这笔订单的专属标识（后台据此自动对账核销）
+    if (o.tailCents) {
+      lines.push("⚠ 请**精确转账 " + money + "**（不能凑整）：末尾 "
+        + String(o.tailCents).padStart(2, "0") + " 分是这笔订单的专属尾数，用于自动对账");
+    }
     const p = o.pay || {};
     if (p.channel) lines.push("收款方式：" + p.channel);
     if (p.qrText) lines.push(p.qrText);

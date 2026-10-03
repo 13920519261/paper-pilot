@@ -42,6 +42,7 @@ function ok(c, label, extra) {
   fails.push(label + (extra !== undefined ? '  ← ' + JSON.stringify(extra) : ''));
   return false;
 }
+function eq(a, b, label) { return ok(a === b, label, { got: a, want: b }); }
 
 function req(method, p, body, token) {
   return new Promise((resolve, reject) => {
@@ -324,6 +325,77 @@ function req(method, p, body, token) {
     const health2 = JSON.parse((await (await fetch(`http://127.0.0.1:${PORT}/api/health`)).text()));
     ok(typeof health2.priceActive === 'number' && health2.priceActive === 3,
       'E19.1 health 反映生效价格数 = 3', health2.priceActive);
+
+    /* ---- 服务端 1.4.5：永久会员（价格表单）+ 收款流水对账自动核销 ---- */
+    await page.click('#tab-membership');
+    await page.waitForTimeout(300);
+    await page.click('button:has-text("新增价格")');
+    await page.waitForSelector('#price-mask.show');
+    await page.selectOption('#pf-plan', 'Pro');
+    await page.selectOption('#pf-cycle', 'perpetual');
+    const monthsDisabled = await page.evaluate(() => document.getElementById('pf-months').disabled);
+    const monthsVal = await page.inputValue('#pf-months');
+    ok(monthsDisabled === true && monthsVal === '0',
+      'E21.1 选「永久」后月数自动置 0 并禁用', { monthsDisabled, monthsVal });
+    const prevTxt = await page.textContent('#pf-preview');
+    ok(/永久/.test(prevTxt), 'E21.2 预览说明这是永久会员（不按月折算）', prevTxt);
+    await page.fill('#pf-price', '128');
+    await page.fill('#pf-label', '永久');
+    await page.click('#price-mask button:has-text("保存")');
+    await page.waitForFunction(() => {
+      var t = document.getElementById('pr-msg');
+      return t && t.textContent.indexOf('已保存价格') >= 0;
+    }, { timeout: 6000 });
+    const prTxtPerp = await page.textContent('#pr-table tbody');
+    ok(prTxtPerp.includes('永久'), 'E21.3 价格表出现「永久」条目', prTxtPerp.slice(0, 120));
+    const plansPerp = JSON.parse((await (await fetch(`http://127.0.0.1:${PORT}/api/plans`)).text()));
+    const perpItem = plansPerp.priceItems.filter((i) => i.cycle === 'perpetual')[0];
+    ok(!!perpItem && perpItem.price === 128, 'E21.4 /api/plans 下发永久价 ¥128（插件档位卡据此显示）', perpItem);
+
+    // 下永久订单（模拟插件传 cycle=perpetual）→ 拿带尾数的实付金额
+    await req('POST', '/api/auth/register', { email: 'perpatest@test.local', password: 'pw12345678' });
+    const ptok = (await req('POST', '/api/auth/login',
+      { email: 'perpatest@test.local', password: 'pw12345678' })).json.token;
+    const porder = (await req('POST', '/api/orders', { plan: 'Pro', cycle: 'perpetual' }, ptok)).json.order;
+    ok(porder.perpetual === true && porder.tailCents >= 1, 'E21.5 永久订单带唯一尾数', porder);
+
+    await page.click('#tab-membership');
+    await page.waitForTimeout(400);
+    const ordTxt = await page.textContent('#mb-order-table tbody');
+    ok(ordTxt.includes('永久'), 'E21.6 订单表显示「永久」');
+    ok(ordTxt.includes('尾数'), 'E21.7 订单表标出专属尾数');
+
+    // 对账：先预览
+    const amtTxt = String(porder.amountText).replace('¥', '');
+    await page.click('button:has-text("对账导入")');
+    await page.waitForSelector('#reconcile-mask.show');
+    await page.fill('#rc-text', amtTxt + '\n999.99');
+    await page.click('button:has-text("预览匹配")');
+    await page.waitForFunction(() => {
+      var t = document.getElementById('rc-msg');
+      return t && /预览/.test(t.textContent);
+    }, { timeout: 6000 });
+    const rcMsg1 = await page.textContent('#rc-msg');
+    ok(/命中 1/.test(rcMsg1), 'E21.8 预览命中 1 笔', rcMsg1);
+    ok(/无对应 1/.test(rcMsg1), 'E21.9 对不上的金额标为「无对应订单」', rcMsg1);
+    eq(await page.locator('#rc-table tbody tr').count(), 2, 'E21.10 预览列出 2 条流水');
+    const rcRowTxt = await page.textContent('#rc-table tbody');
+    ok(rcRowTxt.includes('perpatest@test.local'), 'E21.11 预览显示对应用户邮箱');
+    const beforeFulfill = (await req('GET', '/api/admin/orders')).json.orders.find((o) => o.id === porder.id);
+    eq(beforeFulfill.status, 'pending', 'E21.12 预览不改数据（订单仍未核销）');
+
+    await page.click('#rc-apply-btn');
+    await page.waitForFunction(() => {
+      var t = document.getElementById('rc-msg');
+      return t && /已核销/.test(t.textContent);
+    }, { timeout: 8000 });
+    const afterFulfill = (await req('GET', '/api/admin/orders')).json.orders.find((o) => o.id === porder.id);
+    eq(afterFulfill.status, 'fulfilled', 'E21.13 确认后订单已核销开通');
+    const pme = (await req('GET', '/api/auth/me', null, ptok)).json.user;
+    eq(pme.membership.perpetual, true, 'E21.14 用户成为永久会员');
+    eq(pme.membership.expiresAt, null, 'E21.15 永久会员无到期日');
+    await page.click('#reconcile-mask button:has-text("关闭")');
+    await page.waitForTimeout(200);
 
     /* ---- 服务端 1.4.4：审计日志标签页（放在流程末尾，此时已积累多种管理操作） ---- */
     await page.click('#tab-audit');

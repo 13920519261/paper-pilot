@@ -39,6 +39,7 @@ const ACTIONS = {
   'membership.config': '修改会员/收款配置',
   'order.fulfill': '核销开通订单',
   'order.cancel': '取消订单',
+  'order.reconcile': '对账自动核销',
   'code.create': '生成激活码',
   'code.revoke': '作废激活码',
   'backup.create': '手动打快照',

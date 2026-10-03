@@ -311,6 +311,15 @@ function ConvertTo-ShortJson([object]$o) {
   return $s
 }
 
+# 对账结果 → 中文（服务端 1.4.5；与服务端 lib/reconcile.js 的 STATUS_TEXT 对齐）
+function Get-ReconcileStatusText([string]$st) {
+  if ($st -eq 'matched')   { return '命中' }
+  if ($st -eq 'unmatched') { return '无对应订单' }
+  if ($st -eq 'ambiguous') { return '需人工确认' }
+  if ($st -eq 'duplicate') { return '重复流水' }
+  return $st
+}
+
 # 审计动作中文名（与服务端 lib/audit.js 的 ACTIONS 对齐；未知动作原样返回）
 function Get-AuditText([string]$a) {
   $map = @{
@@ -318,7 +327,7 @@ function Get-AuditText([string]$a) {
     'user.delete' = '删除用户'; 'user.unlock' = '解除登录锁定'; 'user.membership' = '开通/续期会员'
     'price.create' = '新增价格条目'; 'price.update' = '修改价格条目'; 'price.delete' = '删除价格条目'
     'membership.config' = '修改会员/收款配置'
-    'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'
+    'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'; 'order.reconcile' = '对账自动核销'
     'code.create' = '生成激活码'; 'code.revoke' = '作废激活码'
     'backup.create' = '手动打快照'; 'backup.restore' = '回滚数据'; 'backup.delete' = '删除快照'
     'alert.check' = '手动巡检积压告警'
@@ -1176,7 +1185,9 @@ function Show-PriceForm($parent, $editing) {
   $selCycle.DropDownStyle = 'DropDownList'
   $selCycle.SetBounds(180, 49, 290, 24)
   foreach ($c in $script:mbCycles) {
-    [void]$selCycle.Items.Add(([string]$c.id + ' · ' + [string]$c.name + '（' + $c.months + ' 个月）'))
+    # 永久周期不适用月数，别显示「0 个月」
+    $span = $(if ([string]$c.id -eq 'perpetual') { '不适用月数' } else { ([string]$c.months + ' 个月') })
+    [void]$selCycle.Items.Add(([string]$c.id + ' · ' + [string]$c.name + '（' + $span + '）'))
   }
   [void]$fm.Controls.Add($selCycle)
 
@@ -1272,18 +1283,23 @@ function Show-PriceForm($parent, $editing) {
 
   # 联动：选周期自动带出月数；周期/价格/月数变化实时显示折合月单价
   $syncPer = {
+    $cidNow = (([string]$selCycle.SelectedItem) -split ' · ')[0]
     $m = 0
     [void][int]::TryParse($txtMonths.Text, [ref]$m)
     $p = 0.0
     [void][double]::TryParse($txtPrice.Text, [ref]$p)
-    if ($m -gt 0) { $lblPer.Text = ('折合 ¥' + [math]::Round($p / $m, 2) + ' / 月') }
+    if ($cidNow -eq 'perpetual') { $lblPer.Text = '永久：不按月折算' }
+    elseif ($m -gt 0) { $lblPer.Text = ('折合 ¥' + [math]::Round($p / $m, 2) + ' / 月') }
     else { $lblPer.Text = '' }
   }
   $selCycle.add_SelectedIndexChanged({
     $cid = (([string]$selCycle.SelectedItem) -split ' · ')[0]
+    $perp = ($cid -eq 'perpetual')
     foreach ($c in $script:mbCycles) {
       if ([string]$c.id -eq $cid -and [int]$c.months -gt 0) { $txtMonths.Text = [string]$c.months }
     }
+    if ($perp) { $txtMonths.Text = '0' }
+    $txtMonths.Enabled = -not $perp
     & $syncPer
   })
   $txtMonths.add_TextChanged($syncPer)
@@ -1305,7 +1321,9 @@ function Show-PriceForm($parent, $editing) {
     [void][double]::TryParse($txtPrice.Text, [ref]$price)
     $prio = 0
     [void][int]::TryParse($txtPrio.Text, [ref]$prio)
-    if ($months -lt 1) { $lblMsg.Text = '周期月数必须 ≥ 1'; return }
+    $cycleId = (([string]$selCycle.SelectedItem) -split ' · ')[0]
+    if ($cycleId -eq 'perpetual') { $months = 0 }        # 永久：月数不适用
+    elseif ($months -lt 1) { $lblMsg.Text = '周期月数必须 ≥ 1'; return }
     if ($price -le 0) { $lblMsg.Text = '价格必须大于 0'; return }
     $pid = $selPlan.Text
     $lp = $pid.LastIndexOf('（')
@@ -1316,7 +1334,7 @@ function Show-PriceForm($parent, $editing) {
     if ($dtTo.Checked) { $toIso = $dtTo.Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
     $body = @{
       plan = $pid
-      cycle = (([string]$selCycle.SelectedItem) -split ' · ')[0]
+      cycle = $cycleId
       months = $months
       price = $price
       label = $txtLabel.Text.Trim()
@@ -1527,8 +1545,131 @@ function Show-MembershipManager {
       Refresh-Membership
     } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '取消失败', 'OK', 'Warning') | Out-Null }
   }
-  New-MbBtn $pgOrder '刷新' 294 420 70 { Refresh-Membership }
-  New-MbBtn $pgOrder '打开 Web 管理页' 372 420 130 {
+  # ---- 收款流水对账（服务端 1.4.5）----
+  # 下单会给每笔订单分配一个「同金额内唯一」的小数尾数，所以收款流水按金额即可自动匹配到订单。
+  # 这里只做「预览 → 确认」两步；核销由服务端执行（并写审计）。同一套接口，Web 管理页也有入口。
+  function Show-ReconcileDialog {
+    $rc = New-Object System.Windows.Forms.Form
+    $rc.Text = '收款流水对账（按金额自动匹配核销）'
+    $rc.ClientSize = New-Object System.Drawing.Size(880, 560)
+    $rc.StartPosition = 'CenterParent'
+    $rc.MinimizeBox = $false
+    $rc.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+    $rc.Icon = $script:appIcon
+
+    $rcTip = New-Object System.Windows.Forms.Label
+    $rcTip.Text = '粘贴收款流水，每行一条：金额,时间,备注（时间与备注可空；也接受 CSV / 带 ¥）。' + "`n" + '下单时会分配唯一小数尾数，所以金额可唯一对应到订单；先预览，确认无误再核销。'
+    $rcTip.ForeColor = [System.Drawing.Color]::DimGray
+    $rcTip.SetBounds(12, 8, 856, 34)
+    [void]$rc.Controls.Add($rcTip)
+
+    $rcText = New-Object System.Windows.Forms.TextBox
+    $rcText.Multiline = $true
+    $rcText.ScrollBars = 'Vertical'
+    $rcText.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $rcText.SetBounds(12, 46, 856, 120)
+    [void]$rc.Controls.Add($rcText)
+
+    $rcWinLbl = New-Object System.Windows.Forms.Label
+    $rcWinLbl.Text = '时间窗'
+    $rcWinLbl.SetBounds(12, 176, 50, 20)
+    [void]$rc.Controls.Add($rcWinLbl)
+    $rcWin = New-Object System.Windows.Forms.NumericUpDown
+    $rcWin.Minimum = 1; $rcWin.Maximum = 365; $rcWin.Value = 30
+    $rcWin.SetBounds(62, 173, 60, 24)
+    [void]$rc.Controls.Add($rcWin)
+    $rcWinTip = New-Object System.Windows.Forms.Label
+    $rcWinTip.Text = '天（只匹配下单后这段时间内的流水）'
+    $rcWinTip.ForeColor = [System.Drawing.Color]::DimGray
+    $rcWinTip.SetBounds(128, 176, 240, 20)
+    [void]$rc.Controls.Add($rcWinTip)
+
+    $rcLv = New-Object System.Windows.Forms.ListView
+    $rcLv.View = 'Details'; $rcLv.FullRowSelect = $true; $rcLv.HideSelection = $false
+    $rcLv.SetBounds(12, 206, 856, 280)
+    [void]$rcLv.Columns.Add('流水金额', 100)
+    [void]$rcLv.Columns.Add('结果', 100)
+    [void]$rcLv.Columns.Add('订单号', 140)
+    [void]$rcLv.Columns.Add('用户', 190)
+    [void]$rcLv.Columns.Add('说明', 300)
+    [void]$rc.Controls.Add($rcLv)
+
+    $rcMsg = New-Object System.Windows.Forms.Label
+    $rcMsg.Text = ''
+    $rcMsg.ForeColor = [System.Drawing.Color]::DimGray
+    $rcMsg.SetBounds(12, 492, 856, 20)
+    [void]$rc.Controls.Add($rcMsg)
+
+    $btnApply = New-Object System.Windows.Forms.Button
+    $btnApply.Text = '确认核销'
+    $btnApply.Enabled = $false
+    $btnApply.SetBounds(560, 516, 170, 32)
+    [void]$rc.Controls.Add($btnApply)
+
+    $btnPrev = New-Object System.Windows.Forms.Button
+    $btnPrev.Text = '预览匹配'
+    $btnPrev.SetBounds(740, 516, 128, 32)
+    [void]$rc.Controls.Add($btnPrev)
+
+    $script:rcLast = $null
+
+    $btnPrev.add_Click({
+      if (-not $rcText.Text.Trim()) { $rcMsg.Text = '请先粘贴收款流水（每行：金额,时间,备注）'; return }
+      try {
+        $r = Invoke-AdminApi 'POST' '/api/admin/reconcile' @{
+          text = $rcText.Text; dryRun = $true; windowDays = [int]$rcWin.Value
+        }
+        $rcLv.Items.Clear()
+        foreach ($x in @($r.results)) {
+          $it = New-Object System.Windows.Forms.ListViewItem([string]$x.amountText)
+          [void]$it.SubItems.Add((Get-ReconcileStatusText ([string]$x.status)))
+          [void]$it.SubItems.Add($(if ($x.orderId) { [string]$x.orderId } else { '—' }))
+          [void]$it.SubItems.Add($(if ($x.email) { [string]$x.email } else { '—' }))
+          if ($x.status -eq 'matched') {
+            $dur = $(if ($x.perpetual) { '永久会员' } else { ([string]$x.months + ' 个月') })
+            [void]$it.SubItems.Add($dur + '　下单于 ' + (Format-Dt ([string]$x.createdAt)))
+          } else {
+            [void]$it.SubItems.Add([string]$x.reason)
+          }
+          [void]$rcLv.Items.Add($it)
+        }
+        $script:rcLast = $r
+        $mm = [int]$r.summary.matched
+        $rcPart1 = '预览：共 ' + [string]$r.summary.total + ' 条 · 命中 ' + [string]$mm + ' · 无对应 '
+        $rcPart1 = $rcPart1 + [string]$r.summary.unmatched + ' · 需人工 ' + [string]$r.summary.ambiguous
+        $rcMsg.Text = $rcPart1 + '　命中金额 ' + [string]$r.summary.matchedText
+        $btnApply.Enabled = ($mm -gt 0)
+        $btnApply.Text = $(if ($mm -gt 0) { ('确认核销 ' + [string]$mm + ' 笔') } else { '确认核销' })
+      } catch { $rcMsg.Text = '对账失败：' + (Get-HttpErrorDetail $_) }
+    })
+
+    $btnApply.add_Click({
+      if (-not $script:rcLast) { $rcMsg.Text = '请先点「预览匹配」'; return }
+      $n = [int]$script:rcLast.summary.matched
+      if ($n -le 0) { return }
+      $askMsg = '确认核销 ' + [string]$n + ' 笔订单（合计 ' + [string]$script:rcLast.summary.matchedText + '）？'
+      $askMsg = $askMsg + "`n" + '将立即为对应用户开通/叠加会员，并写入审计日志。'
+      $ask = [System.Windows.Forms.MessageBox]::Show($askMsg, '确认核销', 'YesNo', 'Question')
+      if ($ask -ne 'Yes') { return }
+      try {
+        $r = Invoke-AdminApi 'POST' '/api/admin/reconcile' @{
+          text = $rcText.Text; dryRun = $false; windowDays = [int]$rcWin.Value
+        }
+        $done = @($r.applied | Where-Object { $_.ok }).Count
+        $rcMsg.Text = '已核销 ' + [string]$done + ' 笔；「审计日志」页可见 order.reconcile 记录'
+        $script:rcLast = $null
+        $btnApply.Enabled = $false
+        Refresh-Membership
+      } catch { $rcMsg.Text = '核销失败：' + (Get-HttpErrorDetail $_) }
+    })
+
+    [void]$rc.ShowDialog($dlg)
+    $rc.Dispose()
+  }
+
+  New-MbBtn $pgOrder '对账导入' 372 420 100 { Show-ReconcileDialog }
+  New-MbBtn $pgOrder '刷新' 480 420 70 { Refresh-Membership }
+  New-MbBtn $pgOrder '打开 Web 管理页' 558 420 130 {
     Open-Url $AdminPage
   }
   New-MbBtn $pgOrder '关闭' 760 420 96 { $dlg.Close() }

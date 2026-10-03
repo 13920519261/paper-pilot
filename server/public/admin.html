@@ -228,7 +228,10 @@
 
     <div class="card">
       <div class="toolbar"><h2 style="margin:0">订单</h2>
-        <span class="hint">未支付订单 7 天后自动过期</span></div>
+        <div>
+          <button class="btn" onclick="openReconcile()">对账导入（按金额自动核销）</button>
+          <span class="hint">下单会分配唯一小数尾数，收款流水按金额即可自动匹配</span>
+        </div></div>
       <table id="mb-order-table">
         <thead><tr>
           <th>订单号</th><th>用户</th><th>套餐</th><th>金额</th><th>状态</th>
@@ -434,6 +437,37 @@
   </div>
 </div>
 
+<!-- 对账导入弹窗（服务端 1.4.5：按金额自动匹配订单并核销） -->
+<div class="mask" id="reconcile-mask">
+  <div class="modal" style="width:900px">
+    <h3>收款流水对账</h3>
+    <p class="hint" style="margin:0 0 12px">
+      粘贴收款流水，每行一条：<code>金额,时间,备注</code>（时间与备注可空，也接受 CSV / 带 <code>¥</code>）。
+      下单时会为每笔订单分配一个<b>同金额内唯一的小数尾数</b>，所以按金额即可自动匹配到具体订单。
+      <b>先预览，确认无误再执行核销</b>；金额对不上的一律不匹配（防错）。
+    </p>
+    <textarea id="rc-text" rows="8" style="width:100%;font-family:ui-monospace,Consolas,monospace"
+      placeholder="128.62,2026-10-03 12:30,微信&#10;29.48&#10;79.15,2026-10-03 13:05,支付宝,4200001234"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+      <button class="btn primary" onclick="runReconcile(true)">预览匹配</button>
+      <button class="btn" id="rc-apply-btn" onclick="applyReconcile()" disabled>确认核销</button>
+      <span class="hint">时间窗</span>
+      <input id="rc-window" type="number" min="1" max="365" value="30" style="width:70px">
+      <span class="hint">天</span>
+      <button class="btn" onclick="closeMask('reconcile-mask')">关闭</button>
+    </div>
+    <div class="msg" id="rc-msg"></div>
+    <table id="rc-table" style="margin-top:12px">
+      <thead><tr>
+        <th style="width:110px">流水金额</th><th style="width:130px">结果</th>
+        <th style="width:150px">订单号</th><th style="width:190px">用户</th><th>说明</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="rc-empty" style="display:none">还没有预览结果</div>
+  </div>
+</div>
+
 <!-- 会员开通 / 续期弹窗（叠加式） -->
 <div class="mask" id="membership-mask">
   <div class="modal" style="width:440px">
@@ -442,6 +476,9 @@
     <div class="grid2">
       <div class="field"><label>套餐</label><select id="gm-plan"></select></div>
       <div class="field"><label>时长（月）</label><input id="gm-months" type="number" min="1" max="36" value="1"></div>
+      <div class="field"><label>永久会员</label>
+        <label style="font-weight:400;line-height:32px">
+          <input type="checkbox" id="gm-perpetual" onchange="onGrantPerpetual()"> 不设到期日（永久有效）</label></div>
       <div class="field wide"><label>备注（可空）</label><input id="gm-note" placeholder="补偿 / 渠道分成 / 线下售卖…"></div>
     </div>
     <p class="hint" style="margin:10px 0 0">按「剩余时长 + 本次时长」叠加。若要把到期日钉成固定日期，请用「编辑」。</p>
@@ -1047,8 +1084,11 @@ function renderOrders() {
     tr.innerHTML =
       '<td class="mono">' + esc(o.id) + '</td>' +
       '<td class="mono">' + esc(o.email || '') + '</td>' +
-      '<td>' + esc(o.planName || o.plan) + ' · ' + o.months + ' 个月</td>' +
-      '<td>¥' + o.amount + '</td>' +
+      '<td>' + esc(o.planName || o.plan) + ' · '
+        + (o.perpetual ? '永久' : (o.months + ' 个月')) + '</td>' +
+      '<td>' + esc(o.amountText || ('¥' + o.amount))
+        + (o.tailCents ? ' <span class="badge gray" title="专属尾数，用于对账自动匹配">尾数 '
+          + String(o.tailCents).padStart(2, '0') + '</span>' : '') + '</td>' +
       '<td><span class="badge ' + (ORDER_CLASS[o.status] || 'gray') + '">'
         + (ORDER_STATUS[o.status] || o.status) + '</span></td>' +
       '<td class="mono">' + fmtTime(o.createdAt) + '</td>';
@@ -1147,6 +1187,77 @@ function cancelOrder(id) {
   api('POST', '/api/admin/orders/' + id + '/cancel', { reason: '管理员取消' }).then(function (r) {
     msg('mb-order-msg', r.ok ? '✓ 订单已取消' : ('✗ ' + (r.error || '取消失败')), r.ok);
     loadMembership();
+  });
+}
+
+/* ---------------- 对账导入（服务端 1.4.5） ---------------- */
+var rcLast = null;   // 上次预览结果（确认核销前必须预览过）
+
+function openReconcile() {
+  rcLast = null;
+  $('rc-msg').textContent = '';
+  $('rc-table').querySelector('tbody').textContent = '';
+  $('rc-empty').style.display = '';
+  $('rc-apply-btn').disabled = true;
+  $('reconcile-mask').classList.add('show');
+}
+
+function reconcileBody(dryRun) {
+  return { text: $('rc-text').value, dryRun: dryRun, windowDays: Number($('rc-window').value) || 30 };
+}
+
+function renderReconcile(r) {
+  var tb = $('rc-table').querySelector('tbody');
+  tb.textContent = '';
+  $('rc-empty').style.display = r.results.length ? 'none' : '';
+  var cls = { matched: 'green', unmatched: 'gray', ambiguous: 'red', duplicate: 'warn' };
+  var txt = { matched: '命中', unmatched: '无对应订单', ambiguous: '需人工确认', duplicate: '重复流水' };
+  r.results.forEach(function (x) {
+    var tr = document.createElement('tr');
+    var detail = x.status === 'matched'
+      ? ((x.perpetual ? '永久会员' : (x.months + ' 个月')) + '　下单于 ' + fmtTime(x.createdAt))
+      : (x.reason || '');
+    tr.innerHTML =
+      '<td class="mono">' + esc(x.amountText) + '</td>' +
+      '<td><span class="badge ' + (cls[x.status] || 'gray') + '">' + (txt[x.status] || x.status) + '</span></td>' +
+      '<td class="mono">' + esc(x.orderId || '—') + '</td>' +
+      '<td class="mono">' + esc(x.email || '—') + '</td>' +
+      '<td>' + esc(detail) + '</td>';
+    tb.appendChild(tr);
+  });
+  var s = r.summary;
+  msg('rc-msg', (r.dryRun ? '预览：' : '已执行：') + '共 ' + s.total + ' 条 — 命中 ' + s.matched
+    + ' · 无对应 ' + s.unmatched + ' · 需人工 ' + s.ambiguous + ' · 重复 ' + s.duplicate
+    + '　命中金额 ' + s.matchedText, s.matched > 0);
+}
+
+function runReconcile(dryRun) {
+  var body = reconcileBody(true);   // 先预览
+  if (!body.text.trim()) { msg('rc-msg', '请先粘贴收款流水（每行：金额,时间,备注）', false); return; }
+  api('POST', '/api/admin/reconcile', body).then(function (r) {
+    if (!r.ok) { $('rc-apply-btn').disabled = true; return msg('rc-msg', '✗ ' + (r.error || '对账失败'), false); }
+    rcLast = r;
+    renderReconcile(r);
+    var canApply = r.summary.matched > 0;
+    $('rc-apply-btn').disabled = !canApply;
+    if (canApply) $('rc-apply-btn').textContent = '确认核销 ' + r.summary.matched + ' 笔（' + r.summary.matchedText + '）';
+  });
+}
+
+function applyReconcile() {
+  if (!rcLast || !rcLast.summary.matched) return;
+  if (!confirm('确认核销 ' + rcLast.summary.matched + ' 笔订单（合计 ' + rcLast.summary.matchedText
+    + '）？\n将立即为对应用户开通/叠加会员，操作会写入审计日志。')) return;
+  api('POST', '/api/admin/reconcile', reconcileBody(false)).then(function (r) {
+    if (!r.ok) return msg('rc-msg', '✗ ' + (r.error || '核销失败'), false);
+    renderReconcile(r);
+    var ok = (r.applied || []).filter(function (x) { return x.ok; }).length;
+    msg('rc-msg', '✓ 已核销 ' + ok + ' 笔' + (ok < r.summary.matched
+      ? ('，失败 ' + (r.summary.matched - ok) + ' 笔（见下方说明）') : ''), true);
+    rcLast = null;
+    $('rc-apply-btn').disabled = true;
+    loadMembership();
+    loadUsers();
   });
 }
 
@@ -1297,7 +1408,8 @@ function openPriceForm(id) {
   cs.textContent = '';
   (mb.cycles || []).forEach(function (c) {
     var o = document.createElement('option'); o.value = c.id;
-    o.textContent = c.name + '（' + (c.months || '自填') + '）';
+    var span = (c.id === 'perpetual') ? '不适用月数' : (c.months || '自填');
+    o.textContent = c.name + '（' + span + '）';
     cs.appendChild(o);
   });
   if (it) {
@@ -1324,35 +1436,53 @@ function openPriceForm(id) {
     $('pf-enabled').value = '1';
     $('pf-note').value = '';
   }
+  // 永久周期：月数不适用（置 0 并禁用输入框）
+  var perpNow = cs.value === 'perpetual';
+  $('pf-months').disabled = perpNow;
+  var pmWrap = $('pf-months').parentNode;
+  if (pmWrap) pmWrap.style.opacity = perpNow ? '0.55' : '';
   $('pf-msg').textContent = '';
   syncPricePreview();
   $('price-mask').classList.add('show');
 }
 
-/** 选周期时自动带出月数（自定义时保留手填） */
+/** 选周期时自动带出月数（自定义时保留手填；永久时月数不适用 → 置 0 并禁用输入） */
 function onCycleChange() {
-  var c = (mb.cycles || []).filter(function (x) { return x.id === $('pf-cycle').value; })[0];
-  if (c && c.months > 0) $('pf-months').value = c.months;
+  var id = $('pf-cycle').value;
+  var c = (mb.cycles || []).filter(function (x) { return x.id === id; })[0];
+  var perpetual = id === 'perpetual';
+  if (perpetual) {
+    $('pf-months').value = 0;
+  } else if (c && c.months > 0) {
+    $('pf-months').value = c.months;
+  }
+  $('pf-months').disabled = perpetual;
+  var wrap = $('pf-months').parentNode;
+  if (wrap) wrap.style.opacity = perpetual ? '0.55' : '';
   syncPricePreview();
 }
 
 function syncPricePreview() {
-  var m = Number($('pf-months').value) || 0;
+  var perpetual = $('pf-cycle').value === 'perpetual';
+  var m = perpetual ? 0 : (Number($('pf-months').value) || 0);
   var p = Number($('pf-price').value) || 0;
   var per = m > 0 ? Math.round((p / m) * 100) / 100 : 0;
   var from = $('pf-from').value, to = $('pf-to').value;
   var state = '保存后立即生效';
   if (from && new Date(from) > new Date()) state = '保存后为「未生效」，到 ' + from.replace('T', ' ') + ' 自动生效';
   else if (to && new Date(to) <= new Date()) state = '保存后即为「已过期」，不会下发到客户端';
-  $('pf-preview').textContent = '折合 ¥' + per + ' / 月；' + state
-    + (p <= 0 && m > 0 ? '（价格必须大于 0）' : '');
+  $('pf-preview').textContent = (perpetual
+    ? '永久会员（不按月折算，客户端显示「永久 · ¥' + p + '」）'
+    : '折合 ¥' + per + ' / 月') + '；' + state
+    + (p <= 0 ? '（价格必须大于 0）' : '');
 }
 
 function savePrice() {
   var body = {
     plan: $('pf-plan').value,
     cycle: $('pf-cycle').value,
-    months: Number($('pf-months').value) || 1,
+    // 永久：months 不适用（服务端也会强制归 0；这里先对齐避免预览与提交不一致）
+    months: ($('pf-cycle').value === 'perpetual') ? 0 : (Number($('pf-months').value) || 1),
     price: Number($('pf-price').value) || 0,
     label: $('pf-label').value.trim(),
     effectiveFrom: fromLocalInput($('pf-from').value),
@@ -1367,8 +1497,10 @@ function savePrice() {
   p.then(function (r) {
     if (!r.ok) { msg('pf-msg', r.error || '保存失败', false); return; }
     closeMask('price-mask');
-    var t = '✓ 已保存价格：' + body.plan + ' · ' + body.months + ' 个月 ¥' + body.price
-      + '（折合 ¥' + (body.months > 0 ? Math.round((body.price / body.months) * 100) / 100 : 0) + '/月）';
+    var t = body.cycle === 'perpetual'
+      ? ('✓ 已保存价格：' + body.plan + ' · 永久 ¥' + body.price)
+      : ('✓ 已保存价格：' + body.plan + ' · ' + body.months + ' 个月 ¥' + body.price
+        + '（折合 ¥' + (body.months > 0 ? Math.round((body.price / body.months) * 100) / 100 : 0) + '/月）');
     if (r.warn) t += '　⚠ ' + r.warn;
     msg('pr-msg', t, true);
     loadPrices();
@@ -1405,26 +1537,38 @@ function openGrant(id) {
     var m = u.membership || {};
     $('gm-current').textContent = m.expiresAt
       ? '当前：' + (m.expired ? '已过期（' + m.expiresAt.slice(0, 10) + '）' : 'Pro，剩 ' + m.daysLeft + ' 天（' + m.expiresAt.slice(0, 10) + ' 到期）')
-      : ('当前：' + (u.plan || 'Free') + '，无到期日');
+      : (m.perpetual ? '当前：' + (u.plan || 'Free') + '（永久有效）' : ('当前：' + (u.plan || 'Free') + '，无到期日'));
     $('gm-months').value = 1;
+    $('gm-perpetual').checked = false;
+    onGrantPerpetual();
     $('gm-note').value = '';
     $('gm-msg').textContent = '';
     renderPlanForm();
     $('membership-mask').classList.add('show');
   });
 }
+/** 勾选「永久」时禁用月数输入（两者互斥） */
+function onGrantPerpetual() {
+  var perp = $('gm-perpetual').checked;
+  $('gm-months').disabled = perp;
+  var w = $('gm-months').parentNode;
+  if (w) w.style.opacity = perp ? '0.55' : '';
+}
+
 function grantMembership() {
   if (!grantTarget) return;
+  var perp = $('gm-perpetual').checked;
   var body = {
     plan: $('gm-plan').value || 'Pro',
-    months: Number($('gm-months').value) || 1,
+    months: perp ? 0 : (Number($('gm-months').value) || 1),
+    perpetual: perp,
     note: $('gm-note').value.trim(),
   };
   api('POST', '/api/admin/users/' + grantTarget.id + '/membership', body).then(function (r) {
     if (!r.ok) return msg('gm-msg', '✗ ' + (r.error || '开通失败'), false);
     closeMask('membership-mask');
-    alert('✓ 已为 ' + grantTarget.email + ' 开通 ' + body.months + ' 个月，到期 '
-      + String((r.membership && r.membership.expiresAt) || '').slice(0, 10));
+    alert('✓ 已为 ' + grantTarget.email + ' 开通 ' + (perp ? '永久会员'
+      : (body.months + ' 个月，到期 ' + String((r.membership && r.membership.expiresAt) || '').slice(0, 10))));
     loadUsers();
     if ($('pane-membership').style.display !== 'none') loadMembership();
   });

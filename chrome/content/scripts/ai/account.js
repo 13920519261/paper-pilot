@@ -584,6 +584,7 @@ var Account = {
         dailyLimit: Number(m.dailyLimit) > 0 ? Number(m.dailyLimit) : 0,
         source: m.source || "",
         activatedAt: m.activatedAt || "",
+        perpetual: !!m.perpetual,   // 0.24.5 永久会员（无到期日）
         // 0.24.4：购买历史（续费默认周期取最近一次；到期提醒也用它判"曾经是付费用户"）
         history: Array.isArray(m.history) ? m.history : [],
       };
@@ -592,7 +593,7 @@ var Account = {
     const exp = typeof u.expiresAt === "number" ? u.expiresAt : (u.expiresAt ? Date.parse(u.expiresAt) || 0 : 0);
     return { plan: u.plan || "Free", name: u.plan || "Free", rawPlan: u.plan || "Free", expired: false,
       expiresAt: exp, dailyLimit: Number(u.dailyLimit) > 0 ? Number(u.dailyLimit) : 0, source: "", activatedAt: "",
-      history: [] };
+      perpetual: !!u.plan && u.plan !== "Free" && !exp, history: [] };
   },
 
   /** 用量（近 30 天按日 + 近 7 天合计）；离线时回落本地缓存字段 */
@@ -667,10 +668,12 @@ var Account = {
     };
   },
 
-  /** 下单：返回 {order}（含订单号、金额、收款信息与状态） */
-  async createOrder(plan, months) {
-    const resp = await this._request("POST", "/api/orders",
-      { plan: String(plan || "Pro"), months: Number(months) || 1 }, this.token(), 15000);
+  /** 下单：返回 {order}（含订单号、金额、收款信息与状态）。cycle==='perpetual' 表示永久会员 */
+  async createOrder(plan, months, cycle) {
+    const body = { plan: String(plan || "Pro") };
+    if (cycle === "perpetual") body.cycle = "perpetual";   // 永久：不传 months（不适用）
+    else body.months = Number(months) || 1;
+    const resp = await this._request("POST", "/api/orders", body, this.token(), 15000);
     const j = resp.json || {};
     if (!j.ok || !j.order) throw new Error(j.error || "下单失败");
     return j.order;

@@ -194,6 +194,49 @@ for fn in ["Refresh-Audit", "Get-AuditText", "Format-Bytes", "ConvertTo-ShortJso
 ok("Refresh-Audit" in ps and "/api/admin/audit" in ps, "6b.12 launcher 审计页调用审计接口")
 ok(re.search(r"\$pgAudit\s*=", ps) is not None and "审计日志" in ps, "6b.13 launcher 有审计标签页")
 
+# ---------- 9. 永久会员 + 收款流水对账（服务端 1.4.5 / 插件 0.24.5）----------
+RC_LIB = os.path.join(ROOT, "server", "lib", "reconcile.js")
+ok(os.path.exists(RC_LIB), "9.1 存在 server/lib/reconcile.js")
+rc_src = io.open(RC_LIB, encoding="utf-8").read() if os.path.exists(RC_LIB) else ""
+for fn in ["parseLine", "parseEntries", "matchPayments", "summarize"]:
+    ok(re.search(r"function %s\b" % fn, rc_src) is not None, "9.2 reconcile.js 定义 %s()" % fn)
+ok("/api/admin/reconcile" in srv, "9.3 服务端有对账路由")
+ok("auditLog(req, 'order.reconcile'" in srv, "9.4 对账核销写审计")
+ok("'order.reconcile'" in io.open(os.path.join(ROOT, "server", "lib", "audit.js"), encoding="utf-8").read(),
+   "9.5 audit.js 动作表含 order.reconcile")
+# 动作中文名跨语言两份，必须同步（MEMORY 里记的纪律）
+ok("'order.reconcile'" in ps, "9.6 launcher 的 Get-AuditText 也含 order.reconcile")
+
+MEM_JS = os.path.join(ROOT, "server", "lib", "membership.js")
+mem = io.open(MEM_JS, encoding="utf-8").read()
+ok("const PERPETUAL = 'perpetual'" in mem, "9.7 membership 定义永久周期常量")
+ok("function assignTail" in mem, "9.8 membership 有尾数分配")
+ok("function amountCentsOf" in mem, "9.9 membership 有分位金额换算（旧订单兼容）")
+ok("perpetual" in mem and "monthsLabel" in mem, "9.10 membership 永久语义（时长文案 / 授予不降级）")
+
+# 后台 Web：永久周期 + 对账面板
+for must in ['id="reconcile-mask"', 'id="rc-text"', 'id="rc-table"', 'id="rc-apply-btn"',
+             'id="gm-perpetual"']:
+    ok(must in html, "9.11 admin.html 含 %s" % must)
+for fn in ["openReconcile", "runReconcile", "applyReconcile", "onGrantPerpetual"]:
+    ok(("function %s" % fn) in html, "9.12 admin.html 定义 %s()" % fn)
+ok("'perpetual'" in html, "9.13 admin.html 价格表单识别永久周期")
+
+# 启动器：对账入口 + 永久周期
+ok("Show-ReconcileDialog" in defs, "9.14 launcher 定义 Show-ReconcileDialog")
+ok("Get-ReconcileStatusText" in defs, "9.15 launcher 定义 Get-ReconcileStatusText")
+ok("对账导入" in ps and "/api/admin/reconcile" in ps, "9.16 launcher 订单页有对账入口并调用接口")
+ok("'perpetual'" in ps, "9.17 launcher 价格表单识别永久周期")
+
+# 插件：下单传周期 + 尾数提示 + 永久显示（本节位置在 7/8 之前，直接读文件避免依赖顺序）
+_acct_src = io.open(os.path.join(ROOT, "chrome", "content", "scripts", "ai", "account.js"),
+                    encoding="utf-8").read()
+_pa_src = io.open(os.path.join(ROOT, "chrome", "content", "prefs-account.js"), encoding="utf-8").read()
+ok("createOrder(plan, months, cycle)" in _acct_src, "9.18 插件 createOrder 支持周期参数")
+ok("perpetual" in _acct_src, "9.19 插件 account.js 读取 perpetual")
+ok("tailCents" in _pa_src, "9.20 插件支付面板提示专属尾数")
+ok("永久" in _pa_src, "9.21 插件显示「永久」相关文案")
+
 # ---------- 7. 插件设置面板：引用的元素 id 是否真的存在于 prefs.xhtml ----------
 # 这类失误的表现就是「点了没反应」——JS 里 $("pp-xxx") 拿到 null，静默什么都不做。
 PREFS_JS = os.path.join(ROOT, "chrome", "content", "prefs-account.js")

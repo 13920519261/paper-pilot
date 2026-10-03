@@ -96,7 +96,21 @@ const CYCLE_PRESETS = [
   { id: 'halfyear', name: '半年', months: 6, short: '半年' },
   { id: 'yearly', name: '按年', months: 12, short: '年' },
   { id: 'custom', name: '自定义', months: 0, short: '自定义' },
+  // 1.4.5：永久会员 —— months 恒为 0（不适用），授予时 expiresAt 置空
+  { id: 'perpetual', name: '永久', months: 0, short: '永久' },
 ];
+
+/** 永久周期的 id（订单/价格条目里 months=0 即视为永久） */
+const PERPETUAL = 'perpetual';
+const isPerpetual = (cycle) => String(cycle || '') === PERPETUAL;
+
+/**
+ * 对账尾数（分）：给每个待支付订单分配一个**同金额内唯一**的小数尾数，
+ * 让「¥128.13 / ¥128.27」能唯一对应到某一笔订单 —— 收款流水按金额即可自动核销。
+ * 只有 1..99，所以同一价格最多 99 笔同时待支付/待核销；终态订单的尾数会被回收。
+ */
+const TAIL_MIN = 1;
+const TAIL_MAX = 99;
 
 /** 价格条目状态文案（后台列表与 API 共用） */
 const PRICE_STATE_TEXT = {
@@ -205,8 +219,14 @@ function normCode(c) {
 /* ---------------- 价格表（v3：等级 × 计费周期 × 生效时段） ---------------- */
 
 function cycleOfMonths(m) {
+  if (Number(m) === 0) return PERPETUAL;
   const hit = CYCLE_PRESETS.find((c) => c.months === Number(m) && c.months > 0);
   return hit ? hit.id : 'custom';
+}
+
+/** 周期 + 月数 → 人类可读的时长文案（永久不显示"N 个月"） */
+function monthsLabel(months, cycle) {
+  return (isPerpetual(cycle) || Number(months) === 0) ? '永久' : (Number(months) + ' 个月');
 }
 
 function cycleName(id) {
@@ -236,9 +256,13 @@ function priceState(item, now) {
 /** 价格条目消毒（写入口与读入口都过一遍，坏数据不落库也不下发） */
 function sanitizePriceItem(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const months = clampMonths(raw.months);
   const plan = String(raw.plan || 'Pro').slice(0, 24);
-  const cycle = CYCLE_PRESETS.some((c) => c.id === raw.cycle) ? String(raw.cycle) : cycleOfMonths(months);
+  // 永久条目：months 恒为 0（不适用）；clampMonths 会把 0 抬成 1，所以要先判周期
+  const rawCycle = String(raw.cycle || '');
+  const perpetual = rawCycle === PERPETUAL;
+  const months = perpetual ? 0 : clampMonths(raw.months);
+  const cycle = perpetual ? PERPETUAL
+    : (CYCLE_PRESETS.some((c) => c.id === rawCycle) ? rawCycle : cycleOfMonths(months));
   const from = isoOrNull(raw.effectiveFrom);
   const to = isoOrNull(raw.effectiveTo);
   if (from && to && Date.parse(to) <= Date.parse(from)) return null; // 时段反了：视为非法，丢弃
@@ -329,7 +353,7 @@ function derivePriceOptions(doc, now) {
   for (const pid of plans) {
     const winners = activeWinnerMap(doc, pid, now)
       .sort((a, b) => a.months - b.months)
-      .map((i) => ({ months: i.months, price: i.price, label: i.label || (i.months + ' 个月') }));
+      .map((i) => ({ months: i.months, price: i.price, label: i.label || monthsLabel(i.months, i.cycle) }));
     if (winners.length) out[pid] = winners;
   }
   return out;
@@ -357,7 +381,7 @@ function priceItemOut(doc, item, now) {
     cycle: item.cycle, cycleName: cycleName(item.cycle),
     months: item.months, price: item.price,
     perMonth: item.months > 0 ? Math.round((item.price / item.months) * 100) / 100 : 0,
-    label: item.label || (item.months + ' 个月'),
+    label: item.label || monthsLabel(item.months, item.cycle),
     effectiveFrom: item.effectiveFrom, effectiveTo: item.effectiveTo,
     enabled: item.enabled, priority: Number(item.priority) || 0,
     note: item.note || '', createdAt: item.createdAt,
@@ -454,23 +478,26 @@ function hasActivePrice(doc, planId, now) {
  * 返回 { ok, price, months, label, itemId, cycle, source:'item'|'base' } 或 { error }。
  */
 function effectivePrice(doc, planId, months, now) {
-  const m = clampMonths(months);
+  // months === 0 表示「永久」（不适用月数），不能走 clampMonths（会把 0 抬成 1）
+  const m = Number(months) === 0 ? 0 : clampMonths(months);
   const pid = planOf(doc, planId).id;
   const winners = activeWinnerMap(doc, pid, now);
   const hit = winners.find((i) => i.months === m);
   if (hit) {
     return {
       ok: true, price: hit.price, months: m,
-      label: hit.label || (m + ' 个月'), itemId: hit.id, cycle: hit.cycle, source: 'item',
+      label: hit.label || monthsLabel(m, hit.cycle), itemId: hit.id, cycle: hit.cycle, source: 'item',
     };
   }
   if (winners.length) {
-    const opts = winners.map((i) => i.months + ' 个月').sort((a, b) => a - b).join(' / ');
-    return { error: '该计费周期（' + m + ' 个月）当前不可购买；可选：' + opts };
+    const opts = winners.map((i) => monthsLabel(i.months, i.cycle))
+      .sort((a, b) => a.localeCompare(b, 'zh')).join(' / ');
+    return { error: '该计费周期（' + monthsLabel(m) + '）当前不可购买；可选：' + opts };
   }
+  if (m === 0) return { error: '永久会员需要后台配置价格条目（不能按单月价折算）' };
   const unit = Number(planOf(doc, pid).price) > 0 ? Number(planOf(doc, pid).price) : 0;
   if (unit <= 0) return { error: '该等级暂未开放购买（后台未配置价格）' };
-  return { ok: true, price: unit * m, months: m, label: m + ' 个月', itemId: null,
+  return { ok: true, price: unit * m, months: m, label: monthsLabel(m), itemId: null,
     cycle: cycleOfMonths(m), source: 'base' };
 }
 
@@ -534,7 +561,7 @@ function plansForClient(doc, now) {
   const base = (it) => ({
     id: it.id, plan: it.plan, cycle: it.cycle, cycleName: cycleName(it.cycle),
     months: it.months, price: it.price, currency: planOf(doc, it.plan).currency || 'CNY',
-    label: it.label || (it.months + ' 个月'),
+    label: it.label || monthsLabel(it.months, it.cycle),
     perMonth: it.months > 0 ? Math.round((it.price / it.months) * 100) / 100 : 0,
     effectiveFrom: it.effectiveFrom, effectiveTo: it.effectiveTo,
     priority: Number(it.priority) || 0,
@@ -581,11 +608,14 @@ function membershipOf(doc, user) {
   if (m.expiresAt) expMs = Date.parse(m.expiresAt) || 0;
   else if (user && user.expiresAt) expMs = Date.parse(user.expiresAt) || 0;
   if (rawPlan !== 'Free' && expMs && now > expMs) { expired = true; plan = 'Free'; }
+  // 永久会员：等级非 Free 且没有到期日（Free 无到期日不算永久）
+  const perpetual = rawPlan !== 'Free' && !expMs;
   return {
     plan,
     name: planOf(doc, plan).name,
     rawPlan,
     expired,
+    perpetual,
     expiresAt: expMs ? new Date(expMs).toISOString() : null,
     daysLeft: expMs ? Math.max(0, Math.ceil((expMs - now) / DAY_MS)) : null,
     dailyLimit: dailyLimitFor(doc, plan),
@@ -599,28 +629,42 @@ function membershipOf(doc, user) {
  * 开通/续期会员（唯一写入口）。续期 = max(现在, 现有到期) + 时长 —— 剩余时长不吞。
  * 同时同步兼容镜像 user.plan / user.expiresAt（旧客户端与旧管理接口都读它们）。
  */
-function grantMembership(doc, user, { plan, months, source, refId, note, now } = {}) {
-  const t = now || Date.now();
-  const pid = planOf(doc, plan).id || 'Pro';
-  const monthsN = clampMonths(months);
-  const cur = user.membership && user.membership.plan === pid && user.membership.expiresAt
-    ? Math.max(t, Date.parse(user.membership.expiresAt) || t)
-    : t;
-  const expiresAt = new Date(cur + monthsN * 30 * DAY_MS).toISOString();
-  const history = (Array.isArray(user.membership && user.membership.history) ? user.membership.history : []).slice(-19);
-  history.push({ plan: pid, months: monthsN, at: new Date(t).toISOString(), source: source || 'manual', refId: refId || '', note: note || '' });
+function grantMembership(doc, user, opts) {
+  const o = opts || {};
+  const t = o.now || Date.now();
+  const pid = planOf(doc, o.plan).id || 'Pro';
+  const cur = (user && user.membership) || {};
+  // 「已经是永久」＝同等级且无到期日（Free 不算）
+  const curPerpetual = cur.plan === pid && !cur.expiresAt;
+  const wantPerpetual = isPerpetual(o.cycle) || !!o.perpetual || Number(o.months) === 0 && o.months !== undefined;
+  const keepPerpetual = wantPerpetual || curPerpetual;
+  const monthsN = keepPerpetual ? 0 : clampMonths(o.months);
+  // 永久：到期日置空；否则在「现有到期日」基础上叠加（剩余时长不吞）
+  let expiresAt = null;
+  if (!keepPerpetual) {
+    const base = (cur.plan === pid && cur.expiresAt)
+      ? Math.max(t, Date.parse(cur.expiresAt) || t)
+      : t;
+    expiresAt = new Date(base + monthsN * 30 * DAY_MS).toISOString();
+  }
+  const history = (Array.isArray(cur.history) ? cur.history : []).slice(-19);
+  history.push({
+    plan: pid, months: monthsN, perpetual: keepPerpetual,
+    at: new Date(t).toISOString(), source: o.source || 'manual', refId: o.refId || '', note: o.note || '',
+  });
   user.membership = {
     plan: pid,
     name: planOf(doc, pid).name,
     months: monthsN,
+    perpetual: keepPerpetual,
     activatedAt: new Date(t).toISOString(),
     expiresAt,
-    source: source || 'manual',
-    refId: refId || '',
+    source: o.source || 'manual',
+    refId: o.refId || '',
     history,
   };
-  user.plan = pid;            // 兼容镜像
-  user.expiresAt = expiresAt; // 兼容镜像
+  user.plan = pid;                      // 兼容镜像
+  user.expiresAt = expiresAt;           // 兼容镜像（永久为 null）
   return membershipOf(doc, user);
 }
 
@@ -630,6 +674,12 @@ function orderOut(doc, o) {
   return {
     id: o.id, plan: o.plan, planName: planOf(doc, o.plan).name,
     months: o.months, amount: o.amount, currency: o.currency || 'CNY',
+    // 1.4.5 对账信息：实付（含唯一尾数）/ 原始价 / 尾数，全部用「分」表达，避免浮点误差
+    amountCents: amountCentsOf(o),
+    baseCents: baseCentsOf(o),
+    tailCents: Number.isFinite(o.tailCents) ? Number(o.tailCents) : null,
+    amountText: '¥' + (amountCentsOf(o) / 100).toFixed(2),
+    perpetual: !!o.perpetual || Number(o.months) === 0,
     status: o.status, createdAt: o.createdAt, updatedAt: o.updatedAt,
     claimedAt: o.claimedAt || null, fulfilledAt: o.fulfilledAt || null,
     cancelledAt: o.cancelledAt || null, cancelReason: o.cancelReason || '',
@@ -658,19 +708,82 @@ function reapOrders(doc, now) {
   return changed;
 }
 
-function createOrder(doc, { user, plan, months }) {
-  const pid = String(plan || 'Pro');
+/** 订单是否仍占用尾数（终态订单的尾数可回收） */
+function tailActive(o) {
+  return !!o && (o.status === 'pending' || o.status === 'claimed');
+}
+
+/** 订单的原始价（分）。兼容只有 amount（元）或只有 amountCents 的历史订单 */
+function baseCentsOf(o) {
+  if (!o) return 0;
+  if (Number.isFinite(o.baseCents) && o.baseCents > 0) return Math.round(o.baseCents);
+  if (Number.isFinite(o.amountCents) && o.amountCents > 0 && Number.isFinite(o.tailCents)) {
+    return Math.round(o.amountCents - o.tailCents);
+  }
+  return Math.round((Number(o.amount) || 0) * 100);
+}
+
+/** 订单实付金额（分）：优先 amountCents，旧数据由 amount（元）换算 */
+function amountCentsOf(o) {
+  if (!o) return 0;
+  if (Number.isFinite(o.amountCents) && o.amountCents > 0) return Math.round(o.amountCents);
+  return Math.round((Number(o.amount) || 0) * 100);
+}
+
+/**
+ * 给 baseCents 分配一个**同金额内唯一**的尾数（分，1..99）。
+ * 随机起点 + 线性探测：既让尾数分散（看不出规律、不好猜），又保证同金额内不重复。
+ * 99 个都被活跃订单占用 → 明确报错，而不是把两笔订单做成同一个金额（那会让对账无法区分）。
+ */
+function assignTail(doc, baseCents, opts) {
+  const rng = opts && typeof opts.rng === 'function' ? opts.rng : Math.random;
+  const used = new Set();
+  for (const o of (doc.orders || [])) {
+    if (!tailActive(o)) continue;
+    if (baseCentsOf(o) !== baseCents) continue;
+    const t = Number(o.tailCents);
+    if (t >= TAIL_MIN && t <= TAIL_MAX) used.add(t);
+  }
+  const span = TAIL_MAX - TAIL_MIN + 1;
+  if (used.size >= span) {
+    return { error: '该价格的待支付/待核销订单已占满 ' + span + ' 个尾数。'
+      + '请先处理这些订单（核销或取消）后再下单，避免两笔订单金额相同而无法对账。' };
+  }
+  const r = Number(rng());
+  const seed = Number.isFinite(r) ? Math.max(0, Math.min(0.9999999, r)) : 0;
+  const start = TAIL_MIN + Math.floor(seed * span);
+  for (let i = 0; i < span; i++) {
+    const t = TAIL_MIN + ((start - TAIL_MIN + i) % span);
+    if (!used.has(t)) return { tailCents: t, used: used.size };
+  }
+  return { error: '尾数分配失败（无可用尾数）' };
+}
+
+/** 下单。cycle === 'perpetual'（或 months === 0）→ 永久会员订单 */
+function createOrder(doc, opts) {
+  const o = opts || {};
+  const pid = planOf(doc, o.plan).id || String(o.plan || 'Pro');
   const p = planOf(doc, pid);
-  const m = clampMonths(months);
+  const perpetual = isPerpetual(o.cycle) || Number(o.months) === 0;
+  const m = perpetual ? 0 : clampMonths(o.months);
   const eff = effectivePrice(doc, pid, m);
   if (eff.error) return { error: eff.error };
   if (!(eff.price > 0)) return { error: '该套餐无需购买（' + p.name + '）' };
+  const baseCents = Math.round(eff.price * 100);
+  if (baseCents < 100 + TAIL_MAX) return { error: '价格过低（需至少 ¥1.99），无法分出对账尾数' };
+  const tail = assignTail(doc, baseCents, { rng: o.rng });
+  if (tail.error) return { error: tail.error };
+  const amountCents = baseCents + tail.tailCents;
   const now = new Date().toISOString();
   const order = {
     id: rid('o', 6),
-    userId: user.id, email: user.email,
+    userId: o.user.id, email: o.user.email,
     plan: pid, months: m,
-    amount: eff.price, currency: p.currency || 'CNY',
+    perpetual,
+    // amount 仍保留（元，含尾数）以兼容既有 UI/插件；精确比较一律用 *_Cents
+    amount: amountCents / 100,
+    amountCents, baseCents, tailCents: tail.tailCents,
+    currency: p.currency || 'CNY',
     status: 'pending',
     createdAt: now, updatedAt: now,
     claimedAt: null, fulfilledAt: null, cancelledAt: null, cancelReason: '',
@@ -820,6 +933,8 @@ module.exports = {
   upsertPriceItem, removePriceItem, hasActivePrice, effectivePrice, rangesOverlap,
   membershipOf, grantMembership,
   orderOut, reapOrders, createOrder, findOrder, claimOrder, cancelOrder, fulfillOrder,
+  PERPETUAL, isPerpetual, monthsLabel, TAIL_MIN, TAIL_MAX,
+  tailActive, baseCentsOf, amountCentsOf, assignTail,
   orderStatusText,
   codeOut, createCodes, findCode, redeem,
 };
