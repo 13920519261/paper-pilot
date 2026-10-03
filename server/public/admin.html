@@ -1370,7 +1370,7 @@ function renderPrices() {
         + esc(it.plan) + '</span></td>' +
       '<td>' + esc(it.cycleName) + '<span class="cell-sub">' + it.months + ' 个月</span></td>' +
       '<td class="cell-strong">¥' + it.price + '</td>' +
-      '<td class="mono">¥' + it.perMonth + '/月</td>' +
+      '<td class="mono">' + (Number(it.months) === 0 ? '—' : ('¥' + it.perMonth + '/月')) + '</td>' +
       '<td class="mono">' + esc(fmtRange(it.effectiveFrom, it.effectiveTo))
         + (it.label ? '<span class="cell-sub">' + esc(it.label) + '</span>' : '') + '</td>' +
       '<td class="mono">' + (it.priority || 0) + '</td>' +
