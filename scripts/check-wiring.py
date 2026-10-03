@@ -323,6 +323,46 @@ mem_src = io.open(os.path.join(ROOT, "server", "lib", "membership.js"), encoding
 ok("const baseCents = originalCents - discountCents;" in mem_src
    and "assignTail(doc, baseCents" in mem_src,
    "9.17 尾数在折后金额上分配（保住按金额唯一对账）")
+
+# ---------- 10. 1.4.7：登录设备与会话管理 ----------
+SESS_LIB = os.path.join(ROOT, "server", "lib", "sessions.js")
+ok(os.path.exists(SESS_LIB), "10.1 存在 server/lib/sessions.js")
+sess_src = io.open(SESS_LIB, encoding="utf-8").read()
+for fn in ["sidOf", "maskIp", "deviceFromHeaders", "recordStart", "recordSeen",
+           "sessionsOf", "sessionOut", "deviceAlertOf", "shouldAlert", "record",
+           "revokeSid", "revokeOthers", "sidOfRec"]:
+    _defined = (re.search(r"function %s\b" % fn, sess_src) is not None
+                or re.search(r"const %s\s*=" % fn, sess_src) is not None)
+    ok(_defined, "10.2 sessions.js 定义 %s()" % fn)
+ok("require('./lib/sessions')" in srv, "10.3 服务端引入 sessions 模块")
+for must in ["/api/sessions", "revoke-others", "/sessions/"]:
+    ok(must in srv, "10.4 服务端含会话路由 %s" % must)
+ok("sessionsActive" in srv and "devicesOverLimit" in srv, "10.5 health 暴露设备观测字段")
+ok("sessionOut" in srv and "full: true" in srv,
+   "10.6 管理侧用 full 视图（完整 IP），用户侧默认打码")
+# ★ 展示与撤销必须同源，否则会出现"看得见却踢不掉"的设备
+ok("sidOfRec" in sess_src and sess_src.count("sidOfRec(") >= 3,
+   "10.7 展示与撤销共用同一个 sid 取值来源（sidOfRec）")
+# ★ 只处理有效令牌，保证「已踢出 N 台」与用户数出来的台数一致
+ok("if (!(Number(rec.expiresAt) > t)) continue;" in sess_src,
+   "10.8 踢出只针对仍然有效的令牌（口径与设备列表一致）")
+ok("deviceAlertOf" in srv and "sessions.record(" in srv and "sessions.logLine" in srv,
+   "10.9 设备超阈值接入既有告警链（alerts.log + 邮件 + alerts.json）")
+ok("alertStore.data.sessions" in srv,
+   "10.10 设备告警状态用 sessions 命名空间，不覆盖既有积压状态")
+_audit_src = io.open(os.path.join(ROOT, "server", "lib", "audit.js"), encoding="utf-8").read()
+for act in ["session.revoke'", "session.revoke-others", "session.revoke-admin"]:
+    ok(act in _audit_src, "10.11 审计动作表含 %s" % act)
+    ok(act in ps, "10.12 launcher 审计中文表含 %s" % act)
+# 两套 UI
+ok("sessions-mask" in html and "openSessions" in html and "kickSession" in html,
+   "10.13 Web 管理页有设备弹窗与踢出逻辑")
+ok("活跃设备" in html, "10.14 Web 管理页用户表有活跃设备列")
+ok("Show-SessionsDialog" in ps and "Refresh-Sessions" in ps, "10.15 启动器有设备子窗体")
+for eid in ["sessions-mask", "ss-table", "ss-stat"]:
+    ok(('id="%s"' % eid) in html, "10.16 Web 管理页存在设备元素 %s" % eid)
+ok("openSessions" in html, "10.17 用户行有设备入口按钮")
+
 # ---------- 输出 ----------
 print("=" * 60)
 for p in passes:

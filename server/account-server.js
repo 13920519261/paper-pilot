@@ -10,7 +10,8 @@
  *   POST /v1/chat/completions Bearer → 转发活动通道上游（SSE 流式透传，auto→通道模型）
  *   GET  /register           公开自助注册页（public/register.html）
  *
- * 会员域（服务端 1.4.6，插件 0.24.6；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
+ * 会员域（服务端 1.4.7，插件 0.24.6；Free / Pro 两档 + 价格表 + 永久会员 + 对账核销 + 优惠券）：
+ * 登录设备（1.4.7）：令牌带 sid/设备/来源 IP 与最近活动；用户可自查并踢出设备，
  *   GET  /api/plans                 公开 → {plans, priceOptions, priceItems, upcoming, cycles, pay}
  *   GET  /api/membership            Bearer → {membership(等级/到期/剩余天数/额度/历史), user(含用量趋势)}
  *   GET  /api/auth/me               Bearer → user 内附带 usage:{today,limit,last7,days[30]}
@@ -20,6 +21,9 @@
  *   POST /api/orders/:id/cancel     Bearer → 取消未支付订单
  *   POST /api/redeem                Bearer {code} → 激活码兑换（绑定账号 + 叠加续期）
  *   POST /api/coupons/validate      Bearer {code,plan,months|cycle} → 优惠码试算（不占名额）
+ *   GET  /api/sessions              Bearer → 本账号登录设备（IP 打码）+ 活跃设备数
+ *   DELETE /api/sessions/:sid       Bearer → 踢出指定设备（踢自己 = 登出）
+ *   POST /api/sessions/revoke-others Bearer → 踢出除当前外的全部设备
  *   POST /api/orders                支持 {couponCode} → 折后下单（尾数在折后金额上分配）
  *   POST /api/admin/reconcile       收款流水按金额（含唯一尾数）自动匹配核销（默认 dryRun 预览）
  * 会员管理（仅本机直连）：
@@ -32,6 +36,8 @@
  *   DELETE /api/admin/prices/:id    删除价格条目
  *   GET  /api/admin/orders          订单列表
  *   POST /api/admin/orders/:id/fulfill | /cancel   核销（自动开通）/ 取消
+ *   GET  /api/admin/users/:id/sessions        某账号的登录设备（**含完整 IP**，仅供本机追查）
+ *   DELETE /api/admin/users/:id/sessions/:sid 管理员踢出某设备（处置账号共享）
  *   GET|POST /api/admin/coupons     优惠券列表 / 批量生成（只打折，与"发会员"的激活码分工不同）
  *   PUT|DELETE /api/admin/coupons/:id  局部更新（启停/额度/有效期）/ 作废（有占用则拒绝删除）
  *   GET|POST /api/admin/codes       激活码列表 / 批量生成
@@ -85,6 +91,7 @@ const coupon = require('./lib/coupon');
 const backup = require('./lib/backup');
 const alerts = require('./lib/alerts');
 const lockout = require('./lib/lockout');
+const sessions = require('./lib/sessions');
 const audit = require('./lib/audit');
 const reconcile = require('./lib/reconcile');
 const mail = require('./lib/mail');
@@ -420,10 +427,33 @@ function tokenKey(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
-function issueToken(userId) {
+/** 请求头里的 Bearer 令牌原文（未带则空串） */
+function bearerToken(req) {
+  return (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+}
+
+/** 当前请求所用的会话 id（= 令牌散列前 8 位；无法反推令牌） */
+function currentSid(req) {
+  const b = bearerToken(req);
+  return b ? sessions.sidOf(tokenKey(b)) : '';
+}
+
+/**
+ * 签发令牌。1.4.7 起同时记录**设备与会话元数据**（sid / 创建时间 / 来源 IP / 插件上报的设备信息），
+ * 这样后台才能回答「这个账号在几台机器上登录着」，也才有据可查账号共享。
+ */
+function issueToken(userId, opts) {
   const token = 'pp-' + crypto.randomBytes(24).toString('hex');
+  const key = tokenKey(token);
   usersStore.data.tokens = usersStore.data.tokens || {};
-  usersStore.data.tokens[tokenKey(token)] = { userId, expiresAt: Date.now() + TOKEN_TTL_MS };
+  const rec = { userId, expiresAt: Date.now() + TOKEN_TTL_MS };
+  const req = opts && opts.req;
+  sessions.recordStart(rec, {
+    tokenKey: key,
+    ip: req ? clientIp(req) : '',
+    device: req ? sessions.deviceFromHeaders(req.headers) : null,
+  });
+  usersStore.data.tokens[key] = rec;
   return token;
 }
 
@@ -453,9 +483,11 @@ function userByToken(req) {
 }
 
 function touchToken(req) {
-  const auth = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  const auth = bearerToken(req);
   const rec = auth && (usersStore.data.tokens || {})[tokenKey(auth)];
-  if (rec) rec.expiresAt = Date.now() + TOKEN_TTL_MS; // 滑动续期
+  if (!rec) return;
+  rec.expiresAt = Date.now() + TOKEN_TTL_MS;          // 滑动续期
+  sessions.recordSeen(rec, { ip: clientIp(req) });    // 1.4.7：最近活动（活跃设备判据）
 }
 
 /** 滑动续期（网关高频路径用）：内存即时续期，磁盘落盘按 30s 节流——
@@ -463,10 +495,12 @@ function touchToken(req) {
  *  shutdown 时强制落盘；即便丢最后一次续期也只是提前一天过期，无安全影响。 */
 let _tokenSaveTimer = null;
 function touchTokenSoon(req) {
-  const auth = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+  const auth = bearerToken(req);
   const rec = auth && (usersStore.data.tokens || {})[tokenKey(auth)];
   if (!rec) return;
   rec.expiresAt = Date.now() + TOKEN_TTL_MS;
+  // 只改内存 + 复用既有的 30s 落盘节流 —— 不因记录活跃时间而增加写盘频率
+  sessions.recordSeen(rec, { ip: clientIp(req) });
   if (!_tokenSaveTimer) {
     _tokenSaveTimer = setTimeout(() => {
       _tokenSaveTimer = null;
@@ -889,43 +923,84 @@ function backlogNow(now) {
 async function runAlertCheck({ now, force, dryRun } = {}) {
   const t = now || Date.now();
   const bl = backlogNow(t);
+  const dev = deviceAlertNow(t);
   const state = (alertStore.data && typeof alertStore.data === 'object') ? alertStore.data : {};
-  const need = force ? (bl.count > 0 && bl.over) : alerts.shouldAlert(state, bl, { now: t });
-  const view = alerts.view(state, bl);
-  if (!need) return { backlog: view, alerted: false, mailed: false };
+  // 设备告警状态放在 alerts.json 的 `sessions` 命名空间下 —— 不动既有积压状态的形状
+  const devState = (state.sessions && typeof state.sessions === 'object') ? state.sessions : {};
 
-  const line = alerts.logLine(bl) + ' at=' + new Date(t).toISOString();
-  try { appendAlertLog(line); } catch (e) { log('alert log failed:', e.message); }
-  log('ALERT', line);
-
-  let mailed = false;
-  let mailError = '';
-  const to = alertRecipients();
-  if (!dryRun && to.length && mail.configured()) {
-    try {
-      const m = alerts.buildMail(bl, { serverUrl: publicUrl() });
-      const r = await mail.send({ subject: m.subject, text: m.text, to: to.join(',') });
-      mailed = !!r.ok;
-      if (!r.ok) mailError = r.error || '发送失败';
-    } catch (e) { mailError = e.message; }
-  } else if (to.length && !mail.configured()) {
-    mailError = '邮件服务未配置（PP_RESEND_KEY）';
-  } else if (!to.length) {
-    mailError = '未配置收件人（PP_ALERT_EMAIL）';
+  const needBacklog = force ? (bl.count > 0 && bl.over) : alerts.shouldAlert(state, bl, { now: t });
+  const needDev = force ? dev.over : sessions.shouldAlert(devState, dev, { now: t });
+  if (!needBacklog && !needDev) {
+    return {
+      backlog: alerts.view(state, bl), alerted: false, mailed: false,
+      devices: Object.assign(sessions.view(devState, dev), { alerted: false, mailed: false }),
+    };
   }
 
-  alertStore.data = alerts.record(state, bl, { mailed, now: t });
-  try { alertStore.save(); } catch (e) { log('alert state save failed:', e.message); }
+  const to = alertRecipients();
+  const ctx = { dryRun, to, mailError: '' };
+  if (!dryRun && to.length && !mail.configured()) ctx.mailError = '邮件服务未配置（PP_RESEND_KEY）';
+  else if (!dryRun && !to.length) ctx.mailError = '未配置收件人（PP_ALERT_EMAIL）';
+
+  let mailed = false;
+  if (needBacklog) {
+    const line = alerts.logLine(bl) + ' at=' + new Date(t).toISOString();
+    try { appendAlertLog(line); } catch (e) { log('alert log failed:', e.message); }
+    log('ALERT', line);
+    mailed = await sendAlertMail(ctx, alerts.buildMail(bl, { serverUrl: publicUrl() }));
+    alertStore.data = alerts.record(state, bl, { mailed, now: t });
+  }
+
+  let devMailed = false;
+  if (needDev) {
+    const line = sessions.logLine(dev) + ' at=' + new Date(t).toISOString();
+    try { appendAlertLog(line); } catch (e) { log('device alert log failed:', e.message); }
+    log('ALERT', line);
+    devMailed = await sendAlertMail(ctx, sessions.buildMail(dev, { serverUrl: publicUrl() }));
+    alertStore.data = Object.assign(alertStore.data || {}, {
+      sessions: sessions.record(devState, dev, { mailed: devMailed, now: t }),
+    });
+  }
+
+  if (needBacklog || needDev) {
+    try { alertStore.save(); } catch (e) { log('alert state save failed:', e.message); }
+  }
   return {
-    backlog: alerts.view(alertStore.data, bl), alerted: true, mailed, mailError,
+    backlog: alerts.view(alertStore.data, bl), alerted: needBacklog, mailed,
+    devices: Object.assign(sessions.view(alertStore.data && alertStore.data.sessions, dev), {
+      alerted: needDev, mailed: devMailed,
+    }),
+    mailError: ctx.mailError,
     logPath: alertLogPath(),
   };
+}
+
+/** 当前设备超限视图（1.4.7）：只报告「活跃设备超阈值」的账号，不处罚 */
+function deviceAlertNow(now) {
+  return sessions.deviceAlertOf(usersStore.data, { now });
+}
+
+/** 发一封告警邮件；未配收件人/未配邮件服务/dryRun 都只如实记原因，绝不抛 */
+async function sendAlertMail(context, built) {
+  const c = context || {};
+  if (c.dryRun) return false;
+  if (!c.to || !c.to.length) return false;
+  if (!mail.configured()) return false;
+  try {
+    const r = await mail.send({ subject: built.subject, text: built.text, to: c.to.join(',') });
+    if (!r.ok) c.mailError = r.error || '发送失败';
+    return !!r.ok;
+  } catch (e) {
+    c.mailError = e.message;
+    return false;
+  }
 }
 
 /** 后台展示用的告警配置与状态 */
 function alertStatus() {
   const bl = backlogNow();
   return Object.assign(alerts.view(alertStore.data, bl), {
+    sessions: sessions.view(alertStore.data && alertStore.data.sessions, deviceAlertNow()),
     mailConfigured: mail.configured(),
     recipients: alertRecipients(),
     logPath: 'server/data/alerts.log',
@@ -1021,6 +1096,9 @@ function userAdminOut(u) {
     // 1.4.3 用量趋势（后台用户列表 / CSV 导出用）
     usage7: usageDays(u, 7).reduce((s, d) => s + d.count, 0),
     usage30: usageDays(u, USAGE_KEEP_DAYS).reduce((s, d) => s + d.count, 0),
+    // 1.4.7 登录设备：近 N 天活跃会话数（后台用户列表据此标出「设备偏多」）
+    sessionsActive: sessions.countActive(usersStore.data, u.id),
+    sessionsOverLimit: sessions.countActive(usersStore.data, u.id) > sessions.maxDevices(),
     usageDaily: usageDays(u, USAGE_KEEP_DAYS),
     status: u.status === 'pending' ? 'pending' : 'active',
     createdAt: u.createdAt || null, lastLoginAt: u.lastLoginAt || null,
@@ -1136,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && url === '/api/health') {
       return json(res, 200, {
-        ok: true, service: 'paperpilot-account-server', version: '1.4.6',
+        ok: true, service: 'paperpilot-account-server', version: '1.4.7',
         uptime: Math.round(process.uptime()), now: new Date().toISOString(),
         mail: mail.configured() ? 'on' : 'off',
         users: usersStore.data.users.length,
@@ -1160,6 +1238,9 @@ const server = http.createServer(async (req, res) => {
         backlogOverdue: backlogNow().over,
         snapshots: backup.list(DATA_DIR).length,
         lastSnapshotAt: (backup.latest(DATA_DIR) || {}).at || null,
+        // 1.4.7 登录设备：近 N 天活跃会话数 / 活跃设备超阈值的账号数
+        sessionsActive: sessions.countActiveAll(usersStore.data),
+        devicesOverLimit: deviceAlertNow().count,
         // 1.4.4 审计：日志体积（后台据此判断是否需要查看/归档）
         auditBytes: audit.stats(DATA_DIR).bytes,
         auditArchiveBytes: audit.stats(DATA_DIR).archiveBytes,
@@ -1322,7 +1403,7 @@ const server = http.createServer(async (req, res) => {
           error: '邮箱未验证：请查收验证邮件并点击激活链接；未收到可在注册页点「重新发送」' });
       }
       lockout.reset(user);            // 登录成功清零失败计数与锁定
-      const token = issueToken(user.id);
+      const token = issueToken(user.id, { req });
       user.lastLoginAt = new Date().toISOString();
       pruneTokens();
       usersStore.save();
@@ -1362,7 +1443,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url === '/api/membership' || url === '/api/orders' || url === '/api/redeem'
-        || url === '/api/coupons/validate' || url.startsWith('/api/orders/')) {
+        || url === '/api/coupons/validate' || url.startsWith('/api/orders/')
+        || url === '/api/sessions' || url.startsWith('/api/sessions/')) {
       const user = userByToken(req);
       if (!user) return json(res, 401, { ok: false, error: '登录已过期' });
       touchTokenSoon(req);
@@ -1387,6 +1469,52 @@ const server = http.createServer(async (req, res) => {
         usersStore.save();
         log('membership redeemed:', user.email, r.code.plan, r.code.months + 'm');
         return json(res, 200, { ok: true, membership: r.membership, user: userForClient(user), code: r.code });
+      }
+
+      /* ---- 登录设备（1.4.7）：用户自查 + 自助踢出 ---- */
+
+      // 列出本账号的登录设备（IP 一律打码；完整 IP 只在仅本机直连的管理接口里给）
+      if (method === 'GET' && url === '/api/sessions') {
+        const cur = currentSid(req);
+        const det = sessions.sessionsOfDetailed(usersStore.data, user.id);
+        const list = det.list.map((r) => sessions.sessionOut(r, { current: r.sid === cur }));
+        const activeCount = list.filter((x) => x.active).length;
+        const anyIdentified = list.some((x) => x.identified);
+        // 只有当场补齐了老令牌的 sid/createdAt 才落盘 —— 这是个会被频繁调用的读接口
+        if (det.changed) usersStore.save();
+        return json(res, 200, {
+          ok: true, sessions: list, activeCount,
+          activeDays: sessions.activeDays(), maxDevices: sessions.maxDevices(),
+          overLimit: activeCount > sessions.maxDevices(),
+          identified: anyIdentified,
+          hint: anyIdentified ? ''
+            : '当前设备未上报设备标识（插件需 0.24.7 及以上）；升级后这里会显示设备名与平台。',
+        });
+      }
+
+      // 踢出除当前设备外的全部设备
+      if (method === 'POST' && url === '/api/sessions/revoke-others') {
+        snapshot('users-change', { note: '踢出其他设备：' + user.email });
+        const r = sessions.revokeOthers(usersStore.data, user.id, { currentSid: currentSid(req) });
+        usersStore.save();
+        auditLog(req, 'session.revoke-others', {
+          target: user.email, after: { count: r.revoked.length, digest: sessions.digestOf(r.revoked) } });
+        log('sessions revoked (others):', user.email, 'n=' + r.revoked.length);
+        return json(res, 200, { ok: true, revoked: r.revoked.length });
+      }
+
+      // 踢出指定设备（踢自己 = 登出，语义与 /api/auth/logout 一致）
+      const sm = url.match(/^\/api\/sessions\/([a-zA-Z0-9-]+)$/);
+      if (sm && method === 'DELETE') {
+        snapshot('users-change', { note: '踢出设备 ' + sm[1] });
+        const r = sessions.revokeSid(usersStore.data, user.id, sm[1], { currentSid: currentSid(req) });
+        if (r.error) return json(res, 404, { ok: false, error: r.error });
+        usersStore.save();
+        auditLog(req, 'session.revoke', {
+          target: user.email, note: r.self ? '踢出的是当前会话（等同登出）' : '',
+          after: { sid: r.revoked, self: !!r.self } });
+        log('session revoked:', user.email, r.revoked, r.self ? '(self)' : '');
+        return json(res, 200, { ok: true, revoked: r.revoked, self: !!r.self });
       }
 
       // 优惠码试算：下单前预览折后价（不占名额、不写库）
@@ -1989,7 +2117,10 @@ const server = http.createServer(async (req, res) => {
         let input = {};
         try { input = await readBody(req); } catch (e) { /* 允许空体 */ }
         const r = await runAlertCheck({ force: true, dryRun: !!(input && input.dryRun) });
-        auditLog(req, 'alert.check', { after: { backlog: r.backlogCount, alerted: r.alerted, mailed: r.mailed } });
+        auditLog(req, 'alert.check', { after: {
+          backlog: r.backlog && r.backlog.backlogCount,
+          devicesOver: r.devices && r.devices.devicesOverLimit,
+          alerted: r.alerted, devicesAlerted: r.devices && r.devices.alerted, mailed: r.mailed } });
         return json(res, 200, { ok: true, result: r, alerts: alertStatus() });
       }
 
@@ -2069,6 +2200,37 @@ const server = http.createServer(async (req, res) => {
           since: q.get('since') || '', until: q.get('until') || '',
         }).map((e) => Object.assign({}, e, { actionText: audit.labelOf(e.action) }));
         return json(res, 200, { ok: true, items, actions: audit.ACTIONS, stats: audit.stats(DATA_DIR) });
+      }
+
+      /* ---- 登录设备（1.4.7，仅本机直连）----
+       * 与用户侧 `/api/sessions` 的差别：这里给**完整 IP**（出事时要能追），
+       * 并且允许管理员踢出任意设备（处置账号共享）；两者都会写审计。 */
+
+      m = url.match(/^\/api\/admin\/users\/([a-zA-Z0-9-]+)\/sessions$/);
+      if (m && method === 'GET') {
+        const u = findUserById(m[1]);
+        if (!u) return json(res, 404, { ok: false, error: '用户不存在' });
+        const det = sessions.sessionsOfDetailed(usersStore.data, u.id);
+        const list = det.list.map((r) => sessions.sessionOut(r, { full: true }));
+        if (det.changed) usersStore.save();
+        return json(res, 200, {
+          ok: true, email: u.email, sessions: list,
+          activeCount: list.filter((x) => x.active).length,
+          activeDays: sessions.activeDays(), maxDevices: sessions.maxDevices(),
+        });
+      }
+
+      m = url.match(/^\/api\/admin\/users\/([a-zA-Z0-9-]+)\/sessions\/([a-zA-Z0-9-]+)$/);
+      if (m && method === 'DELETE') {
+        const u = findUserById(m[1]);
+        if (!u) return json(res, 404, { ok: false, error: '用户不存在' });
+        snapshot('users-change', { note: '管理员踢出设备：' + u.email + ' / ' + m[2] });
+        const r = sessions.revokeSid(usersStore.data, u.id, m[2]);
+        if (r.error) return json(res, 404, { ok: false, error: r.error });
+        usersStore.save();
+        auditLog(req, 'session.revoke-admin', { target: u.email, after: { sid: r.revoked } });
+        log('session revoked by admin:', u.email, r.revoked);
+        return json(res, 200, { ok: true, revoked: r.revoked });
       }
 
       /* ---- 优惠券 / 折扣码（1.4.6） ----
@@ -2191,6 +2353,6 @@ if (require.main === module) {
 module.exports = {
   server, PORT, DATA_DIR,
   startBackgroundJobs, stopBackgroundJobs, runAlertCheck, alertStatus,
-  backlogNow, reloadStores, snapshot,
+  backlogNow, deviceAlertNow, reloadStores, snapshot,
   usageDays, bumpUsage, isoDay, pruneUsageDaily, USAGE_KEEP_DAYS, today,
 };

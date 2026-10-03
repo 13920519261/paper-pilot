@@ -103,6 +103,7 @@ NODE_SUITES = [
     ("管理操作审计", "test/audit.test.js"),
     ("永久会员与对账", "test/reconcile.test.js"),
     ("优惠券/折扣码", "test/coupon.test.js"),
+    ("登录设备与会话", "test/sessions.test.js"),
     ("历史根因探针", "test/legacy-rootcause.probe.js"),
     ("全模块加载冒烟", "test/smoke-load.test.js"),
 ]

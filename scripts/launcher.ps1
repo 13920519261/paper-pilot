@@ -329,6 +329,7 @@ function Get-AuditText([string]$a) {
     'membership.config' = '修改会员/收款配置'
     'order.fulfill' = '核销开通订单'; 'order.cancel' = '取消订单'; 'order.reconcile' = '对账自动核销'
     'coupon.create' = '生成优惠券'; 'coupon.update' = '修改优惠券'; 'coupon.revoke' = '作废优惠券'
+    'session.revoke' = '踢出登录设备'; 'session.revoke-others' = '踢出其他全部设备'; 'session.revoke-admin' = '管理员踢出设备'
     'code.create' = '生成激活码'; 'code.revoke' = '作废激活码'
     'backup.create' = '手动打快照'; 'backup.restore' = '回滚数据'; 'backup.delete' = '删除快照'
     'alert.check' = '手动巡检积压告警'
@@ -945,11 +946,115 @@ function Show-RegisterUser {
   $dlg.Dispose()
 }
 
+# 某账号的登录设备（服务端 1.4.7）。
+# 令牌 30 天滑动续期、靠请求续期 ⇒「活跃」= 最近 N 天内有请求（关掉 Zotero 不会立刻下线）。
+# 超阈值只提示不处罚：同一人台式 + 笔记本 + 实验室机器很常见。确认共享/倒卖时才踢。
+function Show-SessionsDialog($u) {
+  $dlg = New-Object System.Windows.Forms.Form
+  $dlg.Text = '登录设备 · ' + [string]$u.email
+  $dlg.ClientSize = New-Object System.Drawing.Size(780, 430)
+  $dlg.StartPosition = 'CenterParent'
+  $dlg.FormBorderStyle = 'FixedSingle'
+  $dlg.MaximizeBox = $false
+  $dlg.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+  $dlg.Icon = $script:appIcon
+
+  $lvS = New-Object System.Windows.Forms.ListView
+  $lvS.View = 'Details'; $lvS.FullRowSelect = $true; $lvS.HideSelection = $false
+  $lvS.SetBounds(12, 12, 756, 336)
+  [void]$lvS.Columns.Add('设备', 190)
+  [void]$lvS.Columns.Add('平台', 120)
+  [void]$lvS.Columns.Add('最近活动', 140)
+  [void]$lvS.Columns.Add('来源 IP', 130)
+  [void]$lvS.Columns.Add('状态', 80)
+  [void]$dlg.Controls.Add($lvS)
+
+  $lblS = New-Object System.Windows.Forms.Label
+  $lblS.Text = '加载中…'
+  $lblS.ForeColor = [System.Drawing.Color]::DimGray
+  $lblS.SetBounds(12, 354, 756, 20)
+  [void]$dlg.Controls.Add($lblS)
+
+  # 内层辅助：捕获上面的 $dlg（与会员管理对话框里的 New-MbBtn 同一写法）
+  function New-SBtn([string]$text, [int]$x, [int]$w, $handler) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.SetBounds($x, 386, $w, 30)
+    $b.add_Click($handler)
+    [void]$dlg.Controls.Add($b)
+    return $b
+  }
+
+  $script:ssRows = @()
+
+  function Refresh-Sessions {
+    try {
+      $r = Invoke-AdminApi 'GET' ('/api/admin/users/' + [string]$u.id + '/sessions')
+      $script:ssRows = @($r.sessions)
+      $lvS.Items.Clear()
+      foreach ($s in $script:ssRows) {
+        $label = '（未上报设备标识）'
+        if ($s.deviceLabel) { $label = [string]$s.deviceLabel }
+        elseif ($s.deviceId) { $label = ([string]$s.deviceId).Substring(0, 8) + '…' }
+        $it = New-Object System.Windows.Forms.ListViewItem($label)
+        if ($s.platform) { [void]$it.SubItems.Add([string]$s.platform) } else { [void]$it.SubItems.Add('—') }
+        [void]$it.SubItems.Add($(if ($s.lastSeenAt) { Format-Dt ([string]$s.lastSeenAt) } else { '—' }))
+        [void]$it.SubItems.Add($(if ($s.ip) { [string]$s.ip } elseif ($s.ipMasked) { [string]$s.ipMasked } else { '—' }))
+        $st = '长期未用'
+        if ($s.current) { $st = '当前' } elseif ($s.active) { $st = '活跃' }
+        [void]$it.SubItems.Add($st)
+        [void]$lvS.Items.Add($it)
+      }
+      $lblS.Text = '活跃设备 ' + [string]$r.activeCount + ' 台（阈值 ' + [string]$r.maxDevices + ' 台 / 窗口 ' + [string]$r.activeDays + ' 天）'
+      if ([int]$r.activeCount -gt [int]$r.maxDevices) {
+        $lblS.Text = $lblS.Text + '　超过阈值：可能是账号共享（不自动处罚）'
+      }
+    } catch {
+      [System.Windows.Forms.MessageBox]::Show('加载设备失败：' + (Get-HttpErrorDetail $_), '错误', 'OK', 'Warning') | Out-Null
+    }
+  }
+
+  New-SBtn '踢出选中设备' 12 130 {
+    if ($lvS.SelectedItems.Count -eq 0) { return }
+    $sid = [string]$script:ssRows[$lvS.SelectedItems[0].Index].sid
+    $q = [System.Windows.Forms.MessageBox]::Show(
+      ('确定踢出这台设备？' + "`n" + '该设备下次请求会被拒绝，需要重新登录；不影响其他设备。'),
+      '踢出设备', 'YesNo', 'Question')
+    if ($q -ne 'Yes') { return }
+    try {
+      [void](Invoke-AdminApi 'DELETE' ('/api/admin/users/' + [string]$u.id + '/sessions/' + $sid))
+      Refresh-Sessions
+    } catch { [System.Windows.Forms.MessageBox]::Show((Get-HttpErrorDetail $_), '失败', 'OK', 'Warning') | Out-Null }
+  }
+  New-SBtn '踢出其他全部' 150 130 {
+    $q = [System.Windows.Forms.MessageBox]::Show(
+      ('把这台设备之外的登录设备全部踢出？' + "`n" + '设备持有者需要重新登录。'),
+      '踢出其他全部', 'YesNo', 'Question')
+    if ($q -ne 'Yes') { return }
+    $n = 0
+    foreach ($s in @($script:ssRows)) {
+      try {
+        [void](Invoke-AdminApi 'DELETE' ('/api/admin/users/' + [string]$u.id + '/sessions/' + [string]$s.sid))
+        $n = $n + 1
+      } catch { }
+    }
+    [System.Windows.Forms.MessageBox]::Show('已踢出 ' + [string]$n + ' 台设备', '完成', 'OK', 'Information') | Out-Null
+    Refresh-Sessions
+  }
+  New-SBtn '刷新' 288 70 { Refresh-Sessions }
+  New-SBtn '关闭' 672 96 { $dlg.Close() }
+
+  Refresh-Sessions
+  [void]$dlg.ShowDialog($form)
+  $dlg.Dispose()
+}
+
+
 function Show-UserList {
   if (-not (Require-ServerRunning)) { return }
   $dlg = New-Object System.Windows.Forms.Form
-  $dlg.Text = '账号列表（会员 / 密码 / 删除）'
-  $dlg.ClientSize = New-Object System.Drawing.Size(820, 420)
+  $dlg.Text = '账号列表（会员 / 密码 / 登录设备 / 删除）'
+  $dlg.ClientSize = New-Object System.Drawing.Size(940, 420)
   $dlg.StartPosition = 'CenterParent'
   $dlg.FormBorderStyle = 'FixedSingle'
   $dlg.MaximizeBox = $false
@@ -959,12 +1064,13 @@ function Show-UserList {
   $lv = New-Object System.Windows.Forms.ListView
   $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.HideSelection = $false
   $lv.Location = New-Object System.Drawing.Point(12, 12)
-  $lv.Size = New-Object System.Drawing.Size(796, 320)
+  $lv.Size = New-Object System.Drawing.Size(916, 320)
   [void]$lv.Columns.Add('邮箱', 195)
   [void]$lv.Columns.Add('昵称', 90)
   [void]$lv.Columns.Add('等级', 55)
   [void]$lv.Columns.Add('会员到期', 150)
   [void]$lv.Columns.Add('今日用量', 80)
+  [void]$lv.Columns.Add('活跃设备', 80)
   [void]$lv.Columns.Add('最近登录', 105)
   [void]$dlg.Controls.Add($lv)
 
@@ -980,6 +1086,13 @@ function Show-UserList {
         [void]$it.SubItems.Add([string]($u.plan))
         [void]$it.SubItems.Add((Get-MembershipText $u))
         [void]$it.SubItems.Add(($u.dailyUsed.ToString() + ' / ' + $u.dailyLimit.ToString()))
+        # 1.4.7 登录设备：超过阈值加「!」提示（可能是账号共享，只提示不处罚）
+        $sess = '—'
+        if ($null -ne $u.sessionsActive) {
+          $sess = [string]$u.sessionsActive
+          if ($u.sessionsOverLimit) { $sess = $sess + ' !' }
+        }
+        [void]$it.SubItems.Add($sess)
         $last = '从未'
         if ($u.lastLoginAt) { $last = ([string]$u.lastLoginAt).Replace('T', ' ').Substring(0, 16) }
         [void]$it.SubItems.Add($last)
@@ -1134,6 +1247,11 @@ function Show-UserList {
   }
   New-UBtn '注册新账号' 516 110 { [void](Show-RegisterUser); Refresh-UserList }
   New-UBtn '刷新' 632 56 { Refresh-UserList }
+  New-UBtn '查看/踢出设备' 816 118 {
+    if ($lv.SelectedItems.Count -eq 0) { return }
+    Show-SessionsDialog $script:ulRows[$lv.SelectedItems[0].Index]
+    Refresh-UserList
+  }
   New-UBtn '关闭' 694 114 { $dlg.Close() }
 
   Refresh-UserList

@@ -201,7 +201,8 @@
         <thead><tr>
           <th>邮箱</th><th>昵称</th><th>等级</th><th>会员到期</th><th>今日用量</th>
           <th title="最近 7 天官方模型调用次数合计">近 7 天</th>
-          <th>最近登录</th><th style="width:290px">操作</th>
+          <th title="最近 7 天内有请求的登录设备数（超过阈值标红，仅提示不处罚）">活跃设备</th>
+          <th>最近登录</th><th style="width:330px">操作</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -502,6 +503,37 @@
       <tbody></tbody>
     </table>
     <div class="empty" id="rc-empty" style="display:none">还没有预览结果</div>
+  </div>
+</div>
+
+<!-- 登录设备弹窗（服务端 1.4.7）：查看某账号的登录设备并踢出 -->
+<div class="mask" id="sessions-mask">
+  <div class="modal" style="width:760px">
+    <h3>登录设备 <span id="ss-email" class="mono"></span></h3>
+    <p class="hint" style="margin:0 0 10px">
+      令牌 30 天滑动续期、靠请求续期，所以<b>「活跃」= 最近 N 天内有请求</b>（关掉 Zotero 不会立刻下线）。
+      超阈值只提示<b>不自动处罚</b>：同一个人台式 + 笔记本 + 实验室机器很常见。
+      确认是共享/倒卖时，可在此踢出设备（踢出后该设备下次请求会 401 并自行清空本地会话）；
+      「重置密码」会一次踢掉全部设备。
+    </p>
+    <div class="toolbar"><span class="hint" id="ss-stat"></span>
+      <div>
+        <button class="btn" onclick="loadSessions()">刷新</button>
+        <button class="btn" onclick="kickOthers()">踢出其他全部</button>
+      </div></div>
+    <table id="ss-table">
+      <thead><tr>
+        <th style="width:180px">设备</th><th style="width:130px">平台</th>
+        <th style="width:150px">最近活动</th><th style="width:130px">来源 IP</th>
+        <th style="width:90px">状态</th><th style="width:90px">操作</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="ss-empty" style="display:none">该账号当前没有登录设备</div>
+    <div class="msg" id="ss-msg"></div>
+    <div class="actions">
+      <button class="btn" type="button" onclick="closeMask('sessions-mask')">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -972,6 +1004,82 @@ function saveChannel() {
   });
 }
 
+/* ---------------- 登录设备（服务端 1.4.7） ---------------- */
+var ss = { userId: null, email: '', list: [], activeDays: 7, maxDevices: 3 };
+
+function openSessions(id, email) {
+  ss.userId = id;
+  ss.email = email;
+  $('ss-email').textContent = email;
+  $('ss-table').querySelector('tbody').textContent = '';
+  $('ss-msg').textContent = '';
+  $('sessions-mask').classList.add('show');
+  loadSessions();
+}
+
+function loadSessions() {
+  if (!ss.userId) return;
+  api('GET', '/api/admin/users/' + ss.userId + '/sessions').then(function (r) {
+    if (!r.ok) { msg('ss-msg', r.error || '加载失败', false); return; }
+    ss.list = r.sessions || [];
+    ss.activeDays = r.activeDays;
+    ss.maxDevices = r.maxDevices;
+    renderSessions(r.activeCount);
+  });
+}
+
+function renderSessions(activeCount) {
+  var tb = $('ss-table').querySelector('tbody');
+  tb.textContent = '';
+  $('ss-empty').style.display = ss.list.length ? 'none' : '';
+  var over = activeCount > ss.maxDevices;
+  $('ss-stat').innerHTML = '活跃设备 <b>' + activeCount + '</b> 台（阈值 ' + ss.maxDevices
+    + ' 台 / 窗口 ' + ss.activeDays + ' 天）'
+    + (over ? '　<span class="badge red">超过阈值：可能是账号共享</span>' : '');
+  ss.list.forEach(function (s) {
+    var label = s.deviceLabel || (s.deviceId ? s.deviceId.slice(0, 8) + '…' : '（未上报设备标识）');
+    var when = s.lastSeenAt ? s.lastSeenAt.replace('T', ' ').slice(0, 16) : '—';
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + esc(label) + '</td>' +
+      '<td>' + esc(s.platform || '—') + '</td>' +
+      '<td class="mono">' + esc(when) + '</td>' +
+      '<td class="mono">' + esc(s.ip || s.ipMasked || '—') + '</td>' +
+      '<td>' + (s.current ? '<span class="badge green">当前</span> '
+        : (s.active ? '<span class="badge">活跃</span>' : '<span class="badge gray">长期未用</span>')) + '</td>';
+    var td = document.createElement('td');
+    td.innerHTML = '<button class="btn sm danger" onclick="kickSession(\'' + s.sid + '\')">踢出</button>';
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+}
+
+function kickSession(sid) {
+  if (!confirm('确定踢出这台设备？该设备下次请求会被拒绝，并需要重新登录。\n（不会影响你的其他设备）')) return;
+  api('DELETE', '/api/admin/users/' + ss.userId + '/sessions/' + sid).then(function (r) {
+    if (!r.ok) { msg('ss-msg', r.error || '踢出失败', false); return; }
+    msg('ss-msg', '✓ 已踢出该设备', true);
+    loadSessions();
+  });
+}
+
+function kickOthers() {
+  if (!confirm('把这台设备之外的登录设备全部踢出？设备持有者需要重新登录。')) return;
+  msg('ss-msg', '正在踢出…', null);
+  var n = 0;
+  var list = ss.list.slice();
+  var done = function () { $('ss-msg').textContent = ''; msg('ss-msg', '✓ 已踢出 ' + n + ' 台设备', true); loadSessions(); };
+  var next = function () {
+    if (!list.length) { done(); return; }
+    var one = list.shift();
+    api('DELETE', '/api/admin/users/' + ss.userId + '/sessions/' + one.sid).then(function (r) {
+      if (r.ok) n++;
+      next();
+    });
+  };
+  next();
+}
+
 /* ---------------- 优惠券（服务端 1.4.6） ---------------- */
 var cp = { list: [], counts: {}, types: {}, editing: null };
 
@@ -1254,10 +1362,15 @@ function loadUsers() {
         '<td>' + fmtExpiry(u) + '</td>' +
         '<td>' + u.dailyUsed + ' / ' + u.dailyLimit + '</td>' +
         '<td>' + (u.usage7 == null ? '—' : u.usage7) + '</td>' +
+        '<td>' + (u.sessionsActive == null ? '—'
+          : (u.sessionsOverLimit
+            ? '<span class="badge red" title="活跃设备超过阈值：可能是账号共享">' + u.sessionsActive + ' ⚠</span>'
+            : '<span class="badge gray">' + u.sessionsActive + '</span>')) + '</td>' +
         '<td class="mono">' + (u.lastLoginAt ? u.lastLoginAt.replace('T', ' ').slice(0, 16) : '从未') + '</td>';
       var td = document.createElement('td');
       td.style.whiteSpace = 'nowrap';
       td.innerHTML =
+        '<button class="btn sm" onclick="openSessions(\'' + u.id + '\',\'' + esc(u.email) + '\')">设备</button> ' +
         '<button class="btn sm" onclick="openGrant(\'' + u.id + '\')">开通/续期</button> ' +
         '<button class="btn sm" onclick="editUser(\'' + u.id + '\')">编辑</button> ' +
         '<button class="btn sm" onclick="resetPwd(\'' + u.id + '\',\'' + esc(u.email) + '\')">重置密码</button> ' +
@@ -1277,11 +1390,13 @@ function exportUsageCSV() {
     if (!r.ok) return alert(r.error || '导出失败');
     var users = r.users || [];
     var days = (users[0] && users[0].usageDaily ? users[0].usageDaily : []).map(function (d) { return d.date; });
-    var lines = [['邮箱', '等级', '今日用量', '近7天', '近30天'].concat(days).map(csvCell).join(',')];
+    // 表头必须与下面的 row 顺序严格一致（活跃设备数插在「近7天」与「近30天」之间）
+    var lines = [['邮箱', '等级', '今日用量', '近7天', '活跃设备数', '近30天'].concat(days).map(csvCell).join(',')];
     users.forEach(function (u) {
       var byDate = {};
       (u.usageDaily || []).forEach(function (d) { byDate[d.date] = d.count; });
       var row = [u.email, u.plan, u.dailyUsed, u.usage7 == null ? '' : u.usage7,
+        u.sessionsActive == null ? '' : u.sessionsActive,
         u.usage30 == null ? '' : u.usage30].concat(days.map(function (d) { return byDate[d] || 0; }));
       lines.push(row.map(csvCell).join(','));
     });

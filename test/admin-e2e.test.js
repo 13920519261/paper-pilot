@@ -21,6 +21,7 @@ const SHOT = path.join(os.tmpdir(), 'pp-admin-membership.png');
 process.env.PP_DATA_DIR = WORK;
 process.env.PP_PORT = String(PORT);
 delete process.env.PP_RESEND_KEY;
+process.env.PP_SESSION_MAX_DEVICES = '2';   // 阈值调低，好让"设备超限"这条路径在 E2E 里也跑到
 
 let chromium = null;                       // playwright-core 缺失时保持 null
 try { ({ chromium } = require('playwright-core')); } catch (e) { /* 可选依赖 */ }
@@ -44,10 +45,10 @@ function ok(c, label, extra) {
 }
 function eq(a, b, label) { return ok(a === b, label, { got: a, want: b }); }
 
-function req(method, p, body, token) {
+function req(method, p, body, token, extraHeaders) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined || body === null ? null : Buffer.from(JSON.stringify(body), 'utf8');
-    const headers = {};
+    const headers = Object.assign({}, extraHeaders || {});
     if (payload) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = payload.length; }
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const r = http.request({ host: '127.0.0.1', port: PORT, method, path: p, headers }, (res) => {
@@ -146,8 +147,13 @@ function req(method, p, body, token) {
       'E5.6 导出 CSV 文件名规范', download.suggestedFilename());
     const csv = fs.readFileSync(await download.path(), 'utf8');
     ok(csv.charCodeAt(0) === 0xFEFF, 'E5.7 CSV 带 BOM（Excel 里中文不乱码）');
-    ok(/邮箱,等级,今日用量,近7天,近30天/.test(csv), 'E5.8 CSV 表头含新增的用量列',
+    ok(/邮箱,等级,今日用量,近7天,活跃设备数,近30天/.test(csv), 'E5.8 CSV 表头含新增的用量与设备列',
       csv.split(/\r?\n/)[0].slice(0, 80));
+    // 表头列数必须与数据行列数一致，否则 Excel 里整张表会错位
+    const csvHead = csv.split(/\r?\n/)[0].replace(/^\ufeff/, '').split(',');
+    const csvRow = csv.split(/\r?\n/)[1].split(',');
+    eq(csvHead.length, csvRow.length, 'E5.8b CSV 表头与数据行列数一致（不会错位）',
+      { head: csvHead.length, row: csvRow.length });
     ok(csv.indexOf('buyer@test.local') > 0, 'E5.9 CSV 含用户行', csv.split(/\r?\n/)[1]);
 
     /* ---- UI 里生成激活码 ---- */
@@ -527,6 +533,62 @@ function req(method, p, body, token) {
     const SHOT_CP = path.join(os.tmpdir(), 'pp-admin-coupon.png');
     await page.screenshot({ path: SHOT_CP, fullPage: true });
     ok(true, 'E22.25 优惠券页截图: ' + SHOT_CP);
+
+    /* ---- 服务端 1.4.7：登录设备（真点击后台弹窗 → 踢出） ---- */
+    // 让买家账号再多"两台设备"（带设备头上报），凑出可辨识的设备列表
+    await req('POST', '/api/auth/login', { email: 'buyer@test.local', password: 'pw12345678' }, null,
+      { 'X-PP-Device': 'aaaa1111-2222-3333-4444-555566667777', 'X-PP-Platform': 'Windows 11', 'X-PP-Zotero': '10.0.5' });
+    await req('POST', '/api/auth/login', { email: 'buyer@test.local', password: 'pw12345678' }, null,
+      { 'X-PP-Device': 'bbbb1111-2222-3333-4444-555566667777', 'X-PP-Platform': 'macOS 15', 'X-PP-Zotero': '10.0.5' });
+
+    const usersDev = await req('GET', '/api/admin/users');
+    const buyerDev = usersDev.json.users.filter((u) => u.email === 'buyer@test.local')[0];
+    ok(buyerDev.sessionsActive >= 3, 'E23.1 后台用户对象带活跃设备数',
+      { active: buyerDev.sessionsActive, over: buyerDev.sessionsOverLimit });
+    eq(buyerDev.sessionsOverLimit, true, 'E23.1b 超过阈值时标出（阈值在本测试里设为 2）');
+
+    await page.click('#tab-users');
+    await page.waitForSelector('#user-table tbody tr');
+    await page.waitForTimeout(400);
+    const thTxt = await page.textContent('#user-table thead');
+    ok(thTxt.includes('活跃设备'), 'E23.2 用户表新增「活跃设备」列', thTxt.replace(/\s+/g, ' ').slice(0, 120));
+    const buyerRowTxt = await page.textContent('#user-table tbody tr:has-text("buyer@test.local")');
+    ok(buyerRowTxt.includes('⚠'), 'E23.2b 超限账号在用户列表里被标出（操作员第一眼能看到）',
+      buyerRowTxt.replace(/\s+/g, ' ').slice(0, 140));
+
+    await page.locator('#user-table tbody tr:has-text("buyer@test.local")')
+      .locator('button:has-text("设备")').first().click();
+    await page.waitForSelector('#sessions-mask.show');
+    await page.waitForSelector('#ss-table tbody tr');
+    const ssRows = await page.locator('#ss-table tbody tr').count();
+    ok(ssRows >= 3, 'E23.3 设备弹窗列出 >=3 台设备', ssRows);
+    const ssBody = await page.textContent('#ss-table tbody');
+    ok(ssBody.includes('Windows 11') && ssBody.includes('macOS 15'),
+      'E23.4 展示插件上报的平台', ssBody.replace(/\s+/g, ' ').slice(0, 160));
+    ok(ssBody.includes('127.0.0.1'), 'E23.5 管理侧给出完整 IP（追查用）', ssBody.replace(/\s+/g, ' ').slice(0, 160));
+    ok(/活跃设备\s*\d+\s*台（阈值/.test((await page.textContent('#ss-stat')).replace(/\s+/g, ' ')),
+      'E23.6 弹窗显示活跃设备数与阈值', await page.textContent('#ss-stat'));
+    eq(await page.locator('#ss-table tbody tr:has-text("当前")').count(), 0,
+      'E23.7 管理员视角没有「当前设备」概念（不是从插件发起）');
+
+    const SHOT_SS = path.join(os.tmpdir(), 'pp-admin-sessions.png');
+    await page.screenshot({ path: SHOT_SS, fullPage: true });
+    ok(true, 'E23.8 设备弹窗截图: ' + SHOT_SS);
+
+    // 踢出 macOS 那台（confirm 由顶部全局 dialog 处理器自动确认）
+    await page.locator('#ss-table tbody tr:has-text("macOS 15")').locator('button:has-text("踢出")').click();
+    await page.waitForFunction(() => {
+      var t = document.getElementById('ss-msg');
+      return t && t.textContent.indexOf('已踢出') >= 0;
+    }, { timeout: 6000 });
+    const ssBody2 = await page.textContent('#ss-table tbody');
+    ok(!ssBody2.includes('macOS 15'), 'E23.9 踢出后该设备从列表消失');
+    const auditDev = await req('GET', '/api/admin/audit?action=session.revoke-admin&limit=5');
+    ok(auditDev.json.items.length >= 1, 'E23.10 踢出动作写入审计（session.revoke-admin）',
+      auditDev.json.items.length);
+
+    await page.click('#sessions-mask button:has-text("关闭")');
+    await page.waitForTimeout(200);
 
     await page.click('#tab-membership');
     await page.waitForTimeout(400);
